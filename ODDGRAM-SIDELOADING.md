@@ -10,17 +10,17 @@ download the `ODDgram-unsigned-ipa` artifact. It is built with placeholder signi
 sign it with your own valid certificate and provisioning profile before installing.
 It is not a ready-to-run signed app.
 
-The app tries the normal shared App Group first. If it is unavailable, it uses a
-private Application Support directory and remembers that selection. In private
-container mode, extensions cannot access the app's data. Sharing, widgets and
-notification features may therefore be unavailable. A valid notification
-entitlement and service are also required for push notifications.
+The app requires its shared App Group. The app and each extension must be signed
+with matching, authorized App Group entitlements and provisioning profiles.
+ODDgram does not silently move account data to a separate private container.
+The Swiftgram settings page reports whether the shared container is accessible;
+this alone does not establish that extensions or push notifications work.
+Push notifications additionally require the appropriate entitlement and service.
 
 Changing bundle identifiers, teams, certificates or signing entitlements can
 change which Keychain entries or shared containers are accessible. A reinstall
 can erase local app data, including secret chats. Do not delete an existing
-installation to test unless you accept that loss. The private-container fallback
-has not been verified on a physical device.
+installation to test unless you accept that loss. The App Group configuration has not been verified on a physical device.
 
 For a black screen, record the iOS version, installation method, signer settings,
 whether extensions were removed, whether the app is a fresh install or an update,
