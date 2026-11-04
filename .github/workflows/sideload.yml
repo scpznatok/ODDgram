@@ -22,15 +22,15 @@ jobs:
           XCODE_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["xcode"])')
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
-      - name: Build IPA without embedded provisioning profiles
+      - name: Build IPA with temporary packaging profiles
         run: |
           set -euo pipefail
+          python3 build-system/Make/RenewCIProfiles.py
           python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
           python3 -u build-system/Make/Make.py build \
             --configurationPath=build-system/appstore-configuration.json \
             --codesigningInformationPath=build-system/fake-codesigning \
             --configuration=release_arm64 \
-            --disableProvisioningProfiles \
             --buildNumber="${GITHUB_RUN_NUMBER}"
           test -f bazel-bin/Telegram/Telegram.ipa || test -f bazel-bin/Telegram/Swiftgram.ipa
           mkdir -p build/artifacts
