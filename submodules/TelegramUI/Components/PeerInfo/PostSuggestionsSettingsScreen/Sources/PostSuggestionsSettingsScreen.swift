@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -25,7 +25,7 @@ import ListItemComponentAdaptor
 import ButtonComponent
 import PlainButtonComponent
 import UndoUI
-import ShareController
+
 
 final class PostSuggestionsSettingsScreenComponent: Component {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
@@ -147,10 +147,6 @@ final class PostSuggestionsSettingsScreenComponent: Component {
             
             let navigationAlphaDistance: CGFloat = 16.0
             let navigationAlpha: CGFloat = max(0.0, min(1.0, (self.scrollView.contentOffset.y - navigationRevealOffsetY) / navigationAlphaDistance))
-            if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
-                transition.setAlpha(layer: navigationBar.backgroundNode.layer, alpha: navigationAlpha)
-                transition.setAlpha(layer: navigationBar.stripeNode.layer, alpha: navigationAlpha)
-            }
             
             var scrolledUp = false
             if navigationAlpha < 0.5 {
@@ -200,8 +196,10 @@ final class PostSuggestionsSettingsScreenComponent: Component {
             }
             
             let context = component.context
-            let shareController = ShareController(context: context, subject: .url(link), updatedPresentationData: nil)
-            shareController.completed = { [weak controller] peerIds in
+            let shareController = context.sharedContext.makeShareScreen(context: context, params: ShareControllerParams(subject: .url(link), updatedPresentationData: nil, actionCompleted: {
+                let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+                controller.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.Conversation_LinkCopied), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .window(.root))
+            }, completed: { [weak controller] peerIds in
                 let _ = (context.engine.data.get(
                     EngineDataList(
                         peerIds.map(TelegramEngine.EngineData.Item.Peer.Peer.init)
@@ -210,7 +208,7 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                 |> deliverOnMainQueue).start(next: { [weak controller] peerList in
                     let peers = peerList.compactMap { $0 }
                     let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                    
+
                     let text: String
                     var savedMessages = false
                     if peerIds.count == 1, let peerId = peerIds.first, peerId == context.account.peerId {
@@ -231,7 +229,7 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                             text = ""
                         }
                     }
-                    
+
                     controller?.present(UndoOverlayController(presentationData: presentationData, content: .forward(savedMessages: savedMessages, text: text), elevatedLayout: false, animateInAsReplacement: true, action: { action in
                         if savedMessages, action == .info {
                             let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
@@ -248,11 +246,7 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                         return false
                     }), in: .window(.root))
                 })
-            }
-            shareController.actionCompleted = {
-                let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                controller.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.Conversation_LinkCopied), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .window(.root))
-            }
+            }))
             controller.present(shareController, in: .window(.root))
         }
         
@@ -304,7 +298,7 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                 environment: {},
                 containerSize: CGSize(width: availableSize.width, height: 100.0)
             )
-            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - navigationTitleSize.width) / 2.0), y: environment.statusBarHeight + floor((environment.navigationHeight - environment.statusBarHeight - navigationTitleSize.height) / 2.0)), size: navigationTitleSize)
+            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor(environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right - navigationTitleSize.width) / 2.0), y: environment.statusBarHeight + floor((environment.navigationHeight - environment.statusBarHeight - navigationTitleSize.height) / 2.0)), size: navigationTitleSize)
             if let navigationTitleView = self.navigationTitle.view {
                 if navigationTitleView.superview == nil {
                     if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
@@ -315,7 +309,11 @@ final class PostSuggestionsSettingsScreenComponent: Component {
             }
             
             let bottomContentInset: CGFloat = 24.0
+            // iPhone Duo: one side's safe inset is the side strip; the right margin is its own and centered
+            // content is centered in the band between the insets. With equal insets these are the old values.
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
+            let rightSideInset: CGFloat = 16.0 + environment.safeInsets.right
+            let bandCenterX: CGFloat = environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right) / 2.0
             let sectionSpacing: CGFloat = 24.0
             
             var contentHeight: CGFloat = 0.0
@@ -326,12 +324,13 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                 transition: .immediate,
                 component: AnyComponent(LottieComponent(
                     content: LottieComponent.AppBundleContent(name: "ChannelMessages"),
-                    loop: false
+                    loop: false,
+                    lottieSettings: component.context.lottieRenderingSettings
                 )),
                 environment: {},
                 containerSize: CGSize(width: 100.0, height: 100.0)
             )
-            let iconFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - iconSize.width) * 0.5), y: contentHeight + 11.0), size: iconSize)
+            let iconFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - iconSize.width * 0.5), y: contentHeight + 11.0), size: iconSize)
             if let iconView = self.icon.view as? LottieComponent.View {
                 if iconView.superview == nil {
                     self.scrollView.addSubview(iconView)
@@ -375,9 +374,9 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                     }
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 1000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 1000.0)
             )
-            let subtitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - subtitleSize.width) * 0.5), y: contentHeight), size: subtitleSize)
+            let subtitleFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - subtitleSize.width * 0.5), y: contentHeight), size: subtitleSize)
             if let subtitleView = self.subtitle.view {
                 if subtitleView.superview == nil {
                     self.scrollView.addSubview(subtitleView)
@@ -422,7 +421,7 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                     items: switchSectionItems
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let switchSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: switchSectionSize)
             if let switchSectionView = self.switchSection.view {
@@ -478,7 +477,7 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                     },
                     openPremiumInfo: nil
                 ),
-                params: ListViewItemLayoutParams(width: availableSize.width - sideInset * 2.0, leftInset: 0.0, rightInset: 0.0, availableHeight: 10000.0, isStandalone: true)
+                params: ListViewItemLayoutParams(width: availableSize.width - sideInset - rightSideInset, leftInset: 0.0, rightInset: 0.0, availableHeight: 10000.0, isStandalone: true)
             ))))
             
             let contentSectionSize = self.contentSection.update(
@@ -506,7 +505,7 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                     displaySeparators: false
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let contentSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: contentSectionSize)
             if let contentSectionView = self.contentSection.view {
@@ -539,17 +538,25 @@ final class PostSuggestionsSettingsScreenComponent: Component {
                     }
                 )
             )))
+                        
             let linkSectionSize = self.linkSection.update(
                 transition: transition,
                 component: AnyComponent(ListSectionComponent(
                     theme: environment.theme,
                     style: .glass,
-                    header: nil,
+                    header: AnyComponent(MultilineTextComponent(
+                        text: .plain(NSAttributedString(
+                            string: environment.strings.ChannelMessages_LinkTitle.uppercased(),
+                            font: Font.regular(13.0),
+                            textColor: environment.theme.list.freeTextColor
+                        )),
+                        maximumNumberOfLines: 0
+                    )),
                     footer: nil,
                     items: linkSectionItems
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let linkSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: linkSectionSize)
             if let linkSectionView = self.linkSection.view {

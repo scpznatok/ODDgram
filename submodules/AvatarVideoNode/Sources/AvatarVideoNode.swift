@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -81,7 +82,7 @@ public final class AvatarVideoNode: ASDisplayNode {
         if self.useAnimationNode {
             self.stickerFetchedDisposable.set(freeMediaFileResourceInteractiveFetched(account: self.context.account, userLocation: .other, fileReference: stickerPackFileReference(animationFile), resource: chatMessageStickerResource(file: animationFile, small: false)).startStrict())
             
-            let animationNode = DefaultAnimatedStickerNodeImpl()
+            let animationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: self.context.lottieRenderingSettings)
             animationNode.autoplay = false
             self.animationNode = animationNode
             animationNode.started = { [weak self] in
@@ -206,7 +207,7 @@ public final class AvatarVideoNode: ASDisplayNode {
         self.internalSize = size
         if let markup = photo.emojiMarkup {
             self.update(markup: markup, size: size, useAnimationNode: false)
-        } else if let video = smallestVideoRepresentation(photo.videoRepresentations), let peerReference = PeerReference(peer._asPeer()) {
+        } else if let video = smallestVideoRepresentation(photo.videoRepresentations), let peerReference = PeerReference(peer) {
             self.backgroundNode.image = nil
             
             let videoId = photo.id?.id ?? peer.id.id._internalGetInt64Value()
@@ -217,7 +218,7 @@ public final class AvatarVideoNode: ASDisplayNode {
                 self.videoContent = videoContent
                 
                 self.videoFileDisposable?.dispose()
-                self.videoFileDisposable = fetchedMediaResource(mediaBox: self.context.account.postbox.mediaBox, userLocation: .peer(peer.id), userContentType: .avatar, reference: videoFileReference.resourceReference(videoFileReference.media.resource)).startStrict()
+                self.videoFileDisposable = self.context.engine.resources.fetch(reference: videoFileReference.resourceReference(videoFileReference.media.resource), userLocation: .peer(peer.id), userContentType: .avatar).startStrict()
             }
         }
     }
@@ -229,7 +230,7 @@ public final class AvatarVideoNode: ASDisplayNode {
         if isVisible, let animationNode = self.animationNode, let file = self.animationFile {
             if !self.didSetupAnimation {
                 self.didSetupAnimation = true
-                let pathPrefix = self.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(file.resource.id)
+                let pathPrefix = self.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(file.resource.id))
                 let dimensions = file.dimensions ?? PixelDimensions(width: 512, height: 512)
                 let fittedDimensions = dimensions.cgSize.aspectFitted(CGSize(width: 384.0, height: 384.0))
                 let source = AnimatedStickerResourceSource(account: self.context.account, resource: file.resource, isVideo: file.isVideoSticker || file.mimeType == "video/webm")

@@ -1,7 +1,7 @@
 import Foundation
 import SwiftSignalKit
 import Postbox
-import TelegramApi
+internal import TelegramApi
 
 
 public enum ChatOwnershipTransferError {
@@ -98,7 +98,7 @@ func _internal_updateChatOwnership(account: Account, peerId: PeerId, memberId: P
                 }
                 |> mapToSignal { authData -> Signal<Api.InputCheckPasswordSRP, ChatOwnershipTransferError> in
                     if let currentPasswordDerivation = authData.currentPasswordDerivation, let srpSessionData = authData.srpSessionData {
-                        guard let kdfResult = passwordKDF(encryptionProvider: account.network.encryptionProvider, password: password, derivation: currentPasswordDerivation, srpSessionData: srpSessionData) else {
+                        guard let kdfResult = passwordKDF(encryptionProvider: account.network.encryptionProvider, keychain: account.network.context.keychain, password: password, derivation: currentPasswordDerivation, srpSessionData: srpSessionData) else {
                             return .fail(.generic)
                         }
                         return .single(.inputCheckPasswordSRP(.init(srpId: kdfResult.id, A: Buffer(data: kdfResult.A), M1: Buffer(data: kdfResult.M1))))
@@ -167,17 +167,17 @@ func _internal_updateChatOwnership(account: Account, peerId: PeerId, memberId: P
                                     return cachedData
                                 }
                             })
-                            var peers: [PeerId: Peer] = [:]
+                            var peers: [EnginePeer.Id: EnginePeer] = [:]
                             var presences: [PeerId: PeerPresence] = [:]
-                            peers[accountUser.id] = accountUser
+                            peers[accountUser.id] = EnginePeer(accountUser)
                             if let presence = transaction.getPeerPresence(peerId: accountUser.id) {
                                 presences[accountUser.id] = presence
                             }
-                            peers[user.id] = user
+                            peers[user.id] = EnginePeer(user)
                             if let presence = transaction.getPeerPresence(peerId: user.id) {
                                 presences[user.id] = presence
                             }
-                            return [(currentCreator, RenderedChannelParticipant(participant: updatedPreviousCreator, peer: accountUser, peers: peers, presences: presences)), (currentParticipant, RenderedChannelParticipant(participant: updatedParticipant, peer: user, peers: peers, presences: presences))]
+                            return [(currentCreator, RenderedChannelParticipant(participant: updatedPreviousCreator, peer: EnginePeer(accountUser), peers: peers, presences: presences)), (currentParticipant, RenderedChannelParticipant(participant: updatedParticipant, peer: EnginePeer(user), peers: peers, presences: presences))]
                         }
                         |> mapError { _ -> ChatOwnershipTransferError in }
                     }

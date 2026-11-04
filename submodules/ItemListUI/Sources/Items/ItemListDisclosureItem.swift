@@ -76,7 +76,33 @@ public class ItemListDisclosureItem: ListViewItem, ItemListItem, ListItemCompone
     public let tag: ItemListItemTag?
     public let shimmeringIndex: Int?
     
-    public init(presentationData: ItemListPresentationData, systemStyle: ItemListSystemStyle = .legacy, icon: UIImage? = nil, context: AccountContext? = nil, iconPeer: EnginePeer? = nil, title: String, attributedTitle: NSAttributedString? = nil, enabled: Bool = true, titleColor: ItemListDisclosureItemTitleColor = .primary, titleFont: ItemListDisclosureItemTitleFont = .regular, titleIcon: UIImage? = nil, titleBadge: String? = nil, label: String, attributedLabel: NSAttributedString? = nil, labelStyle: ItemListDisclosureLabelStyle = .text, sgLabelMaximumNumberOfLines: Int = 1, centerLabelAlignment: Bool = false, additionalDetailLabel: String? = nil, additionalDetailLabelColor: ItemListDisclosureItemDetailLabelColor = .generic, sectionId: ItemListSectionId, style: ItemListStyle, disclosureStyle: ItemListDisclosureStyle = .arrow, noInsets: Bool = false, action: (() -> Void)?, clearHighlightAutomatically: Bool = true, tag: ItemListItemTag? = nil, shimmeringIndex: Int? = nil) {
+    public init(
+        presentationData: ItemListPresentationData,
+        systemStyle: ItemListSystemStyle = .legacy,
+        icon: UIImage? = nil,
+        context: AccountContext? = nil,
+        iconPeer: EnginePeer? = nil,
+        title: String,
+        attributedTitle: NSAttributedString? = nil,
+        enabled: Bool = true,
+        titleColor: ItemListDisclosureItemTitleColor = .primary,
+        titleFont: ItemListDisclosureItemTitleFont = .regular,
+        titleIcon: UIImage? = nil,
+        titleBadge: String? = nil,
+        label: String,
+        attributedLabel: NSAttributedString? = nil,
+        labelStyle: ItemListDisclosureLabelStyle = .text,
+        sgLabelMaximumNumberOfLines: Int = 1, centerLabelAlignment: Bool = false, additionalDetailLabel: String? = nil,
+        additionalDetailLabelColor: ItemListDisclosureItemDetailLabelColor = .generic,
+        sectionId: ItemListSectionId,
+        style: ItemListStyle,
+        disclosureStyle: ItemListDisclosureStyle = .arrow,
+        noInsets: Bool = false,
+        action: (() -> Void)?,
+        clearHighlightAutomatically: Bool = true,
+        tag: ItemListItemTag? = nil,
+        shimmeringIndex: Int? = nil
+    ) {
         self.presentationData = presentationData
         self.systemStyle = systemStyle
         self.icon = icon
@@ -106,10 +132,10 @@ public class ItemListDisclosureItem: ListViewItem, ItemListItem, ListItemCompone
         self.shimmeringIndex = shimmeringIndex
     }
     
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         async {
             let node = ItemListDisclosureItemNode()
-            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
             
             node.contentSize = layout.contentSize
             node.insets = layout.insets
@@ -122,13 +148,13 @@ public class ItemListDisclosureItem: ListViewItem, ItemListItem, ListItemCompone
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? ItemListDisclosureItemNode {
                 let makeLayout = nodeValue.asyncLayout()
                 
                 async {
-                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
                     Queue.mainQueue().async {
                         completion(layout, { _ in
                             apply()
@@ -317,7 +343,7 @@ public class ItemListDisclosureItemNode: ListViewItemNode, ItemListItemNode {
         
         let currentHasBadge = self.labelBadgeNode.image != nil
         
-        return { item, params, neighbors in
+        return { [weak self] item, params, neighbors in
             var rightInset: CGFloat
             switch item.disclosureStyle {
             case .none:
@@ -700,7 +726,7 @@ public class ItemListDisclosureItemNode: ListViewItemNode, ItemListItemNode {
                         
                         strongSelf.backgroundNode.frame = CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: contentSize.height + min(insets.top, separatorHeight) + min(insets.bottom, separatorHeight)))
                         strongSelf.highlightNode.frame = CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: contentSize.height + min(insets.top, separatorHeight) + min(insets.bottom, separatorHeight)))
-                        strongSelf.maskNode.frame = strongSelf.backgroundNode.frame.insetBy(dx: params.leftInset, dy: 0.0)
+                        strongSelf.maskNode.frame = strongSelf.backgroundNode.frame.inset(by: UIEdgeInsets(top: 0.0, left: params.leftInset, bottom: 0.0, right: params.rightInset))
                         strongSelf.topStripeNode.frame = CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: separatorHeight))
                         strongSelf.bottomStripeNode.frame = CGRect(origin: CGPoint(x: bottomStripeInset, y: contentSize.height - separatorHeight), size: CGSize(width: params.width - params.rightInset - bottomStripeInset - separatorRightInset, height: separatorHeight))
                     }
@@ -718,7 +744,7 @@ public class ItemListDisclosureItemNode: ListViewItemNode, ItemListItemNode {
                         centralContentHeight += additionalDetailLabelInfo.0.size.height
                     }
                     
-                    let titleFrame = CGRect(origin: CGPoint(x: leftInset, y: floor((height - centralContentHeight) / 2.0)), size: titleLayout.size)
+                    let titleFrame = CGRect(origin: CGPoint(x: leftInset, y: floorToScreenPixels((height - centralContentHeight) / 2.0) + 1.0), size: titleLayout.size)
                     strongSelf.titleNode.textNode.frame = titleFrame
                     
                     if let updateBadgeImage = updatedLabelBadgeImage {
@@ -748,7 +774,7 @@ public class ItemListDisclosureItemNode: ListViewItemNode, ItemListItemNode {
                     case .detailText, .multilineDetailText:
                         labelFrame = CGRect(origin: CGPoint(x: leftInset, y: titleFrame.maxY + titleSpacing), size: labelLayout.size)
                     default:
-                        labelFrame = CGRect(origin: CGPoint(x: params.width - rightInset - labelLayout.size.width, y: floor((height - labelLayout.size.height) / 2.0)), size: labelLayout.size)
+                        labelFrame = CGRect(origin: CGPoint(x: params.width - rightInset - labelLayout.size.width, y: floorToScreenPixels((height - labelLayout.size.height) / 2.0) + 1.0), size: labelLayout.size)
                     }
                     strongSelf.labelNode.frame = labelFrame
                     

@@ -10,15 +10,24 @@ public struct Namespaces {
         public static let ScheduledLocal: Int32 = 4
         public static let QuickReplyCloud: Int32 = 5
         public static let QuickReplyLocal: Int32 = 6
+        public static let EphemeralLocal: Int32 = 7
+        public static let EphemeralAnchored: Int32 = 8
+        public static let WelcomeMessageCloud: Int32 = 9
+        public static let WelcomeMessageLocal: Int32 = 10
         
         public static let allScheduled: Set<Int32> = Set([Namespaces.Message.ScheduledCloud, Namespaces.Message.ScheduledLocal])
         public static let allQuickReply: Set<Int32> = Set([Namespaces.Message.QuickReplyCloud, Namespaces.Message.QuickReplyLocal])
-        public static let allNonRegular: Set<Int32> = Set([Namespaces.Message.ScheduledCloud, Namespaces.Message.ScheduledLocal, Namespaces.Message.QuickReplyCloud, Namespaces.Message.QuickReplyLocal])
+        public static let allEphemeral: Set<Int32> = Set([Namespaces.Message.EphemeralLocal, Namespaces.Message.EphemeralAnchored])
+        public static let allWelcomeMessages: Set<Int32> = Set([Namespaces.Message.WelcomeMessageCloud, Namespaces.Message.WelcomeMessageLocal])
+        public static let allNonRegular: Set<Int32> = Set([Namespaces.Message.ScheduledCloud, Namespaces.Message.ScheduledLocal, Namespaces.Message.QuickReplyCloud, Namespaces.Message.QuickReplyLocal, Namespaces.Message.WelcomeMessageCloud, Namespaces.Message.WelcomeMessageLocal, Namespaces.Message.EphemeralAnchored])
         public static let allLocal: [Int32] = [
             Namespaces.Message.Local,
             Namespaces.Message.SecretIncoming,
             Namespaces.Message.ScheduledLocal,
-            Namespaces.Message.QuickReplyLocal
+            Namespaces.Message.QuickReplyLocal,
+            Namespaces.Message.EphemeralLocal,
+            Namespaces.Message.WelcomeMessageLocal,
+            Namespaces.Message.EphemeralAnchored
         ]
     }
     
@@ -97,6 +106,7 @@ public struct Namespaces {
         public static let CloudDisabledChannelStatusEmoji: Int32 = 28
         public static let CloudDefaultTagReactions: Int32 = 29
         public static let CloudUniqueStarGifts: Int32 = 30
+        public static let NewBotConnectionReviews: Int32 = 31
     }
     
     public struct CachedItemCollection {
@@ -149,6 +159,18 @@ public struct Namespaces {
         public static let cachedChatThemes: Int8 = 50
         public static let cachedLiveStorySendAsPeers: Int8 = 51
         public static let cachedGiftUpgradesAttributes: Int8 = 52
+        public static let cachedCloudAITextStyles: Int8 = 53
+        public static let cachedCommunityPeerLinkRequests: Int8 = 54
+        public static let richTextComposerDrafts: Int8 = 55
+        public static let cachedCurrencyRates: Int8 = 56
+        public static let cachedExistingWaltBalance: Int8 = 57
+        public static let notificationRequestMessageIds: Int8 = 58
+        public static let cachedWalletUserAddresses: Int8 = 59
+        /// The News feed's caches, told apart by the first byte of the key (FeedCache.swift).
+        /// TelegramCore's ids must stay below 64, where applicationSpecificItemCacheCollectionId starts.
+        public static let feed: Int8 = 60
+        public static let shareThemeBackdrops: Int8 = 61
+        public static let cachedUniqueStarGifts: Int8 = 62
     }
     
     public struct UnorderedItemList {
@@ -179,8 +201,10 @@ public extension MessageTags {
     static let unseenReaction = MessageTags(rawValue: 1 << 11)
     static let voice = MessageTags(rawValue: 1 << 12)
     static let roundVideo = MessageTags(rawValue: 1 << 13)
+    static let polls = MessageTags(rawValue: 1 << 14)
+    static let unseenPollVote = MessageTags(rawValue: 1 << 15)
     
-    static let all: MessageTags = [.photoOrVideo, .file, .music, .webPage, .voiceOrInstantVideo, .unseenPersonalMessage, .liveLocation, .gif, .photo, .video, .pinned, .unseenReaction, .voice, .roundVideo]
+    static let all: MessageTags = [.photoOrVideo, .file, .music, .webPage, .voiceOrInstantVideo, .unseenPersonalMessage, .liveLocation, .gif, .photo, .video, .pinned, .unseenReaction, .voice, .roundVideo, .polls, .unseenPollVote]
 }
 
 public extension GlobalMessageTags {
@@ -199,9 +223,10 @@ public extension PendingMessageActionType {
     static let consumeUnseenPersonalMessage = PendingMessageActionType(rawValue: 0)
     static let updateReaction = PendingMessageActionType(rawValue: 1)
     static let sendScheduledMessageImmediately = PendingMessageActionType(rawValue: 2)
-    static let readReaction = PendingMessageActionType(rawValue: 3)
+    static let readReactionOrPollVote = PendingMessageActionType(rawValue: 3)
     static let sendStarsReaction = PendingMessageActionType(rawValue: 4)
     static let sendPostponedPaidMessage = PendingMessageActionType(rawValue: 5)
+    static let walletTransfer = PendingMessageActionType(rawValue: 6)
 }
 
 public let peerIdNamespacesWithInitialCloudMessageHoles = [Namespaces.Peer.CloudUser, Namespaces.Peer.CloudGroup, Namespaces.Peer.CloudChannel]
@@ -234,6 +259,7 @@ public struct OperationLogTags {
     public static let SynchronizeViewStories = PeerOperationLogTag(value: 24)
     public static let SynchronizePeerStories = PeerOperationLogTag(value: 25)
     public static let SynchronizePinnedSavedChats = PeerOperationLogTag(value: 26)
+    public static let SynchronizeMarkAllUnseenPollVotes = PeerOperationLogTag(value: 27)
 }
 
 public struct LegacyPeerSummaryCounterTags: OptionSet, Sequence, Hashable {
@@ -324,6 +350,9 @@ private enum PreferencesKeyValues: Int32 {
     case globalPostSearchState = 46
     case savedMusicIds = 47
     case emojiGameInfo = 48
+    case webBrowserSettings = 49
+    case communitiesState = 50
+    case unreadCounterTagsState = 51
 }
 
 public func applicationSpecificPreferencesKey(_ value: Int32) -> ValueBoxKey {
@@ -342,6 +371,12 @@ public struct PreferencesKeys {
     public static let globalNotifications: ValueBoxKey = {
         let key = ValueBoxKey(length: 4)
         key.setInt32(0, value: PreferencesKeyValues.globalNotifications.rawValue)
+        return key
+    }()
+    
+    public static let unreadCounterTagsState: ValueBoxKey = {
+        let key = ValueBoxKey(length: 4)
+        key.setInt32(0, value: PreferencesKeyValues.unreadCounterTagsState.rawValue)
         return key
     }()
     
@@ -423,15 +458,21 @@ public struct PreferencesKeys {
         return key
     }()
     
-    public static let chatListFilters: ValueBoxKey = {
+    public static let webBrowserSettings: ValueBoxKey = {
         let key = ValueBoxKey(length: 4)
-        key.setInt32(0, value: PreferencesKeyValues.chatListFilters.rawValue)
+        key.setInt32(0, value: PreferencesKeyValues.webBrowserSettings.rawValue)
         return key
     }()
     
-    public static let peersNearby: ValueBoxKey = {
+    public static let communitiesState: ValueBoxKey = {
         let key = ValueBoxKey(length: 4)
-        key.setInt32(0, value: PreferencesKeyValues.peersNearby.rawValue)
+        key.setInt32(0, value: PreferencesKeyValues.communitiesState.rawValue)
+        return key
+    }()
+
+    public static let chatListFilters: ValueBoxKey = {
+        let key = ValueBoxKey(length: 4)
+        key.setInt32(0, value: PreferencesKeyValues.chatListFilters.rawValue)
         return key
     }()
     
@@ -611,6 +652,8 @@ private enum SharedDataKeyValues: Int32 {
     case wallapersState = 8
     case chatThemes = 10
     case deviceContacts = 11
+    case networkEngineSettings = 12
+    case networkEngineState = 13
 }
 
 public struct SharedDataKeys {
@@ -671,6 +714,18 @@ public struct SharedDataKeys {
     public static let deviceContacts: ValueBoxKey = {
         let key = ValueBoxKey(length: 4)
         key.setInt32(0, value: SharedDataKeyValues.deviceContacts.rawValue)
+        return key
+    }()
+    
+    public static let networkEngineSettings: ValueBoxKey = {
+        let key = ValueBoxKey(length: 4)
+        key.setInt32(0, value: SharedDataKeyValues.networkEngineSettings.rawValue)
+        return key
+    }()
+    
+    public static let networkEngineState: ValueBoxKey = {
+        let key = ValueBoxKey(length: 4)
+        key.setInt32(0, value: SharedDataKeyValues.networkEngineState.rawValue)
         return key
     }()
 }

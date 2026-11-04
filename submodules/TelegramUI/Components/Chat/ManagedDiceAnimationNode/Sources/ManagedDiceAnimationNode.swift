@@ -1,8 +1,8 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import SwiftSignalKit
 import AccountContext
@@ -28,7 +28,7 @@ private func animationItem(account: Account, emojis: Signal<[TelegramMediaFile],
             callbacks.append((success.frame, successCallback))
         }
         
-        if let _ = account.postbox.mediaBox.completedResourcePath(file.resource) {
+        if let _ = TelegramEngine(account: account).resources.completedResourcePath(id: EngineMediaResource.Id(file.resource.id)) {
             if immediate {
                 return .single(ManagedAnimationItem(source: .resource(account, EngineMediaResource(file.resource)), frames: .still(.end), duration: 0))
             } else {
@@ -137,13 +137,13 @@ public final class ManagedDiceAnimationNode: ManagedAnimationNode {
     
     public var success: (() -> Void)?
     
-    public init(context: AccountContext, emoji: String) {
+    public init(context: AccountContext, emoji: String, lottieSettings: LottieRenderingSettings) {
         self.context = context
         self.emoji = emoji
         
-        self.configuration.set(self.context.account.postbox.preferencesView(keys: [PreferencesKeys.appConfiguration])
+        self.configuration.set(self.context.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.ApplicationSpecificPreference(key: PreferencesKeys.appConfiguration))
         |> map { preferencesView -> InteractiveEmojiConfiguration? in
-            let appConfiguration: AppConfiguration = preferencesView.values[PreferencesKeys.appConfiguration]?.get(AppConfiguration.self) ?? .defaultValue
+            let appConfiguration: AppConfiguration = preferencesView?.get(AppConfiguration.self) ?? .defaultValue
             return InteractiveEmojiConfiguration.with(appConfiguration: appConfiguration)
         })
         self.emojis.set(context.engine.stickers.loadedStickerPack(reference: .dice(emoji), forceActualized: false)
@@ -160,7 +160,7 @@ public final class ManagedDiceAnimationNode: ManagedAnimationNode {
             }
         })
         
-        super.init(size: CGSize(width: 184.0, height: 184.0))
+        super.init(size: CGSize(width: 184.0, height: 184.0), lottieSettings: lottieSettings)
     }
     
     deinit {

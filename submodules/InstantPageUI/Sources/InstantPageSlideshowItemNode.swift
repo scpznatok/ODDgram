@@ -61,6 +61,12 @@ private final class InstantPageSlideshowItemNode: ASDisplayNode {
         }
         return nil
     }
+    
+    func updateExternalMediaDimensions(_ update: ((EngineMedia.Id, PixelDimensions) -> Void)?) {
+        if let node = self.contentNode as? InstantPageImageNode {
+            node.updateExternalMediaDimensions = update
+        }
+    }
 }
 
 private final class InstantPageSlideshowPagerNode: ASDisplayNode, ASScrollViewDelegate {
@@ -88,6 +94,13 @@ private final class InstantPageSlideshowPagerNode: ASDisplayNode, ASScrollViewDe
     }
     
     private var containerLayout: ContainerViewLayout?
+    var updateExternalMediaDimensions: ((EngineMedia.Id, PixelDimensions) -> Void)? {
+        didSet {
+            for node in self.itemNodes {
+                node.updateExternalMediaDimensions(self.updateExternalMediaDimensions)
+            }
+        }
+    }
     
     var centralItemIndexUpdated: (Int?) -> Void = { _ in }
     
@@ -195,6 +208,7 @@ private final class InstantPageSlideshowPagerNode: ASDisplayNode, ASScrollViewDe
         }
         
         let node = InstantPageSlideshowItemNode(contentNode: contentNode)
+        node.updateExternalMediaDimensions(self.updateExternalMediaDimensions)
         
         node.index = index
         return node
@@ -380,8 +394,13 @@ private final class InstantPageSlideshowPagerNode: ASDisplayNode, ASScrollViewDe
     }
 }
 
-final class InstantPageSlideshowNode: ASDisplayNode, InstantPageNode {
+final class InstantPageSlideshowNode: ASDisplayNode, InstantPageNode, InstantPageExternalMediaDimensionsNode {
     var medias: [InstantPageMedia] = []
+    var updateExternalMediaDimensions: ((EngineMedia.Id, PixelDimensions) -> Void)? {
+        didSet {
+            self.pagerNode.updateExternalMediaDimensions = self.updateExternalMediaDimensions
+        }
+    }
     
     private let pagerNode: InstantPageSlideshowPagerNode
     private let pageControlNode: PageControlNode
@@ -415,7 +434,7 @@ final class InstantPageSlideshowNode: ASDisplayNode, InstantPageNode {
         super.layout()
         
         self.pagerNode.frame = self.bounds
-        self.pagerNode.containerLayoutUpdated(ContainerViewLayout(size: self.bounds.size, metrics: LayoutMetrics(), deviceMetrics: .unknown(screenSize: CGSize(), statusBarHeight: 0.0, onScreenNavigationHeight: nil, screenCornerRadius: 0.0), intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false), transition: .immediate)
+        self.pagerNode.containerLayoutUpdated(ContainerViewLayout(size: self.bounds.size, metrics: LayoutMetrics(), deviceMetrics: .unknown(screenSize: CGSize(), statusBarHeight: 0.0, onScreenNavigationHeight: nil, screenCornerRadius: 0.0), intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), reservedCorners: .none, division: nil, additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false, presentedInFormSheet: false), transition: .immediate)
         
         self.pageControlNode.layer.transform = CATransform3DIdentity
         self.pageControlNode.frame = CGRect(origin: CGPoint(x: 0.0, y: self.bounds.size.height - 20.0), size: CGSize(width: self.bounds.size.width, height: 20.0))

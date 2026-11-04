@@ -1,4 +1,3 @@
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import MergeLists
@@ -18,10 +17,16 @@ public struct ChatMessageEntryAttributes: Equatable {
     public var updatingMedia: ChatUpdatingMessageMedia?
     public var isPlaying: Bool
     public var isCentered: Bool
-    public var authorStoryStats: PeerStoryStats?
+    public var authorStoryStats: EnginePeerStoryStats?
     public var displayContinueThreadFooter: Bool
+    public var pinToTop: Bool
+    public var isGiftMessageComposerPreview: Bool
+    /// Set on a message of an album shown alone, before the rest of the album is loaded: the stable id
+    /// of the album entry it becomes. The entry keeps that identity, so the album replaces it in place
+    /// rather than as a new row (a row held where it was scrolled to would otherwise be lost).
+    public var groupStableId: Int64?
     
-    public init(rank: CachedChannelAdminRank?, isContact: Bool, contentTypeHint: ChatMessageEntryContentType, updatingMedia: ChatUpdatingMessageMedia?, isPlaying: Bool, isCentered: Bool, authorStoryStats: PeerStoryStats?, displayContinueThreadFooter: Bool) {
+    public init(rank: CachedChannelAdminRank?, isContact: Bool, contentTypeHint: ChatMessageEntryContentType, updatingMedia: ChatUpdatingMessageMedia?, isPlaying: Bool, isCentered: Bool, authorStoryStats: EnginePeerStoryStats?, displayContinueThreadFooter: Bool, pinToTop: Bool, isGiftMessageComposerPreview: Bool = false) {
         self.rank = rank
         self.isContact = isContact
         self.contentTypeHint = contentTypeHint
@@ -30,6 +35,9 @@ public struct ChatMessageEntryAttributes: Equatable {
         self.isCentered = isCentered
         self.authorStoryStats = authorStoryStats
         self.displayContinueThreadFooter = displayContinueThreadFooter
+        self.pinToTop = pinToTop
+        self.isGiftMessageComposerPreview = isGiftMessageComposerPreview
+        self.groupStableId = nil
     }
     
     public init() {
@@ -41,25 +49,31 @@ public struct ChatMessageEntryAttributes: Equatable {
         self.isCentered = false
         self.authorStoryStats = nil
         self.displayContinueThreadFooter = false
+        self.pinToTop = false
+        self.isGiftMessageComposerPreview = false
+        self.groupStableId = nil
     }
 }
 
 public enum ChatInfoData: Equatable {
-    case botInfo(title: String, text: String, photo: TelegramMediaImage?, video: TelegramMediaFile?)
+    case botInfo(title: String, text: String, photo: TelegramMediaImage?, video: TelegramMediaFile?, peer: EnginePeer?, managedByBot: EnginePeer?)
     case userInfo(peer: EnginePeer, verification: PeerVerification?, registrationDate: String?, phoneCountry: String?, groupsInCommonCount: Int32)
     case newThreadInfo
 }
 
 public enum ChatHistoryEntry: Identifiable, Comparable {
-    case MessageEntry(Message, ChatPresentationData, Bool, MessageHistoryEntryLocation?, ChatHistoryMessageSelection, ChatMessageEntryAttributes)
-    case MessageGroupEntry(Int64, [(Message, Bool, ChatHistoryMessageSelection, ChatMessageEntryAttributes, MessageHistoryEntryLocation?)], ChatPresentationData)
-    case UnreadEntry(MessageIndex, ChatPresentationData)
-    case ReplyCountEntry(MessageIndex, Bool, Int, ChatPresentationData)
+    case MessageEntry(EngineRawMessage, ChatPresentationData, Bool, EngineMessageHistoryEntryLocation?, ChatHistoryMessageSelection, ChatMessageEntryAttributes)
+    case MessageGroupEntry(Int64, [(EngineRawMessage, Bool, ChatHistoryMessageSelection, ChatMessageEntryAttributes, EngineMessageHistoryEntryLocation?)], ChatPresentationData)
+    case UnreadEntry(EngineMessage.Index, ChatPresentationData)
+    case ReplyCountEntry(EngineMessage.Index, Bool, Int, ChatPresentationData)
     case ChatInfoEntry(ChatInfoData, ChatPresentationData)
     
     public var stableId: UInt64 {
         switch self {
         case let .MessageEntry(message, _, _, _, _, attributes):
+            if let groupStableId = attributes.groupStableId {
+                return UInt64(bitPattern: groupStableId) | ((UInt64(2) << 40))
+            }
             let type: UInt64
             switch attributes.contentTypeHint {
             case .generic:
@@ -86,7 +100,7 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
         }
     }
     
-    public var index: MessageIndex {
+    public var index: EngineMessage.Index {
         switch self {
         case let .MessageEntry(message, _, _, _, _, _):
             return message.index
@@ -99,14 +113,14 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
         case let .ChatInfoEntry(infoData, _):
             switch infoData {
             case .newThreadInfo:
-                return MessageIndex.absoluteUpperBound()
+                return EngineMessage.Index.absoluteUpperBound()
             default:
-                return MessageIndex.absoluteLowerBound()
+                return EngineMessage.Index.absoluteLowerBound()
             }
         }
     }
     
-    public var firstIndex: MessageIndex {
+    public var firstIndex: EngineMessage.Index {
         switch self {
             case let .MessageEntry(message, _, _, _, _, _):
                 return message.index
@@ -119,9 +133,9 @@ public enum ChatHistoryEntry: Identifiable, Comparable {
             case let .ChatInfoEntry(infoData, _):
                 switch infoData {
                 case .newThreadInfo:
-                    return MessageIndex.absoluteUpperBound()
+                    return EngineMessage.Index.absoluteUpperBound()
                 default:
-                    return MessageIndex.absoluteLowerBound()
+                    return EngineMessage.Index.absoluteLowerBound()
                 }
         }
     }

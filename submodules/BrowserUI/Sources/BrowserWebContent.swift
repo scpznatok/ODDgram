@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import ComponentFlow
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -13,7 +13,7 @@ import AccountContext
 import AppBundle
 import PromptUI
 import SafariServices
-import ShareController
+
 import UndoUI
 import LottieComponent
 import MultilineTextComponent
@@ -236,8 +236,9 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
     var getNavigationController: () -> NavigationController? = { return nil }
     var cancelInteractiveTransitionGestures: () -> Void = {}
     
-    private var tempFile: TempBoxFile?
+    private var tempFile: EngineTempBoxFile?
     private var disposeTrustedDomain: (() -> Void)?
+    private var pendingMainFrameUrl: URL?
     
     init(context: AccountContext, presentationData: PresentationData, url: String, preferredConfiguration: WKWebViewConfiguration? = nil) {
         self.context = context
@@ -321,7 +322,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
         var request: URLRequest?
         if url.hasPrefix("file://") {
             var updatedPath = url
-            let tempFile = TempBox.shared.file(path: url.replacingOccurrences(of: "file://", with: ""), fileName: "file.xlsx")
+            let tempFile = EngineTempBox.shared.file(path: url.replacingOccurrences(of: "file://", with: ""), fileName: "file.xlsx")
             updatedPath = tempFile.path
             self.tempFile = tempFile
             
@@ -335,6 +336,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
         
         self._state = BrowserContentState(title: title, url: url, estimatedProgress: 0.1, readingProgress: 0.0, contentType: .webPage)
         self.statePromise = Promise<BrowserContentState>(self._state)
+        self.pendingMainFrameUrl = request?.url
         
         super.init(frame: .zero)
         
@@ -423,16 +425,8 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
         case "oauth_request":
             let url = json?["url"] as? String
             if let url {
-                let securityOrigin = message.frameInfo.securityOrigin
-                var origin = ""
-                origin.append(securityOrigin.protocol)
-                origin.append("://")
-                origin.append(securityOrigin.host)
-                if securityOrigin.port != 0 {
-                    origin.append(":")
-                    origin.append("\(securityOrigin.port)")
-                }
-                                
+                let origin = message.frameInfo.securityOriginString
+                
                 let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
                 let subject: MessageActionUrlSubject = .url(url: url, inAppOrigin: origin)
                 let _ = (self.context.engine.messages.requestMessageActionUrlAuth(subject: subject)
@@ -441,26 +435,17 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                         return
                     }
                     var dismissImpl: (() -> Void)?
-                    let controller = AuthConfirmationScreen(context: self.context, requestSubject: subject, subject: result, completion: { [weak self] accountContext, accountPeer, authResult in
+                    let controller = AuthConfirmationScreen(context: self.context, requestSubject: subject, subject: result, completion: { [weak self] accountContext, accountPeer, authResult, disposable in
                         guard let self else {
                             return
                         }
                         switch authResult {
                         case let .accept(allowWriteAccess, sharePhoneNumber, matchCode):
-                            let signal: Signal<MessageActionUrlAuthResult, MessageActionUrlAuthError>
-                            if accountContext === context {
-                                signal = accountContext.engine.messages.acceptMessageActionUrlAuth(subject: subject, allowWriteAccess: allowWriteAccess, sharePhoneNumber: sharePhoneNumber, matchCode: matchCode)
-                            } else {
-                                accountContext.account.shouldBeServiceTaskMaster.set(.single(.now))
-                                signal = accountContext.engine.messages.requestMessageActionUrlAuth(subject: subject)
-                                |> castError(MessageActionUrlAuthError.self)
-                                |> mapToSignal { result in
-                                    return accountContext.engine.messages.acceptMessageActionUrlAuth(subject: subject, allowWriteAccess: allowWriteAccess, sharePhoneNumber: sharePhoneNumber, matchCode: matchCode)
-                                } |> afterDisposed {
-                                    accountContext.account.shouldBeServiceTaskMaster.set(.single(.never))
-                                }
+                            let signal = accountContext.engine.messages.acceptMessageActionUrlAuth(subject: subject, allowWriteAccess: allowWriteAccess, sharePhoneNumber: sharePhoneNumber, matchCode: matchCode)
+                            |> afterDisposed {
+                                disposable.dispose()
                             }
-                            
+                                                        
                             let _ = (signal
                             |> deliverOnMainQueue).start(next: { authResult in
                                 dismissImpl?()
@@ -553,7 +538,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
             fileName = "default"
         }
         
-        let tempFile = TempBox.shared.file(path: path, fileName: fileName)
+        let tempFile = EngineTempBox.shared.file(path: path, fileName: fileName)
         let fileUrl = URL(fileURLWithPath: tempFile.path)
         
         let controller = legacyICloudFilePicker(theme: self.presentationData.theme, mode: .export, url: fileUrl, documentTypes: [], forceDarkTheme: false, dismissed: {}, completion: { _ in
@@ -819,7 +804,8 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                         theme: self.presentationData.theme,
                         title: self.presentationData.strings.Browser_ErrorTitle,
                         text: error.localizedDescription,
-                        insets: insets
+                        insets: insets,
+                        lottieSettings: self.context.lottieRenderingSettings
                     )
                 ),
                 environment: {},
@@ -938,6 +924,13 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
             self.ignoreUpdatesUntilScrollingStopped = true
         }
     }
+
+    private func updatePendingMainFrameUrl(for navigationAction: WKNavigationAction) {
+        guard navigationAction.targetFrame?.isMainFrame == true, let url = navigationAction.request.url, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+            return
+        }
+        self.pendingMainFrameUrl = url
+    }
         
     @available(iOS 13.0, *)
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
@@ -969,10 +962,12 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                         }
                         self.context.sharedContext.openExternalUrl(context: self.context, urlContext: .generic, url: url, forceExternal: true, presentationData: self.presentationData, navigationController: nil, dismissInput: {})
                     } else {
+                        self.updatePendingMainFrameUrl(for: navigationAction)
                         decisionHandler(.allow, preferences)
                     }
                 }
             } else {
+                self.updatePendingMainFrameUrl(for: navigationAction)
                 decisionHandler(.allow, preferences)
             }
         }
@@ -1010,9 +1005,11 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                 self.minimize()
                 self.openAppUrl(url)
             } else {
+                self.updatePendingMainFrameUrl(for: navigationAction)
                 decisionHandler(.allow)
             }
         } else {
+            self.updatePendingMainFrameUrl(for: navigationAction)
             decisionHandler(.allow)
         }
     }
@@ -1059,7 +1056,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
         }
         
         if let (path, fileName) = self.downloadArguments {
-            let tempFile = TempBox.shared.file(path: path, fileName: fileName)
+            let tempFile = EngineTempBox.shared.file(path: path, fileName: fileName)
             let url = URL(fileURLWithPath: tempFile.path)
             
             if fileName.hasSuffix(".pkpass") {
@@ -1095,9 +1092,13 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
             completionHandler(.performDefaultHandling, nil)
             return
         }
+        let topLevelUrl = self.pendingMainFrameUrl ?? webView.url
+        guard browserHTTPAuthChallengeMatchesTopLevelOrigin(topLevelUrl: topLevelUrl, protectionSpace: challenge.protectionSpace) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
         var completed = false
-                
-        let host = webView.url?.host ?? ""
+        let host = challenge.protectionSpace.host
         
         let authController = authController(
             sharedContext: self.context.sharedContext,
@@ -1137,6 +1138,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
     private var instantPageResources: [Any]?
     
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        self.pendingMainFrameUrl = nil
         if let _ = self.currentError {
             self.currentError = nil
             if let (size, insets, fullInsets, safeInsets) = self.validLayout {
@@ -1197,7 +1199,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                                 }
                                 self.instantPage = webPage
                                 self.instantPageResources = resources
-                                let _ = (updatedRemoteWebpage(postbox: self.context.account.postbox, network: self.context.account.network, accountPeerId: self.context.account.peerId, webPage: WebpageReference(TelegramMediaWebpage(webpageId: MediaId(namespace: 0, id: 0), content: .Loaded(TelegramMediaWebpageLoadedContent(url: self._state.url, displayUrl: "", hash: 0, type: nil, websiteName: nil, title: nil, text: nil, embedUrl: nil, embedType: nil, embedSize: nil, duration: nil, author: nil, isMediaLargeByDefault: nil, imageIsVideoCover: false, image: nil, file: nil, story: nil, attributes: [], instantPage: nil)))))
+                                let _ = (updatedRemoteWebpage(postbox: self.context.account.postbox, network: self.context.account.network, accountPeerId: self.context.account.peerId, webPage: WebpageReference(TelegramMediaWebpage(webpageId: EngineMedia.Id(namespace: 0, id: 0), content: .Loaded(TelegramMediaWebpageLoadedContent(url: self._state.url, displayUrl: "", hash: 0, type: nil, websiteName: nil, title: nil, text: nil, embedUrl: nil, embedType: nil, embedSize: nil, duration: nil, author: nil, isMediaLargeByDefault: nil, imageIsVideoCover: false, image: nil, file: nil, story: nil, attributes: [], instantPage: nil)))))
                                 |> deliverOnMainQueue).start(next: { [weak self] webPage in
                                     guard let self, let webPage, case let .Loaded(result) = webPage.content, let _ = result.instantPage else {
                                         return
@@ -1220,7 +1222,11 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
     }
     
     func requestSaveToFiles() {
-        self.webView.evaluateJavaScript("document.contentType") { result, _ in
+        self.webView.evaluateJavaScript("document.contentType") { [weak self] result, _ in
+            guard let self else {
+                return
+            }
+
             guard let contentType = result as? String else {
                 return
             }
@@ -1232,7 +1238,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                     let path = NSTemporaryDirectory() + NSUUID().uuidString
                     let _ = try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
                     
-                    let tempFile = TempBox.shared.file(path: path, fileName: "\(self._state.title).webarchive")
+                    let tempFile = EngineTempBox.shared.file(path: path, fileName: "\(self._state.title).webarchive")
                     let url = URL(fileURLWithPath: tempFile.path)
                     
                     let controller = legacyICloudFilePicker(theme: self.presentationData.theme, mode: .export, url: url, documentTypes: [], forceDarkTheme: false, dismissed: {}, completion: { _ in
@@ -1371,7 +1377,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
             fileName = "default"
         }
         
-        let tempFile = TempBox.shared.file(path: path, fileName: fileName)
+        let tempFile = EngineTempBox.shared.file(path: path, fileName: fileName)
         let fileUrl = URL(fileURLWithPath: tempFile.path)
         
         let controller = legacyICloudFilePicker(theme: self.presentationData.theme, mode: .export, url: fileUrl, documentTypes: [], forceDarkTheme: false, dismissed: {}, completion: { _ in
@@ -1382,6 +1388,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
     
     
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        self.pendingMainFrameUrl = nil
         if [-1003, -1100].contains((error as NSError).code) {
             if let url = (error as NSError).userInfo["NSErrorFailingURLKey"] as? URL, url.absoluteString.hasPrefix("itms-appss:") {
             } else {
@@ -1589,10 +1596,9 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
     
     private func share(url: String) {
         let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
-        let shareController = ShareController(context: self.context, subject: .url(url))
-        shareController.actionCompleted = { [weak self] in
+        let shareController = self.context.sharedContext.makeShareScreen(context: self.context, params: ShareControllerParams(subject: .url(url), actionCompleted: { [weak self] in
             self?.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.Conversation_LinkCopied), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), nil)
-        }
+        }))
         self.present(shareController, nil)
     }
     
@@ -1691,9 +1697,9 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                         
                         if let favicon, let imageData = favicon.pngData() {
                             let resource = LocalFileMediaResource(fileId: Int64.random(in: Int64.min ... Int64.max))
-                            self.context.account.postbox.mediaBox.storeResourceData(resource.id, data: imageData)
+                            self.context.engine.resources.storeResourceData(id: EngineMediaResource.Id(resource.id), data: imageData)
                             image = TelegramMediaImage(
-                                imageId: MediaId(namespace: Namespaces.Media.LocalImage, id: Int64.random(in: Int64.min ... Int64.max)),
+                                imageId: EngineMedia.Id(namespace: Namespaces.Media.LocalImage, id: Int64.random(in: Int64.min ... Int64.max)),
                                 representations: [
                                     TelegramMediaImageRepresentation(
                                         dimensions: PixelDimensions(width: Int32(favicon.size.width), height: Int32(favicon.size.height)),
@@ -1711,7 +1717,7 @@ final class BrowserWebContent: UIView, BrowserContent, WKNavigationDelegate, WKU
                             )
                         }
                         
-                        let webPage = TelegramMediaWebpage(webpageId: MediaId(namespace: 0, id: 0), content: .Loaded(TelegramMediaWebpageLoadedContent(
+                        let webPage = TelegramMediaWebpage(webpageId: EngineMedia.Id(namespace: 0, id: 0), content: .Loaded(TelegramMediaWebpageLoadedContent(
                             url: self._state.url,
                             displayUrl: self._state.url,
                             hash: 0,
@@ -1764,16 +1770,20 @@ private final class ErrorComponent: CombinedComponent {
     let text: String
     let insets: UIEdgeInsets
   
+    let lottieSettings: LottieRenderingSettings
+
     init(
         theme: PresentationTheme,
         title: String,
         text: String,
-        insets: UIEdgeInsets
+        insets: UIEdgeInsets,
+        lottieSettings: LottieRenderingSettings
     ) {
         self.theme = theme
         self.title = title
         self.text = text
         self.insets = insets
+        self.lottieSettings = lottieSettings
     }
     
     static func ==(lhs: ErrorComponent, rhs: ErrorComponent) -> Bool {
@@ -1817,7 +1827,8 @@ private final class ErrorComponent: CombinedComponent {
             
             let animation = animation.update(
                 component: LottieComponent(
-                    content: LottieComponent.AppBundleContent(name: "ChatListNoResults")
+                    content: LottieComponent.AppBundleContent(name: "ChatListNoResults"),
+                    lottieSettings: context.component.lottieSettings
                 ),
                 environment: {},
                 availableSize: CGSize(width: animationSize, height: animationSize),
@@ -2043,5 +2054,20 @@ private func findScrollView(view: UIView?) -> UIScrollView? {
         return findScrollView(view: view.superview)
     } else {
         return nil
+    }
+}
+
+private extension WKFrameInfo {
+    var securityOriginString: String {
+        let securityOrigin = self.securityOrigin
+        var origin = ""
+        origin.append(securityOrigin.protocol)
+        origin.append("://")
+        origin.append(securityOrigin.host)
+        if securityOrigin.port != 0 {
+            origin.append(":")
+            origin.append("\(securityOrigin.port)")
+        }
+        return origin
     }
 }

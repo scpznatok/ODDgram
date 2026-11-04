@@ -1,6 +1,6 @@
 import Foundation
 import Postbox
-import TelegramApi
+internal import TelegramApi
 
 
 private func collectPreCachedResources(for photo: Api.Photo) -> [(MediaResource, Data)]? {
@@ -198,6 +198,60 @@ extension Api.Message {
     }
 }
 
+extension Api.EphemeralMessage {
+    var peerId: PeerId? {
+        switch self {
+        case let .ephemeralMessage(messageData):
+            let peerId = messageData.peerId?.peerId
+            if (messageData.flags & (1 << 5)) != 0 {
+                return peerId
+            }
+            let receiverPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(messageData.receiverId))
+            if (messageData.flags & (1 << 0)) != 0 {
+                return peerId ?? receiverPeerId
+            }
+            // Preserve the chat where the bot was invoked. Only a missing peer or
+            // the recipient's own peer identifies an incoming private bot dialog.
+            if let peerId, peerId != receiverPeerId {
+                return peerId
+            }
+            return messageData.fromId.peerId
+        }
+    }
+
+    var id: MessageId? {
+        switch self {
+        case let .ephemeralMessage(messageData):
+            guard let peerId = self.peerId else {
+                return nil
+            }
+            let namespace: MessageId.Namespace
+            if (messageData.flags & (1 << 5)) != 0 {
+                namespace = Namespaces.Message.WelcomeMessageCloud
+            } else if messageData.anchorMsgId != nil {
+                namespace = Namespaces.Message.EphemeralAnchored
+            } else {
+                namespace = Namespaces.Message.EphemeralLocal
+            }
+            return MessageId(peerId: peerId, namespace: namespace, id: messageData.id)
+        }
+    }
+
+    var preCachedResources: [(MediaResource, Data)]? {
+        switch self {
+        case let .ephemeralMessage(messageData):
+            return messageData.media?.preCachedResources
+        }
+    }
+
+    var preCachedStories: [StoryId: Api.StoryItem]? {
+        switch self {
+        case let .ephemeralMessage(messageData):
+            return messageData.media?.preCachedStories
+        }
+    }
+}
+
 extension Api.Chat {
     var peerId: PeerId {
         switch self {
@@ -215,6 +269,12 @@ extension Api.Chat {
                 return PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id))
             case let .channelForbidden(channelForbiddenData):
                 let id = channelForbiddenData.id
+                return PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id))
+            case let .community(communityData):
+                let id = communityData.id
+                return PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id))
+            case let .communityForbidden(communityForbiddenData):
+                let id = communityForbiddenData.id
                 return PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id))
         }
     }
@@ -254,7 +314,22 @@ extension Api.Dialog {
         switch self {
             case let .dialog(dialogData):
                 return dialogData.peer.peerId
+            case let .dialogCommunity(dialogCommunityData):
+                return peerIdFromApiCommunityId(dialogCommunityData.communityId)
             case .dialogFolder:
+                return nil
+        }
+    }
+}
+
+extension Api.DialogPeer {
+    var peerId: PeerId? {
+        switch self {
+            case let .dialogPeer(dialogPeerData):
+                return dialogPeerData.peer.peerId
+            case let .dialogPeerCommunity(dialogPeerCommunityData):
+                return peerIdFromApiCommunityId(dialogPeerCommunityData.communityId)
+            case .dialogPeerFolder:
                 return nil
         }
     }
@@ -327,6 +402,22 @@ extension Api.Update {
     
     var peerIds: [PeerId] {
         switch self {
+            case let .updateSentWalletTransaction(data):
+                if case let .walletTransaction(value)? = data.transaction {
+                    switch value.peer {
+                    case let .walletTransactionPeerUser(peer):
+                        return [PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(peer.userId))]
+                    case let .walletTransactionPeerChannel(peer):
+                        return [PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(peer.channelId))]
+                    default:
+                        break
+                    }
+                }
+                if case let .walletTransaction(value)? = data.transaction,
+                   case let .walletTransactionPeerChannel(peer) = value.peer {
+                    return [PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(peer.channelId))]
+                }
+                return []
             case let .updateChannel(updateChannelData):
                 let channelId = updateChannelData.channelId
                 return [PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(channelId))]
@@ -376,6 +467,12 @@ extension Api.Update {
             case let .updateEditMessage(updateEditMessageData):
                 let message = updateEditMessageData.message
                 return apiMessagePeerIds(message)
+            case let .updateNewEphemeralMessage(updateNewEphemeralMessageData):
+                return apiEphemeralMessagePeerIds(updateNewEphemeralMessageData.message)
+            case let .updateEditEphemeralMessage(updateEditEphemeralMessageData):
+                return apiEphemeralMessagePeerIds(updateEditEphemeralMessageData.message)
+            case let .updateDeleteEphemeralMessages(updateDeleteEphemeralMessagesData):
+                return [updateDeleteEphemeralMessagesData.peer.peerId]
             case let .updateReadChannelInbox(updateReadChannelInboxData):
                 let channelId = updateReadChannelInboxData.channelId
                 return [PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(channelId))]
@@ -750,7 +847,7 @@ extension Api.InputMedia {
             if let _ = stickers {
                 flags |= (1 << 0)
             }
-            return .inputMediaUploadedPhoto(.init(flags: flags, file: file, stickers: stickers, ttlSeconds: ttlSeconds))
+            return .inputMediaUploadedPhoto(.init(flags: flags, file: file, stickers: stickers, ttlSeconds: ttlSeconds, video: nil))
         default:
             return self
         }

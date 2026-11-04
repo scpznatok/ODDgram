@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import ComponentFlow
@@ -187,7 +188,8 @@ private final class SheetPageContent: CombinedComponent {
                     component: LottieComponent(
                         content: LottieComponent.AppBundleContent(name: "Cop"),
                         startingPosition: .begin,
-                        playOnce: state.playOnce
+                        playOnce: state.playOnce,
+                        lottieSettings: component.context.lottieRenderingSettings
                     ),
                     environment: {},
                     availableSize: CGSize(width: animationHeight, height: animationHeight),
@@ -202,6 +204,7 @@ private final class SheetPageContent: CombinedComponent {
                 items.append(
                     AnyComponentWithIdentity(id: items.count, component: AnyComponent(ListMultilineTextFieldItemComponent(
                         externalState: state.textInputState,
+                        style: .glass,
                         context: component.context,
                         theme: theme,
                         strings: strings,
@@ -218,12 +221,6 @@ private final class SheetPageContent: CombinedComponent {
                             state?.updated()
                         },
                         returnKeyAction: {
-//                            guard let self else {
-//                                return
-//                            }
-//                            if let titleView = self.introSection.findTaggedView(tag: self.textInputTag) as? ListMultilineTextFieldItemComponent.View {
-//                                titleView.endEditing(true)
-//                            }
                         },
                         textUpdateTransition: .spring(duration: 0.4),
                         tag: textInputTag
@@ -654,7 +651,7 @@ private final class SheetContainerComponent: CombinedComponent {
                         metrics: environment.metrics,
                         deviceMetrics: environment.deviceMetrics,
                         isDisplaying: environment.value.isVisible,
-                        isCentered: environment.metrics.widthClass == .regular,
+                        isCentered: environment.presentsFloatingPanels,
                         hasInputHeight: !environment.inputHeight.isZero,
                         regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                         dismiss: { animated in
@@ -687,11 +684,14 @@ private final class SheetContainerComponent: CombinedComponent {
                     deviceMetrics: environment.deviceMetrics,
                     intrinsicInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: max(environment.safeInsets.bottom, sheetExternalState.contentHeight), right: 0.0),
                     safeInsets: UIEdgeInsets(top: 0.0, left: environment.safeInsets.left, bottom: 0.0, right: environment.safeInsets.right),
+                    reservedCorners: environment.reservedCorners,
+                    division: nil,
                     additionalInsets: .zero,
-                    statusBarHeight: environment.statusBarHeight,
+                    statusBarHeight: environment.fullStatusBarHeight,
                     inputHeight: nil,
                     inputHeightIsInteractivellyChanging: false,
-                    inVoiceOver: false
+                    inVoiceOver: false,
+                    presentedInFormSheet: false
                 )
                 controller.presentationContext.containerLayoutUpdated(layout, transition: context.transition.containedViewLayoutTransition)
             }

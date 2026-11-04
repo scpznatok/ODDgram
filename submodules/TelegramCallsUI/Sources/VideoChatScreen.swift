@@ -1,11 +1,11 @@
 import Foundation
+import LottieSettings
 import AVFoundation
 import UIKit
 import AsyncDisplayKit
 import Display
 import ComponentFlow
 import ViewControllerComponent
-import Postbox
 import TelegramCore
 import AccountContext
 import PlainButtonComponent
@@ -18,7 +18,7 @@ import DeviceAccess
 import TelegramVoip
 import PresentationDataUtils
 import UndoUI
-import ShareController
+
 import AvatarNode
 import TelegramAudio
 import LegacyComponents
@@ -37,6 +37,7 @@ import EntityKeyboard
 import GlassBackgroundComponent
 import PremiumUI
 import VideoChatMicButtonComponent
+import AlertComponent
 
 extension VideoChatCall {
     var myAudioLevelAndSpeaking: Signal<(Float, Bool), NoError> {
@@ -336,6 +337,13 @@ final class VideoChatScreenComponent: Component {
         var currentUpdatingAvatar: (TelegramMediaImageRepresentation, Float)?
         
         var maxVideoQuality: Int = Int.max
+        
+        private var isPinchToZoomActive: Bool {
+            if let participantsView = self.participants.view as? VideoChatParticipantsComponent.View {
+                return participantsView.isPinchToZoomActive
+            }
+            return false
+        }
         
         override init(frame: CGRect) {
             self.containerView = UIView()
@@ -670,7 +678,14 @@ final class VideoChatScreenComponent: Component {
                 return
             }
             
-            let _ = (groupCall.accountContext.account.postbox.loadedPeerWithId(peerId)
+            let _ = (groupCall.accountContext.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+            |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                if let peer {
+                    return .single(peer)
+                } else {
+                    return .never()
+                }
+            }
             |> deliverOnMainQueue).start(next: { [weak self] chatPeer in
                 guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
                     return
@@ -678,7 +693,7 @@ final class VideoChatScreenComponent: Component {
                 guard let callState = self.callState, let peer = self.peer else {
                     return
                 }
-                
+
                 let initialTitle = callState.title
 
                 let title: String
@@ -691,7 +706,7 @@ final class VideoChatScreenComponent: Component {
                     text = environment.strings.VoiceChat_EditTitleText
                 }
 
-                let controller = voiceChatTitleEditController(context: groupCall.accountContext, forceTheme: environment.theme, title: title, text: text, placeholder: EnginePeer(chatPeer).displayTitle(strings: environment.strings, displayOrder: groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).nameDisplayOrder), value: initialTitle, maxLength: 40, apply: { [weak self] title in
+                let controller = voiceChatTitleEditController(context: groupCall.accountContext, forceTheme: environment.theme, title: title, text: text, placeholder: chatPeer.displayTitle(strings: environment.strings, displayOrder: groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).nameDisplayOrder), value: initialTitle, maxLength: 40, apply: { [weak self] title in
                     guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
                         return
                     }
@@ -789,7 +804,14 @@ final class VideoChatScreenComponent: Component {
             }
             
             if let peerId = groupCall.peerId {
-                let _ = (groupCall.accountContext.account.postbox.loadedPeerWithId(peerId)
+                let _ = (groupCall.accountContext.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+                |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                    if let peer {
+                        return .single(peer)
+                    } else {
+                        return .never()
+                    }
+                }
                 |> deliverOnMainQueue).start(next: { [weak self] peer in
                     guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
                         return
@@ -818,8 +840,13 @@ final class VideoChatScreenComponent: Component {
                             return formatSendTitle(environment.strings.VoiceChat_InviteLink_InviteListeners(Int32(count)))
                         })]
                     }
-                    let shareController = ShareController(context: groupCall.accountContext, subject: .url(inviteLinks.listenerLink), segmentedValues: segmentedValues, forceTheme: environment.theme, forcedActionTitle: environment.strings.VoiceChat_CopyInviteLink)
-                    shareController.completed = { [weak self] peerIds in
+                    let shareController = groupCall.accountContext.sharedContext.makeShareScreen(context: groupCall.accountContext, params: ShareControllerParams(subject: .url(inviteLinks.listenerLink), segmentedValues: segmentedValues, forceTheme: environment.theme, forcedActionTitle: environment.strings.VoiceChat_CopyInviteLink, actionCompleted: { [weak self] in
+                        guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
+                            return
+                        }
+                        let presentationData = groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
+                        self.presentToast(icon: .animation("anim_linkcopied"), text: presentationData.strings.VoiceChat_InviteLinkCopiedText, duration: 3)
+                    }, completed: { [weak self] peerIds in
                         guard let self, case let .group(groupCall) = self.currentCall else {
                             return
                         }
@@ -832,10 +859,10 @@ final class VideoChatScreenComponent: Component {
                             guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
                                 return
                             }
-                            
+
                             let peers = peerList.compactMap { $0 }
                             let presentationData = groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
-                            
+
                             let text: String
                             var isSavedMessages = false
                             if peers.count == 1, let peer = peers.first {
@@ -854,14 +881,7 @@ final class VideoChatScreenComponent: Component {
                             }
                             self.presentToast(icon: .animation(isSavedMessages ? "anim_savedmessages" : "anim_forward"), text: text, duration: 3)
                         })
-                    }
-                    shareController.actionCompleted = { [weak self] in
-                        guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
-                            return
-                        }
-                        let presentationData = groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
-                        self.presentToast(icon: .animation("anim_linkcopied"), text: presentationData.strings.VoiceChat_InviteLinkCopiedText, duration: 3)
-                    }
+                    }))
                     environment.controller()?.present(shareController, in: .window(.root))
                 })
             } else if groupCall.isConference {
@@ -869,8 +889,13 @@ final class VideoChatScreenComponent: Component {
                     return
                 }
                 
-                let shareController = ShareController(context: groupCall.accountContext, subject: .url(inviteLinks.listenerLink), forceTheme: environment.theme, forcedActionTitle: environment.strings.VoiceChat_CopyInviteLink)
-                shareController.completed = { [weak self] peerIds in
+                let shareController = groupCall.accountContext.sharedContext.makeShareScreen(context: groupCall.accountContext, params: ShareControllerParams(subject: .url(inviteLinks.listenerLink), forceTheme: environment.theme, forcedActionTitle: environment.strings.VoiceChat_CopyInviteLink, actionCompleted: { [weak self] in
+                    guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
+                        return
+                    }
+                    let presentationData = groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
+                    self.presentToast(icon: .animation("anim_linkcopied"), text: presentationData.strings.VoiceChat_InviteLinkCopiedText, duration: 3)
+                }, completed: { [weak self] peerIds in
                     guard let self, case let .group(groupCall) = self.currentCall else {
                         return
                     }
@@ -883,10 +908,10 @@ final class VideoChatScreenComponent: Component {
                         guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
                             return
                         }
-                        
+
                         let peers = peerList.compactMap { $0 }
                         let presentationData = groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
-                        
+
                         let text: String
                         var isSavedMessages = false
                         if peers.count == 1, let peer = peers.first {
@@ -905,14 +930,7 @@ final class VideoChatScreenComponent: Component {
                         }
                         self.presentToast(icon: .animation(isSavedMessages ? "anim_savedmessages" : "anim_forward"), text: text, duration: 3)
                     })
-                }
-                shareController.actionCompleted = { [weak self] in
-                    guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
-                        return
-                    }
-                    let presentationData = groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
-                    self.presentToast(icon: .animation("anim_linkcopied"), text: presentationData.strings.VoiceChat_InviteLinkCopiedText, duration: 3)
-                }
+                }))
                 environment.controller()?.present(shareController, in: .window(.root))
             }
         }
@@ -1076,8 +1094,6 @@ final class VideoChatScreenComponent: Component {
                 
                 if let callState = self.callState, callState.canManageCall {
                     let presentationData = groupCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
-                    let actionSheet = ActionSheetController(presentationData: presentationData)
-                    var items: [ActionSheetItem] = []
 
                     let leaveTitle: String
                     let leaveAndCancelTitle: String
@@ -1089,33 +1105,6 @@ final class VideoChatScreenComponent: Component {
                         leaveTitle = environment.strings.VoiceChat_LeaveConfirmation
                         leaveAndCancelTitle = isScheduled ? environment.strings.VoiceChat_LeaveAndCancelVoiceChat : environment.strings.VoiceChat_LeaveAndEndVoiceChat
                     }
-                    
-                    items.append(ActionSheetTextItem(title: leaveTitle))
-                    items.append(ActionSheetButtonItem(title: leaveAndCancelTitle, color: .destructive, action: { [weak self, weak actionSheet] in
-                        actionSheet?.dismissAnimated()
-                        
-                        guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
-                            return
-                        }
-                        let title: String
-                        let text: String
-                        if case let .channel(channel) = self.peer, case .broadcast = channel.info {
-                            title = isScheduled ? environment.strings.LiveStream_CancelConfirmationTitle : environment.strings.LiveStream_EndConfirmationTitle
-                            text = isScheduled ? environment.strings.LiveStream_CancelConfirmationText :  environment.strings.LiveStream_EndConfirmationText
-                        } else {
-                            title = isScheduled ? environment.strings.VoiceChat_CancelConfirmationTitle : environment.strings.VoiceChat_EndConfirmationTitle
-                            text = isScheduled ? environment.strings.VoiceChat_CancelConfirmationText :  environment.strings.VoiceChat_EndConfirmationText
-                        }
-
-                        if let _ = self.members {
-                            let alertController = textAlertController(context: groupCall.accountContext, forceTheme: environment.theme, title: title, text: text, actions: [TextAlertAction(type: .defaultAction, title: environment.strings.Common_Cancel, action: {}), TextAlertAction(type: .genericAction, title: isScheduled ? environment.strings.VoiceChat_CancelConfirmationEnd :  environment.strings.VoiceChat_EndConfirmationEnd, action: {
-                                action(true)
-                            })])
-                            environment.controller()?.present(alertController, in: .window(.root))
-                        } else {
-                            action(true)
-                        }
-                    }))
 
                     let leaveText: String
                     if case let .channel(channel) = self.peer, case .broadcast = channel.info {
@@ -1124,21 +1113,42 @@ final class VideoChatScreenComponent: Component {
                         leaveText = environment.strings.VoiceChat_LeaveVoiceChat
                     }
 
-                    items.append(ActionSheetButtonItem(title: leaveText, color: .accent, action: { [weak actionSheet] in
-                        actionSheet?.dismissAnimated()
-                        
-                        action(false)
-                    }))
-                    
-                    actionSheet.setItemGroups([
-                        ActionSheetItemGroup(items: items),
-                        ActionSheetItemGroup(items: [
-                            ActionSheetButtonItem(title: environment.strings.Common_Cancel, color: .accent, font: .bold, action: { [weak actionSheet] in
-                                actionSheet?.dismissAnimated()
-                            })
-                        ])
-                    ])
-                    environment.controller()?.present(actionSheet, in: .window(.root))
+                    let alertController = AlertScreen(
+                        configuration: AlertScreen.Configuration(actionAlignment: .vertical, dismissOnOutsideTap: true, allowInputInset: false),
+                        title: nil,
+                        text: leaveTitle,
+                        actions: [
+                            .init(title: leaveAndCancelTitle, type: .defaultDestructive, action: { [weak self] in
+                                guard let self, let environment = self.environment, case let .group(groupCall) = self.currentCall else {
+                                    return
+                                }
+                                let title: String
+                                let text: String
+                                if case let .channel(channel) = self.peer, case .broadcast = channel.info {
+                                    title = isScheduled ? environment.strings.LiveStream_CancelConfirmationTitle : environment.strings.LiveStream_EndConfirmationTitle
+                                    text = isScheduled ? environment.strings.LiveStream_CancelConfirmationText :  environment.strings.LiveStream_EndConfirmationText
+                                } else {
+                                    title = isScheduled ? environment.strings.VoiceChat_CancelConfirmationTitle : environment.strings.VoiceChat_EndConfirmationTitle
+                                    text = isScheduled ? environment.strings.VoiceChat_CancelConfirmationText :  environment.strings.VoiceChat_EndConfirmationText
+                                }
+
+                                if let _ = self.members {
+                                    let alertController = textAlertController(context: groupCall.accountContext, forceTheme: environment.theme, title: title, text: text, actions: [TextAlertAction(type: .genericAction, title: environment.strings.Common_Cancel, action: {}), TextAlertAction(type: .defaultDestructiveAction, title: isScheduled ? environment.strings.VoiceChat_CancelConfirmationEnd : environment.strings.VoiceChat_EndConfirmationEnd, action: {
+                                        action(true)
+                                    })])
+                                    environment.controller()?.present(alertController, in: .window(.root))
+                                } else {
+                                    action(true)
+                                }
+                            }),
+                            .init(title: leaveText, type: .default, action: {
+                                action(false)
+                            }),
+                            .init(title: environment.strings.Common_Cancel)
+                        ],
+                        updatedPresentationData: (presentationData, .single(presentationData))
+                    )
+                    environment.controller()?.present(alertController, in: .window(.root))
                 } else {
                     action(false)
                 }
@@ -1402,7 +1412,7 @@ final class VideoChatScreenComponent: Component {
             )
             self.inputMediaInteraction?.forceTheme = defaultDarkColorPresentationTheme
             
-            let _ = (allowedStoryReactions(account: context.account)
+            let _ = (allowedStoryReactions(engine: context.engine)
             |> deliverOnMainQueue).start(next: { [weak self] reactionItems in
                 self?.reactionItems = reactionItems
             })
@@ -1464,6 +1474,7 @@ final class VideoChatScreenComponent: Component {
         
         func update(component: VideoChatScreenComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<ViewControllerComponentContainer.Environment>, transition: ComponentTransition) -> CGSize {
             self.isUpdating = true
+            let lottieSettings = component.initialCall.accountContext.lottieRenderingSettings
             defer {
                 self.isUpdating = false
             }
@@ -1609,7 +1620,7 @@ final class VideoChatScreenComponent: Component {
                             }
                             
                             if let expandedParticipantsVideoState = self.expandedParticipantsVideoState, let members {
-                                if CFAbsoluteTimeGetCurrent() > self.focusedSpeakerAutoSwitchDeadline, !expandedParticipantsVideoState.isMainParticipantPinned, let participant = members.participants.first(where: { participant in
+                                if CFAbsoluteTimeGetCurrent() > self.focusedSpeakerAutoSwitchDeadline, !expandedParticipantsVideoState.isMainParticipantPinned, !self.isPinchToZoomActive, let participant = members.participants.first(where: { participant in
                                     if let callState = self.callState, participant.id == .peer(callState.myPeerId) {
                                         return false
                                     }
@@ -1804,7 +1815,14 @@ final class VideoChatScreenComponent: Component {
                         }
                     })
                     
-                    let currentAccountPeer = groupCall.accountContext.account.postbox.loadedPeerWithId(groupCall.accountContext.account.peerId)
+                    let currentAccountPeer = groupCall.accountContext.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: groupCall.accountContext.account.peerId))
+                    |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                        if let peer {
+                            return .single(peer)
+                        } else {
+                            return .never()
+                        }
+                    }
                     |> map { peer in
                         return [FoundPeer(peer: peer, subscribers: nil)]
                     }
@@ -1887,11 +1905,10 @@ final class VideoChatScreenComponent: Component {
                                 }
                             }
                         } else {
-                            //TODO:localized
                             if event.joined {
-                                self.lastTitleEvent = "\(event.peer.compactDisplayTitle) joined"
+                                self.lastTitleEvent = environment.strings.VideoChat_StatusPeerJoined(event.peer.compactDisplayTitle).string
                             } else {
-                                self.lastTitleEvent = "\(event.peer.compactDisplayTitle) left"
+                                self.lastTitleEvent = environment.strings.VideoChat_StatusPeerLeft(event.peer.compactDisplayTitle).string
                             }
                             if !self.isUpdating {
                                 self.state?.updated(transition: .spring(duration: 0.4))
@@ -1966,7 +1983,7 @@ final class VideoChatScreenComponent: Component {
                             }
                             
                             if let expandedParticipantsVideoState = self.expandedParticipantsVideoState {
-                                if CFAbsoluteTimeGetCurrent() > self.focusedSpeakerAutoSwitchDeadline, !expandedParticipantsVideoState.isMainParticipantPinned, let participant = members.participants.first(where: { participant in
+                                if CFAbsoluteTimeGetCurrent() > self.focusedSpeakerAutoSwitchDeadline, !expandedParticipantsVideoState.isMainParticipantPinned, !self.isPinchToZoomActive, let participant = members.participants.first(where: { participant in
                                     if let callState = self.callState, participant.id == .peer(callState.myPeerId) {
                                         return false
                                     }
@@ -2280,7 +2297,8 @@ final class VideoChatScreenComponent: Component {
                             name: "anim_profilemore"
                         ),
                         color: .white,
-                        size: CGSize(width: 34.0, height: 34.0)
+                        size: CGSize(width: 34.0, height: 34.0),
+                        lottieSettings: lottieSettings
                     )),
                     background: AnyComponent(
                         GlassBackgroundComponent(size: CGSize(width: navigationButtonDiameter, height: navigationButtonDiameter), cornerRadius: navigationButtonDiameter * 0.5, isDark: true, tintColor: .init(kind: .custom(style: .default, color: panelColor)))
@@ -2330,7 +2348,21 @@ final class VideoChatScreenComponent: Component {
                 alphaTransition.setAlpha(view: navigationLeftButtonView, alpha: self.isAnimatedOutFromPrivateCall ? 0.0 : 1.0)
             }
             
-            let navigationRightButtonFrame = CGRect(origin: CGPoint(x: availableSize.width - rightInset - navigationButtonAreaWidth + floor((navigationButtonAreaWidth - navigationRightButtonSize.width) * 0.5) + navigationButtonInset, y: topInset + floor((navigationBarHeight - navigationRightButtonSize.height) * 0.5)), size: navigationRightButtonSize)
+            // iPhone Duo, unfolded portrait: the status island is wider than the side controls column's inset, so the
+            // close button keeps the island's inset from the edge instead of adding it to the column's.
+            let navigationRightButtonRowInset = max(rightInset, max(environment.safeInsets.right, 16.0) + environment.navigationBarTrailingButtonsInset)
+            let navigationRightButtonRowFrame = CGRect(origin: CGPoint(x: availableSize.width - navigationRightButtonRowInset - navigationButtonAreaWidth + floor((navigationButtonAreaWidth - navigationRightButtonSize.width) * 0.5) + navigationButtonInset, y: topInset + floor((navigationBarHeight - navigationRightButtonSize.height) * 0.5)), size: navigationRightButtonSize)
+            // iPhone Duo: the close button goes in the side strip, as a bar's back button does (this screen draws its own
+            // bar). Not where the column of call controls occupies the strip (folded landscape-left).
+            let navigationRightButtonFrame: CGRect
+            let isNavigationRightButtonInSideColumn: Bool
+            if let sideColumnFrame = environment.sideColumnNavigationButtonFrame, !(buttonsOnTheSide && sideColumnFrame.midX > availableSize.width * 0.5) {
+                navigationRightButtonFrame = CGRect(origin: CGPoint(x: sideColumnFrame.minX + floor((sideColumnFrame.width - navigationRightButtonSize.width) * 0.5), y: sideColumnFrame.minY + floor((sideColumnFrame.height - navigationRightButtonSize.height) * 0.5)), size: navigationRightButtonSize)
+                isNavigationRightButtonInSideColumn = true
+            } else {
+                navigationRightButtonFrame = navigationRightButtonRowFrame
+                isNavigationRightButtonInSideColumn = false
+            }
             if let navigationRightButtonView = self.navigationRightButton.view {
                 if navigationRightButtonView.superview == nil {
                     self.containerView.addSubview(navigationRightButtonView)
@@ -2372,7 +2404,10 @@ final class VideoChatScreenComponent: Component {
                     environment: {},
                     containerSize: CGSize(width: navigationButtonDiameter, height: navigationButtonDiameter)
                 )
-                let navigationSidebarButtonFrameValue = CGRect(origin: CGPoint(x: navigationRightButtonFrame.minX - 21.0 - navigationSidebarButtonSize.width, y: topInset + floor((navigationBarHeight - navigationSidebarButtonSize.height) * 0.5)), size: navigationSidebarButtonSize)
+                // With the close button in the side strip, the sidebar button takes its place at the end of the row, flush
+                // with the band's edge (not the close button's outward nudge, which would reach under the corner block).
+                let navigationSidebarButtonX: CGFloat = isNavigationRightButtonInSideColumn ? (availableSize.width - navigationRightButtonRowInset - navigationSidebarButtonSize.width) : (navigationRightButtonRowFrame.minX - 21.0 - navigationSidebarButtonSize.width)
+                let navigationSidebarButtonFrameValue = CGRect(origin: CGPoint(x: navigationSidebarButtonX, y: topInset + floor((navigationBarHeight - navigationSidebarButtonSize.height) * 0.5)), size: navigationSidebarButtonSize)
                 navigationSidebarButtonFrame = navigationSidebarButtonFrameValue
                 if let navigationSidebarButtonView = navigationSidebarButton.view {
                     var animateIn = false
@@ -2425,6 +2460,16 @@ final class VideoChatScreenComponent: Component {
             var maxTitleWidth: CGFloat = availableSize.width - leftInset - rightInset - navigationButtonAreaWidth * 2.0 - 4.0 * 2.0
             if isTwoColumnLayout {
                 maxTitleWidth -= 110.0
+            }
+            if environment.navigationBarTrailingButtonsInset > 0.0 {
+                // iPhone Duo, unfolded portrait: the buttons on the right sit clear of the status island. A centered
+                // title keeps clear of it on both sides; a left-aligned one (the wide layout) runs up to those buttons.
+                if isLandscape {
+                    let titleMaxX = (navigationSidebarButtonFrame ?? navigationRightButtonRowFrame).minX - 8.0
+                    maxTitleWidth = min(maxTitleWidth, max(1.0, titleMaxX - (navigationLeftButtonFrame.maxX + 20.0)))
+                } else {
+                    maxTitleWidth -= environment.navigationBarTrailingButtonsInset * 2.0
+                }
             }
             
             let titleSize = self.title.update(
@@ -2564,8 +2609,11 @@ final class VideoChatScreenComponent: Component {
                     let maxEncryptionKeyX: CGFloat
                     if let navigationSidebarButtonFrame {
                         maxEncryptionKeyX = navigationSidebarButtonFrame.minX - 8.0 - encryptionKeySize.width
+                    } else if isNavigationRightButtonInSideColumn {
+                        // The close button is in the side strip: the key may run to the end of the row.
+                        maxEncryptionKeyX = navigationRightButtonRowFrame.maxX - encryptionKeySize.width
                     } else {
-                        maxEncryptionKeyX = navigationRightButtonFrame.minX - 8.0 - encryptionKeySize.width
+                        maxEncryptionKeyX = navigationRightButtonRowFrame.minX - 8.0 - encryptionKeySize.width
                     }
                     
                     let idealEncryptionKeyX: CGFloat
@@ -2597,6 +2645,7 @@ final class VideoChatScreenComponent: Component {
             
             let videoButtonContent: VideoChatActionButtonComponent.Content?
             let videoControlButtonContent: VideoChatActionButtonComponent.Content
+            let videoControlButtonEnabled: Bool
             let messageButtonContent: VideoChatActionButtonComponent.Content?
 
             var buttonAudio: VideoChatActionButtonComponent.Content.Audio = .speaker
@@ -2630,13 +2679,16 @@ final class VideoChatScreenComponent: Component {
             if let callState = self.callState, let muteState = callState.muteState, !muteState.canUnmute {
                 videoButtonContent = nil
                 videoControlButtonContent = .audio(audio: buttonAudio, isEnabled: buttonIsEnabled)
+                videoControlButtonEnabled = buttonIsEnabled
             } else {
                 let isVideoActive = self.callState?.isMyVideoActive ?? false
                 videoButtonContent = .video(isActive: isVideoActive)
                 if isVideoActive {
                     videoControlButtonContent = .rotateCamera
+                    videoControlButtonEnabled = true
                 } else {
                     videoControlButtonContent = .audio(audio: buttonAudio, isEnabled: buttonIsEnabled)
+                    videoControlButtonEnabled = buttonIsEnabled
                 }
             }
             
@@ -2792,6 +2844,28 @@ final class VideoChatScreenComponent: Component {
                 fourthActionButtonFrame.origin.y = thirdActionButtonFrame.maxY + landscapeControlsSpacing
             }
             
+            if buttonsOnTheSide {
+                // iPhone Duo: the column of controls at the right edge keeps 8pt clear of a status corner block at that
+                // edge (folded landscape-left: 84x82 at the bottom right, which the 3- and 5-button columns reach).
+                let columnFrames = [firstActionButtonFrame, secondActionButtonFrame, microphoneButtonFrame, thirdActionButtonFrame, fourthActionButtonFrame]
+                let columnMinY = columnFrames.map({ $0.minY }).min() ?? 0.0
+                let columnMaxY = columnFrames.map({ $0.maxY }).max() ?? 0.0
+                var columnOffsetY: CGFloat = 0.0
+                if let bottomRight = environment.reservedCorners.bottomRight {
+                    columnOffsetY = min(0.0, max(8.0 - columnMinY, availableSize.height - bottomRight.height - 8.0 - columnMaxY))
+                }
+                if let topRight = environment.reservedCorners.topRight {
+                    columnOffsetY = max(columnOffsetY, topRight.height + 8.0 - columnMinY)
+                }
+                if columnOffsetY != 0.0 {
+                    firstActionButtonFrame.origin.y += columnOffsetY
+                    secondActionButtonFrame.origin.y += columnOffsetY
+                    microphoneButtonFrame.origin.y += columnOffsetY
+                    thirdActionButtonFrame.origin.y += columnOffsetY
+                    fourthActionButtonFrame.origin.y += columnOffsetY
+                }
+            }
+            
             let participantsSize = availableSize
             
             let columnSpacing: CGFloat = 14.0
@@ -2837,7 +2911,9 @@ final class VideoChatScreenComponent: Component {
             let participantsExpandedInsets: UIEdgeInsets
             if isTwoColumnLayout {
                 participantsExpandedInsets = UIEdgeInsets(
-                    top: navigationHeight,
+                    // iPhone Duo, unfolded portrait: with the sidebar hidden the expanded video spans the width, and the
+                    // bar beside the status island ends above the island's bottom, so its pin control sat under the island.
+                    top: self.isTwoColumnSidebarHidden ? max(navigationHeight, environment.fullStatusBarHeight) : navigationHeight,
                     left: max(14.0, participantsSafeInsets.left),
                     bottom: participantsSafeInsets.bottom,
                     right: max(14.0, participantsSafeInsets.right)
@@ -3203,7 +3279,7 @@ final class VideoChatScreenComponent: Component {
                 transition.setPosition(view: microphoneButtonView, position: microphoneButtonFrame.center)
                 transition.setBounds(view: microphoneButtonView, bounds: CGRect(origin: CGPoint(), size: microphoneButtonFrame.size))
             }
-
+            
             let _ = self.speakerButton.update(
                 transition: transition,
                 component: AnyComponent(PlainButtonComponent(
@@ -3226,6 +3302,7 @@ final class VideoChatScreenComponent: Component {
                             self.onAudioRoutePressed()
                         }
                     },
+                    isEnabled: videoControlButtonEnabled,
                     animateAlpha: false
                 )),
                 environment: {},
@@ -3399,7 +3476,9 @@ final class VideoChatScreenComponent: Component {
                 ComponentTransition.easeInOut(duration: 0.25).setAlpha(view: self.inputDimView, alpha: 1.0)
                 
                 let inputPanelInnerInset: CGFloat = 8.0
-                let inputPanelAvailableWidth = isTwoColumnLayout ? mainColumnWidth + inputPanelInnerInset * 2.0 : min(440.0 + inputPanelInnerInset * 2.0, availableSize.width - environment.safeInsets.left - environment.safeInsets.right)
+                // The bottom input panel spans iPhone Duo's side strip; it keeps clear only of a corner block at the bottom.
+                let inputPanelSideInsets = environment.bottomEdgeSideInsets()
+                let inputPanelAvailableWidth = isTwoColumnLayout ? mainColumnWidth + inputPanelInnerInset * 2.0 : min(440.0 + inputPanelInnerInset * 2.0, availableSize.width - inputPanelSideInsets.left - inputPanelSideInsets.right)
                 var inputPanelAvailableHeight = 103.0
 
                 let keyboardWasHidden = self.inputPanelExternalState.isKeyboardHidden
@@ -3446,7 +3525,6 @@ final class VideoChatScreenComponent: Component {
                         mode: .standard(.default),
                         chatLocation: .peer(id: call.accountContext.account.peerId),
                         subject: nil,
-                        peerNearbyData: nil,
                         greetingData: nil,
                         pendingUnpinnedAllMessages: false,
                         activeGroupCallInfo: nil,
@@ -3487,7 +3565,7 @@ final class VideoChatScreenComponent: Component {
                     }
                     transition.setFrame(view: inputMediaNode.view, frame: targetFrame, completion: { [weak inputMediaNode] _ in
                         if let inputMediaNode {
-                            Queue.mainQueue().after(0.2) {
+                            Queue.mainQueue().after(0.2) { [inputMediaNode] in
                                 inputMediaNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false, completion: { [weak inputMediaNode] _ in
                                     inputMediaNode?.view.removeFromSuperview()
                                 })
@@ -3636,7 +3714,9 @@ final class VideoChatScreenComponent: Component {
                         inputPanelOriginX = availableSize.width - mainColumnWidth - inputPanelInnerInset - rightInset
                     }
                 } else {
-                    inputPanelOriginX = floorToScreenPixels((availableSize.width - inputPanelSize.width) / 2.0)
+                    // Sized to the band between the side insets, so centered in it (the screen's center unless one
+                    // inset is iPhone Duo's strip).
+                    inputPanelOriginX = inputPanelSideInsets.left + floorToScreenPixels((availableSize.width - inputPanelSideInsets.left - inputPanelSideInsets.right - inputPanelSize.width) / 2.0)
                 }
                 let inputPanelFrame = CGRect(origin: CGPoint(x: inputPanelOriginX, y: availableSize.height - inputPanelBottomInset - inputPanelSize.height - 3.0), size: inputPanelSize)
                 if let inputPanelView = self.inputPanel.view {
@@ -3678,7 +3758,7 @@ final class VideoChatScreenComponent: Component {
                     }
                     transition.setFrame(view: inputMediaNode.view, frame: targetFrame, completion: { [weak inputMediaNode] _ in
                         if let inputMediaNode {
-                            Queue.mainQueue().after(0.2) {
+                            Queue.mainQueue().after(0.2) { [inputMediaNode] in
                                 inputMediaNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false, completion: { [weak inputMediaNode] _ in
                                     inputMediaNode?.view.removeFromSuperview()
                                 })
@@ -3995,7 +4075,7 @@ final class VideoChatScreenComponent: Component {
                     messageListOriginX = availableSize.width - mainColumnWidth - rightInset
                 }
             } else {
-                messageListOriginX = floorToScreenPixels((availableSize.width - messagesListSize.width) / 2.0)
+                messageListOriginX = environment.safeInsets.left + floorToScreenPixels((availableSize.width - environment.safeInsets.left - environment.safeInsets.right - messagesListSize.width) / 2.0)
             }
             let messagesListFrame = CGRect(origin: CGPoint(x: messageListOriginX, y: availableSize.height - messagesListSize.height - messagesBottomInset), size: messagesListSize)
             if let messagesListView = self.messagesList.view {
@@ -4247,20 +4327,16 @@ private func hasFirstResponder(_ view: UIView) -> Bool {
     return false
 }
 
-func allowedStoryReactions(account: Account) -> Signal<[ReactionItem], NoError> {
-    let viewKey: PostboxViewKey = .orderedItemList(id: Namespaces.OrderedItemList.CloudTopReactions)
-    let topReactions = account.postbox.combinedView(keys: [viewKey])
-    |> map { views -> [RecentReactionItem] in
-        guard let view = views.views[viewKey] as? OrderedItemListView else {
-            return []
-        }
-        return view.items.compactMap { item -> RecentReactionItem? in
+func allowedStoryReactions(engine: TelegramEngine) -> Signal<[ReactionItem], NoError> {
+    let topReactions = engine.data.subscribe(TelegramEngine.EngineData.Item.OrderedLists.ListItems(collectionId: Namespaces.OrderedItemList.CloudTopReactions))
+    |> map { items -> [RecentReactionItem] in
+        return items.compactMap { item -> RecentReactionItem? in
             return item.contents.get(RecentReactionItem.self)
         }
     }
 
     return combineLatest(
-        TelegramEngine(account: account).stickers.availableReactions(),
+        engine.stickers.availableReactions(),
         topReactions
     )
     |> take(1)

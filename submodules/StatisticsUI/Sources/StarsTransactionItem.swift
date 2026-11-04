@@ -37,10 +37,10 @@ final class StarsTransactionItem: ListViewItem, ItemListItem {
         self.style = style
     }
     
-    func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         async {
             let node = StarsTransactionItemNode()
-            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
             
             node.contentSize = layout.contentSize
             node.insets = layout.insets
@@ -53,13 +53,13 @@ final class StarsTransactionItem: ListViewItem, ItemListItem {
         }
     }
     
-    func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? StarsTransactionItemNode {
                 let makeLayout = nodeValue.asyncLayout()
                 
                 async {
-                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
                     Queue.mainQueue().async {
                         completion(layout, { _ in
                             apply()
@@ -119,7 +119,7 @@ final class StarsTransactionItemNode: ListViewItemNode, ItemListItemNode {
     func asyncLayout() -> (_ item: StarsTransactionItem, _ params: ListViewItemLayoutParams, _ insets: ItemListNeighbors) -> (ListViewItemNodeLayout, () -> Void) {
         let currentItem = self.item
         
-        return { item, params, neighbors in
+        return { [weak self] item, params, neighbors in
             var updatedTheme: PresentationTheme?
             if currentItem?.presentationData.theme !== item.presentationData.theme {
                 updatedTheme = item.presentationData.theme
@@ -217,7 +217,7 @@ final class StarsTransactionItemNode: ListViewItemNode, ItemListItemNode {
                         strongSelf.maskNode.image = hasCorners ? PresentationResourcesItemList.cornersImage(item.presentationData.theme, top: hasTopCorners, bottom: hasBottomCorners) : nil
                         
                         strongSelf.backgroundNode.frame = CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: contentSize.height + min(insets.top, separatorHeight) + min(insets.bottom, separatorHeight)))
-                        strongSelf.maskNode.frame = strongSelf.backgroundNode.frame.insetBy(dx: params.leftInset, dy: 0.0)
+                        strongSelf.maskNode.frame = strongSelf.backgroundNode.frame.inset(by: UIEdgeInsets(top: 0.0, left: params.leftInset, bottom: 0.0, right: params.rightInset))
                         strongSelf.topStripeNode.frame = CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: separatorHeight))
                         strongSelf.bottomStripeNode.frame = CGRect(origin: CGPoint(x: bottomStripeInset, y: contentSize.height - separatorHeight), size: CGSize(width: params.width - bottomStripeInset, height: separatorHeight))
                     }
@@ -234,6 +234,42 @@ final class StarsTransactionItemNode: ListViewItemNode, ItemListItemNode {
                         if item.transaction.flags.contains(.isPaidMessage) {
                             itemTitle = peer.displayTitle(strings: item.presentationData.strings, displayOrder: .firstLast)
                             itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_PaidMessage(item.transaction.paidMessageCount ?? 1)
+                        } else if let starGift = item.transaction.starGift {
+                            if item.transaction.flags.contains(.isStarGiftAuctionBid), case let .generic(gift) = starGift {
+                                itemTitle = gift.title ?? "Gift"
+                                itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_GiftAuctionBid
+                            } else if item.transaction.flags.contains(.isStarGiftPrepaidUpgrade) {
+                                itemTitle = peer.displayTitle(strings: item.presentationData.strings, displayOrder: .firstLast)
+                                itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_PrepaidGiftUpgrade
+                            } else if item.transaction.flags.contains(.isStarGiftDropOriginalDetails), case let .unique(gift) = starGift {
+                                itemTitle = "\(gift.title) #\(formatCollectibleNumber(gift.number, dateTimeFormat: item.presentationData.dateTimeFormat))"
+                                itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_GiftDropOriginalDetails
+                            } else if item.transaction.flags.contains(.isStarGiftUpgrade), case let .unique(gift) = starGift {
+                                itemTitle = "\(gift.title) #\(formatCollectibleNumber(gift.number, dateTimeFormat: item.presentationData.dateTimeFormat))"
+                                itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_GiftUpgrade
+                            } else {
+                                itemTitle = peer.displayTitle(strings: item.presentationData.strings, displayOrder: .firstLast)
+                                switch starGift {
+                                case .generic:
+                                    if item.transaction.flags.contains(.isStarGiftOffer) {
+                                        itemSubtitle = item.presentationData.strings.Gift_Offer_Title
+                                    } else {
+                                        itemSubtitle = item.transaction.count.amount > StarsAmount.zero ? item.presentationData.strings.Stars_Intro_Transaction_ConvertedGift : item.presentationData.strings.Stars_Intro_Transaction_Gift
+                                    }
+                                case .unique:
+                                    if item.transaction.flags.contains(.isStarGiftOffer) {
+                                        itemSubtitle = item.presentationData.strings.Gift_Offer_Title
+                                    } else if item.transaction.count.amount > StarsAmount.zero {
+                                        itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_GiftSale
+                                    } else {
+                                        if item.transaction.flags.contains(.isStarGiftResale) {
+                                            itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_GiftPurchase
+                                        } else {
+                                            itemSubtitle = item.presentationData.strings.Stars_Intro_Transaction_GiftTransfer
+                                        }
+                                    }
+                                }
+                            }
                         } else if !item.transaction.media.isEmpty {
                             itemTitle = item.presentationData.strings.Stars_Intro_Transaction_MediaPurchase
                             itemSubtitle = peer.displayTitle(strings: item.presentationData.strings, displayOrder: .firstLast)

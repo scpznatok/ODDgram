@@ -1,7 +1,6 @@
 import Foundation
 import TelegramPresentationData
 import AccountContext
-import Postbox
 import TelegramCore
 import SwiftSignalKit
 import Display
@@ -16,7 +15,7 @@ import TopMessageReactions
 import ChatMessagePaymentAlertController
 
 extension ChatControllerImpl {
-    func forwardMessages(forceHideNames: Bool = false, messageIds: [MessageId], options: ChatInterfaceForwardOptionsState? = nil, resetCurrent: Bool = false) {
+    func forwardMessages(forceHideNames: Bool = false, messageIds: [EngineMessage.Id], options: ChatInterfaceForwardOptionsState? = nil, resetCurrent: Bool = false) { // MARK: Swiftgram
         let _ = (self.context.engine.data.get(EngineDataMap(
             messageIds.map(TelegramEngine.EngineData.Item.Messages.Message.init)
         ))
@@ -24,12 +23,16 @@ extension ChatControllerImpl {
             let sortedMessages = messages.values.compactMap { $0?._asMessage() }.sorted { lhs, rhs in
                 return lhs.id < rhs.id
             }
-            self?.forwardMessages(forceHideNames: forceHideNames, messages: sortedMessages, options: options, resetCurrent: resetCurrent)
+            self?.forwardMessages(forceHideNames: forceHideNames, messages: sortedMessages, options: options, resetCurrent: resetCurrent) // MARK: Swiftgram
         })
     }
 
-    func forwardMessages(forceHideNames: Bool = false, messages: [Message], options: ChatInterfaceForwardOptionsState? = nil, resetCurrent: Bool) {
-        let _ = self.presentVoiceMessageDiscardAlert(action: {
+    func forwardMessages(forceHideNames: Bool = false, messages: [EngineRawMessage], options: ChatInterfaceForwardOptionsState? = nil, resetCurrent: Bool) { // MARK: Swiftgram
+        let _ = self.presentVoiceMessageDiscardAlert(action: { [weak self] in
+            guard let self else {
+                return
+            }
+
             var filter: ChatListNodePeersFilter = [.onlyWriteable, .excludeDisabled, .doNotSearchMessages]
             var hasPublicPolls = false
             var hasPublicQuiz = false
@@ -51,7 +54,7 @@ extension ChatControllerImpl {
                 }
             }
             var attemptSelectionImpl: ((EnginePeer, ChatListDisabledPeerReason) -> Void)?
-            let controller = self.context.sharedContext.makePeerSelectionController(PeerSelectionControllerParams(context: self.context, forceHideNames: forceHideNames, updatedPresentationData: self.updatedPresentationData, filter: filter, hasFilters: true, title: forceHideNames ? self.updatedPresentationData.0.strings.Conversation_ForwardOptions_HideSendersNames : nil, attemptSelection: { peer, _, reason in
+            let controller = self.context.sharedContext.makePeerSelectionController(PeerSelectionControllerParams(context: self.context, forceHideNames: forceHideNames, updatedPresentationData: self.updatedPresentationData, filter: filter, hasFilters: true, title: forceHideNames ? self.updatedPresentationData.0.strings.Conversation_ForwardOptions_HideSendersNames : nil, attemptSelection: { peer, _, reason in // MARK: Swiftgram
                 attemptSelectionImpl?(peer, reason)
             }, multipleSelection: true, forwardedMessageIds: messages.map { $0.id }, selectForumThreads: true))
             let context = self.context
@@ -143,7 +146,7 @@ extension ChatControllerImpl {
                             let inputText = convertMarkdownToAttributes(messageText)
                             for text in breakChatInputText(trimChatInputText(inputText)) {
                                 if text.length != 0 {
-                                    var attributes: [MessageAttribute] = []
+                                    var attributes: [EngineMessage.Attribute] = []
                                     let entities = generateTextEntities(text.string, enabledTypes: .all, currentEntities: generateChatInputTextEntities(text))
                                     if !entities.isEmpty {
                                         attributes.append(TextEntitiesMessageAttribute(entities: entities))
@@ -153,7 +156,7 @@ extension ChatControllerImpl {
                             }
                         }
                         
-                        var attributes: [MessageAttribute] = []
+                        var attributes: [EngineMessage.Attribute] = []
                         attributes.append(ForwardOptionsMessageAttribute(hideNames: forwardOptions?.hideNames == true, hideCaptions: forwardOptions?.hideCaptions == true))
                         
                         result.append(contentsOf: messages.map { message -> EnqueueMessage in
@@ -317,14 +320,14 @@ extension ChatControllerImpl {
                             let transformedMessages = strongSelf.transformEnqueueMessages(result, silentPosting: true)
                             commit(transformedMessages)
                         case .schedule:
-                            strongSelf.presentScheduleTimePicker(completion: { [weak self] scheduleTime, repeatPeriod in
+                            strongSelf.presentScheduleTimePicker(completion: { [weak self] timeResult in
                                 if let strongSelf = self {
-                                    let transformedMessages = strongSelf.transformEnqueueMessages(result, silentPosting: false, scheduleTime: scheduleTime, repeatPeriod: repeatPeriod)
+                                    let transformedMessages = strongSelf.transformEnqueueMessages(result, silentPosting: timeResult.silentPosting, scheduleTime: timeResult.time, repeatPeriod: timeResult.repeatPeriod)
                                     commit(transformedMessages)
                                 }
                             })
                         case .whenOnline:
-                            let transformedMessages = strongSelf.transformEnqueueMessages(result, silentPosting: false, scheduleTime: scheduleWhenOnlineTimestamp)
+                            let transformedMessages = strongSelf.transformEnqueueMessages(result, silentPosting: strongSelf.presentationInterfaceState.interfaceState.silentPosting, scheduleTime: scheduleWhenOnlineTimestamp)
                             commit(transformedMessages)
                         }
                     }
@@ -375,7 +378,7 @@ extension ChatControllerImpl {
                 }
                 
                 if case .peer(peerId) = strongSelf.chatLocation, strongSelf.parentController == nil, !isPinnedMessages {
-                    strongSelf.updateChatPresentationInterfaceState(animated: false, interactive: true, { $0.updatedInterfaceState({ $0.withUpdatedForwardMessageIds(messages.map { $0.id }).withUpdatedForwardOptionsState(ChatInterfaceForwardOptionsState(hideNames: !hasNotOwnMessages || (options?.hideNames ?? false), hideCaptions: false, unhideNamesOnCaptionChange: false)).withoutSelectionState() }).updatedSearch(nil) })
+                    strongSelf.updateChatPresentationInterfaceState(animated: false, interactive: true, { $0.updatedInterfaceState({ $0.withUpdatedForwardMessageIds(messages.map { $0.id }).withUpdatedForwardOptionsState(ChatInterfaceForwardOptionsState(hideNames: !hasNotOwnMessages || (options?.hideNames ?? false) /* MARK: Swiftgram */, hideCaptions: false, unhideNamesOnCaptionChange: false)).withoutSelectionState() }).updatedSearch(nil) })
                     strongSelf.updateItemNodesSearchTextHighlightStates()
                     strongSelf.searchResultsController = nil
                     strongController.dismiss()
@@ -395,7 +398,7 @@ extension ChatControllerImpl {
                     let mappedMessages = messages.map { message -> EnqueueMessage in
                         let correlationId = Int64.random(in: Int64.min ... Int64.max)
                         correlationIds.append(correlationId)
-                        return .forward(source: message.id, threadId: nil, grouping: .auto, attributes: forceHideNames ? [ForwardOptionsMessageAttribute(hideNames: true, hideCaptions: false)] : [], correlationId: correlationId)
+                        return .forward(source: message.id, threadId: nil, grouping: .auto, attributes: forceHideNames ? [ForwardOptionsMessageAttribute(hideNames: true, hideCaptions: false)] : [] /* MARK: Swiftgram */, correlationId: correlationId)
                     }
                     
                     let _ = (reactionItems
@@ -468,7 +471,7 @@ extension ChatControllerImpl {
                     }
 
                     let _ = (ChatInterfaceState.update(engine: strongSelf.context.engine, peerId: peerId, threadId: threadId, { currentState in
-                        return currentState.withUpdatedForwardMessageIds(messages.map { $0.id }).withUpdatedForwardOptionsState(ChatInterfaceForwardOptionsState(hideNames: !hasNotOwnMessages || (options?.hideNames ?? false), hideCaptions: false, unhideNamesOnCaptionChange: false))
+                        return currentState.withUpdatedForwardMessageIds(messages.map { $0.id }).withUpdatedForwardOptionsState(ChatInterfaceForwardOptionsState(hideNames: !hasNotOwnMessages || (options?.hideNames ?? false) /* MARK: Swiftgram */, hideCaptions: false, unhideNamesOnCaptionChange: false))
                     })
                     |> deliverOnMainQueue).startStandalone(completed: {
                         if let strongSelf = self {

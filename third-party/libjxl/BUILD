@@ -1,4 +1,7 @@
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:objc_library.bzl", "objc_library")
+
 headers = [
     "jxl/codestream_header.h",
     "jxl/cms_interface.h",
@@ -57,6 +60,8 @@ genrule(
         BUILD_ARCH="sim_arm64"
     elif [ "$(TARGET_CPU)" == "ios_x86_64" ]; then
         BUILD_ARCH="x86_64"
+    elif [ "$(TARGET_CPU)" == "darwin_arm64" ]; then
+        BUILD_ARCH="macos_arm64"
     else
         echo "Unsupported architecture $(TARGET_CPU)"
     fi

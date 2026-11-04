@@ -2,9 +2,9 @@ import Foundation
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import SwiftSignalKit
 import TelegramCore
+import TelegramStringFormatting
 import TelegramPresentationData
 import TelegramUIPreferences
 import ProgressNavigationButtonNode
@@ -18,13 +18,14 @@ import PremiumUI
 import UndoUI
 import ContextUI
 
-private func peerTokenTitle(accountPeerId: PeerId, peer: Peer, strings: PresentationStrings, nameDisplayOrder: PresentationPersonNameOrder) -> String {
-    if peer.id == accountPeerId {
+private func peerTokenTitle(accountPeerId: EnginePeer.Id, peer: EnginePeer, strings: PresentationStrings, nameDisplayOrder: PresentationPersonNameOrder) -> String {
+    switch EditableTokenListPeerAlias(peer: peer, accountPeerId: accountPeerId) {
+    case .savedMessages:
         return strings.DialogList_SavedMessages
-    } else if peer.id.isReplies {
+    case .replies:
         return strings.DialogList_Replies
-    } else {
-        return EnginePeer(peer).displayTitle(strings: strings, displayOrder: nameDisplayOrder)
+    case nil:
+        return peer.displayTitle(strings: strings, displayOrder: nameDisplayOrder)
     }
 }
 
@@ -43,8 +44,6 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
     
     var dismissed: (() -> Void)?
 
-    private let index: PeerNameIndex = .lastNameFirst
-    
     private var _ready = Promise<Bool>()
     private var _limitsReady = Promise<Bool>()
     private var _peersReady = Promise<Bool>()
@@ -109,7 +108,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
         
         self.titleView = CounterControllerTitleView(theme: self.presentationData.theme)
         
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData, style: .glass))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData))
         self._hasGlassStyle = true
         
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
@@ -168,7 +167,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
                     }
                 }
                 strongSelf.contactsNode.editableTokens.append(contentsOf: peers.map { peer -> EditableTokenListToken in
-                    return EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: params.context.account.peerId, peer: peer._asPeer(), strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer))
+                    return EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: params.context.account.peerId, peer: peer, strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer))
                 })
                 strongSelf._peersReady.set(.single(true))
                 if strongSelf.isNodeLoaded {
@@ -179,10 +178,11 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
             })
         case let .premiumGifting(birthdays, selectToday, _):
             if let birthdays, selectToday {
-                let today = Calendar(identifier: .gregorian).component(.day, from: Date())
+                let currentDate = Date()
+                let currentTimeZone = TimeZone.current
                 var todayPeers: [EnginePeer.Id] = []
                 for (peerId, birthday) in birthdays {
-                    if birthday.day == today {
+                    if relativeDateForBirthday(birthday, relativeTo: currentDate, timeZone: currentTimeZone) == .today {
                         todayPeers.append(peerId)
                     }
                 }
@@ -198,7 +198,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
                     }
                     let peers = peerList.compactMap { $0 }
                     strongSelf.contactsNode.editableTokens.append(contentsOf: peers.map { peer -> EditableTokenListToken in
-                        return EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: params.context.account.peerId, peer: peer._asPeer(), strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer))
+                        return EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: params.context.account.peerId, peer: peer, strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer))
                     })
                     strongSelf._peersReady.set(.single(true))
                     if strongSelf.isNodeLoaded {
@@ -227,7 +227,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
     
     private func updateThemeAndStrings() {
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
-        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationData: self.presentationData, style: .glass), transition: .immediate)
+        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationData: self.presentationData), transition: .immediate)
         self.navigationItem.backBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Back, style: .plain, target: nil, action: nil)
         self.updateTitle()
         self.contactsNode.updatePresentationData(self.presentationData)
@@ -301,17 +301,17 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
         case .peerSelection:
             self.titleView.title = CounterControllerTitle(title: self.params.title ?? self.presentationData.strings.PrivacyLastSeenSettings_EmpryUsersPlaceholder, counter: "")
             if self.rightNavigationButton == nil {
-                let rightNavigationButton = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.rightNavigationButtonPressed))
+                let rightNavigationButton = UIBarButtonItem(title: "___done", style: .done, target: self, action: #selector(self.rightNavigationButtonPressed))
                 self.rightNavigationButton = rightNavigationButton
-                self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Cancel, style: .plain, target: self, action: #selector(cancelPressed))
+                self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: "___close", style: .plain, target: self, action: #selector(cancelPressed))
                 self.navigationItem.rightBarButtonItem = self.rightNavigationButton
             }
         case let .chatSelection(chatSelection):
             self.titleView.title = CounterControllerTitle(title: self.params.title ?? chatSelection.title, counter: "")
             if self.rightNavigationButton == nil {
-                let rightNavigationButton = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.rightNavigationButtonPressed))
+                let rightNavigationButton = UIBarButtonItem(title: "___done", style: .done, target: self, action: #selector(self.rightNavigationButtonPressed))
                 self.rightNavigationButton = rightNavigationButton
-                self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Cancel, style: .plain, target: self, action: #selector(cancelPressed))
+                self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: "___close", style: .plain, target: self, action: #selector(cancelPressed))
                 self.navigationItem.rightBarButtonItem = self.rightNavigationButton
             }
         }
@@ -383,7 +383,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
                                     displayCountAlert = true
                                     updatedState = updatedState.withToggledPeerId(.peer(peer.id))
                                 } else {
-                                    addedToken = EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: accountPeerId, peer: peer, strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(EnginePeer(peer)))
+                                    addedToken = EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: accountPeerId, peer: peer, strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer))
                                 }
                             }
                             updatedCount = updatedState.selectedPeerIndices.count
@@ -400,7 +400,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
                             state.selectedPeerIds.remove(peer.id)
                             removedTokenId = peer.id
                         } else {
-                            addedToken = EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: accountPeerId, peer: peer, strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(EnginePeer(peer)))
+                            addedToken = EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: accountPeerId, peer: peer, strings: strongSelf.presentationData.strings, nameDisplayOrder: strongSelf.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer))
                             state.selectedPeerIds.insert(peer.id)
                         }
                         updatedCount = state.selectedPeerIds.count
@@ -448,7 +448,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
 
         if !self.params.initialSelectedPeers.isEmpty {
             for peer in self.params.initialSelectedPeers {
-                self.contactsNode.openPeer?(.peer(peer: peer._asPeer(), isGlobal: false, participantCount: nil))
+                self.contactsNode.openPeer?(.peer(peer: peer, isGlobal: false, participantCount: nil))
             }
             /*if case let .contacts(contactsNode) = self.contactsNode.contentNode {
                 contactsNode.updateSelectionState { state in
@@ -478,7 +478,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
                 a(.default)
               
                 if let self {
-                    self.params.sendMessage?(EnginePeer(peer))
+                    self.params.sendMessage?(peer)
                 }
             })))
             
@@ -488,7 +488,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
                 a(.default)
 
                 if let self {
-                    self.params.openProfile?(EnginePeer(peer))
+                    self.params.openProfile?(peer)
                 }
             })))
             
@@ -745,7 +745,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
                     }
                     for peer in peers {
                         if !existingPeerIds.contains(peer.id) {
-                            tokens.append(EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: self.context.account.peerId, peer: peer._asPeer(), strings: self.presentationData.strings, nameDisplayOrder: self.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer)))
+                            tokens.append(EditableTokenListToken(id: peer.id, title: peerTokenTitle(accountPeerId: self.context.account.peerId, peer: peer, strings: self.presentationData.strings, nameDisplayOrder: self.presentationData.nameDisplayOrder), fixedPosition: nil, subject: .peer(peer)))
                         }
                     }
                 } else {
@@ -806,7 +806,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
             self.suspendedNavigationBarLayout = layout
             return
         }
-        self.applyNavigationBarLayout(layout, navigationLayout: self.navigationLayout(layout: layout), additionalBackgroundHeight: self.additionalNavigationBarBackgroundHeight, additionalCutout: nil, transition: transition)
+        self.applyNavigationBarLayout(layout, navigationLayout: self.navigationLayout(layout: layout), additionalBackgroundHeight: self.additionalNavigationBarBackgroundHeight, transition: transition)
     }
     
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
@@ -819,7 +819,7 @@ class ContactMultiselectionControllerImpl: ViewController, ContactMultiselection
         self.suspendNavigationBarLayout = false
         if let suspendedNavigationBarLayout = self.suspendedNavigationBarLayout {
             self.suspendedNavigationBarLayout = suspendedNavigationBarLayout
-            self.applyNavigationBarLayout(suspendedNavigationBarLayout, navigationLayout: self.navigationLayout(layout: layout), additionalBackgroundHeight: self.additionalNavigationBarBackgroundHeight, additionalCutout: nil, transition: transition)
+            self.applyNavigationBarLayout(suspendedNavigationBarLayout, navigationLayout: self.navigationLayout(layout: layout), additionalBackgroundHeight: self.additionalNavigationBarBackgroundHeight, transition: transition)
         }
     }
     
@@ -862,6 +862,6 @@ private final class ContactContextReferenceContentSource: ContextReferenceConten
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }

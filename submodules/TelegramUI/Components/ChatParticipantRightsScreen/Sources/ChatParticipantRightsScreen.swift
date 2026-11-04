@@ -260,7 +260,7 @@ private final class ChatParticipantRightsContent: CombinedComponent {
                         state.updated(transition: .easeInOut(duration: 0.2))
                     },
                     shouldUpdateText: { [weak state] text in
-                        if text.containsEmoji {
+                        if text.containsGraphicEmoji {
                             state?.animateError()
                             return false
                         }
@@ -414,7 +414,7 @@ private final class ChatParticipantRightsComponent: CombinedComponent {
                         metrics: environment.metrics,
                         deviceMetrics: environment.deviceMetrics,
                         isDisplaying: environment.value.isVisible,
-                        isCentered: environment.metrics.widthClass == .regular,
+                        isCentered: environment.presentsFloatingPanels,
                         hasInputHeight: !environment.inputHeight.isZero,
                         regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                         dismiss: { animated in

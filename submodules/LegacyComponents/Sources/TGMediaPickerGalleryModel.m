@@ -14,6 +14,7 @@
 #import <LegacyComponents/TGModernGalleryZoomableItemView.h>
 #import <LegacyComponents/TGMediaPickerGalleryPhotoItem.h>
 #import <LegacyComponents/TGMediaPickerGalleryVideoItem.h>
+#import "TGMediaPickerGalleryPhotoItemView.h"
 #import <LegacyComponents/TGMediaPickerGalleryVideoItemView.h>
 
 #import <LegacyComponents/TGModernMediaListItem.h>
@@ -42,8 +43,11 @@
     NSString *_recipientName;
     bool _hasCamera;
     bool _isScheduledMessages;
+    bool _isActionButtonDone;
+    // MARK: Swiftgram
     bool _canShowTelescope;
     bool _canSendTelescope;
+    //
     bool _hasCoverButton;
 }
 
@@ -53,7 +57,7 @@
 
 @implementation TGMediaPickerGalleryModel
 
-- (instancetype)initWithContext:(id<LegacyComponentsContext>)context items:(NSArray *)items focusItem:(id<TGModernGalleryItem>)focusItem selectionContext:(TGMediaSelectionContext *)selectionContext editingContext:(TGMediaEditingContext *)editingContext hasCaptions:(bool)hasCaptions allowCaptionEntities:(bool)allowCaptionEntities hasTimer:(bool)hasTimer onlyCrop:(bool)onlyCrop inhibitDocumentCaptions:(bool)inhibitDocumentCaptions hasSelectionPanel:(bool)hasSelectionPanel hasCamera:(bool)hasCamera recipientName:(NSString *)recipientName isScheduledMessages:(bool)isScheduledMessages canShowTelescope:(bool)canShowTelescope canSendTelescope:(bool)canSendTelescope hasCoverButton:(bool)hasCoverButton
+- (instancetype)initWithContext:(id<LegacyComponentsContext>)context items:(NSArray *)items focusItem:(id<TGModernGalleryItem>)focusItem selectionContext:(TGMediaSelectionContext *)selectionContext editingContext:(TGMediaEditingContext *)editingContext hasCaptions:(bool)hasCaptions allowCaptionEntities:(bool)allowCaptionEntities hasTimer:(bool)hasTimer onlyCrop:(bool)onlyCrop inhibitDocumentCaptions:(bool)inhibitDocumentCaptions hasSelectionPanel:(bool)hasSelectionPanel hasCamera:(bool)hasCamera recipientName:(NSString *)recipientName isScheduledMessages:(bool)isScheduledMessages isActionButtonDone:(bool)isActionButtonDone /* MARK: Swiftgram */ canShowTelescope:(bool)canShowTelescope canSendTelescope:(bool)canSendTelescope hasCoverButton:(bool)hasCoverButton
 {
     self = [super init];
     if (self != nil)
@@ -75,8 +79,11 @@
         _recipientName = recipientName;
         _hasCamera = hasCamera;
         _isScheduledMessages = isScheduledMessages;
+        _isActionButtonDone = isActionButtonDone;
+        // MARK: Swiftgram
         _canSendTelescope = canSendTelescope;
         _canShowTelescope = canShowTelescope;
+        //
         _hasCoverButton = hasCoverButton;
         
         __weak TGMediaPickerGalleryModel *weakSelf = self;
@@ -187,7 +194,7 @@
     if (_interfaceView == nil)
     {
         __weak TGMediaPickerGalleryModel *weakSelf = self;
-        _interfaceView = [[TGMediaPickerGalleryInterfaceView alloc] initWithContext:_context focusItem:_initialFocusItem selectionContext:_selectionContext editingContext:_editingContext stickersContext:_stickersContext hasSelectionPanel:_hasSelectionPanel hasCameraButton:_hasCamera recipientName:_recipientName isScheduledMessages:_isScheduledMessages canShowTelescope:_canShowTelescope canSendTelescope:_canSendTelescope hasCoverButton:_hasCoverButton];
+        _interfaceView = [[TGMediaPickerGalleryInterfaceView alloc] initWithContext:_context focusItem:_initialFocusItem selectionContext:_selectionContext editingContext:_editingContext stickersContext:_stickersContext hasSelectionPanel:_hasSelectionPanel hasCameraButton:_hasCamera recipientName:_recipientName isScheduledMessages:_isScheduledMessages isActionButtonDone:_isActionButtonDone /* MARK: Swiftgram */ canShowTelescope:_canShowTelescope canSendTelescope:_canSendTelescope hasCoverButton:_hasCoverButton];
         _interfaceView.hasCaptions = _hasCaptions;
         _interfaceView.allowCaptionEntities = _allowCaptionEntities;
         _interfaceView.hasTimer = _hasTimer;
@@ -577,9 +584,11 @@
         
         [strongSelf updateHiddenItem];
         
-        UIView *referenceView = [strongSelf referenceViewForItem:item frame:NULL];
-        if ([referenceView isKindOfClass:[TGMediaPickerGalleryVideoItemView class]])
-            [(TGMediaPickerGalleryVideoItemView *)referenceView returnFromEditing];
+        TGModernGalleryItemView *galleryItemView = [strongSelf.controller itemViewForItem:item];
+        if ([galleryItemView isKindOfClass:[TGMediaPickerGalleryVideoItemView class]])
+            [(TGMediaPickerGalleryVideoItemView *)galleryItemView returnFromEditing];
+        else if ([galleryItemView isKindOfClass:[TGMediaPickerGalleryPhotoItemView class]])
+            [(TGMediaPickerGalleryPhotoItemView *)galleryItemView returnFromEditing];
         
         if (iosMajorVersion() >= 7)
             [strongSelf.controller setNeedsStatusBarAppearanceUpdate];

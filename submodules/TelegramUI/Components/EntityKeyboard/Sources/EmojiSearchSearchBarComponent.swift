@@ -1,11 +1,11 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import ComponentFlow
 import PagerComponent
 import TelegramPresentationData
 import TelegramCore
-import Postbox
 import AnimationCache
 import MultiAnimationRenderer
 import AccountContext
@@ -508,7 +508,8 @@ final class EmojiSearchSearchBarComponent: Component {
                                 context: component.context,
                                 fileId: item.id
                             ),
-                            color: color
+                            color: color,
+                            lottieSettings: component.context.lottieRenderingSettings
                         )),
                         environment: {},
                         containerSize: itemLayout.itemSize

@@ -30,7 +30,7 @@ private func galleryMediaForMedia(media: Media) -> Media? {
 }
 
 private func mediaForMessage(message: Message) -> Media? {
-    for media in message.media {
+    for media in message.effectiveMedia {
         if let result = galleryMediaForMedia(media: media) {
             return result
         } else if let webpage = media as? TelegramMediaWebpage {
@@ -139,7 +139,8 @@ private final class SecretMediaPreviewControllerNode: GalleryControllerNode {
     private func layoutTimeoutNode(_ layout: ContainerViewLayout, navigationBarHeight: CGFloat, transition: ContainedViewLayoutTransition) {
         if let timeoutNode = self.timeoutNode {
             let diameter: CGFloat = 28.0
-            transition.updateFrame(node: timeoutNode, frame: CGRect(origin: CGPoint(x: layout.size.width - layout.safeInsets.right - diameter - 9.0, y: navigationBarHeight - 9.0 - diameter), size: CGSize(width: diameter, height: diameter)))
+            // In the bar's trailing place, clear of a status island beside the bar (iPhone Duo).
+            transition.updateFrame(node: timeoutNode, frame: CGRect(origin: CGPoint(x: layout.size.width - layout.safeInsets.right - layout.navigationBarTrailingButtonsInset - diameter - 9.0, y: navigationBarHeight - 9.0 - diameter), size: CGSize(width: diameter, height: diameter)))
         }
     }
 }
@@ -516,7 +517,7 @@ public final class SecretMediaPreviewController: ViewController {
                 var duration: Double = 0.0
                 for media in message.media {
                     if let file = media as? TelegramMediaFile {
-                        if let path = self.context.account.postbox.mediaBox.completedResourcePath(file.resource) {
+                        if let path = self.context.engine.resources.completedResourcePath(id: EngineMediaResource.Id(file.resource.id)) {
                             let tempFile = TempBox.shared.file(path: path, fileName: file.fileName ?? "file")
                             self.tempFile = tempFile
                             tempFilePath = tempFile.path

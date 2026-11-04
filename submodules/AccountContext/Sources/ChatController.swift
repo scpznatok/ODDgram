@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import TelegramCore
-import Postbox
 import TextFormat
 import AsyncDisplayKit
 import Display
@@ -43,6 +42,8 @@ public final class ChatMessageItemAssociatedData: Equatable {
     public let channelDiscussionGroup: ChannelDiscussionGroupStatus
     public let animatedEmojiStickers: [String: [StickerPackItem]]
     public let additionalAnimatedEmojiStickers: [String: [Int: StickerPackItem]]
+    public let premiumGiftStickers: [Int32: StickerPackItem]
+    public let tonGiftStickers: [Int32: StickerPackItem]
     public let forcedResourceStatus: FileMediaResourceStatus?
     public let currentlyPlayingMessageId: EngineMessage.Index?
     public let isCopyProtectionEnabled: Bool
@@ -68,6 +69,9 @@ public final class ChatMessageItemAssociatedData: Equatable {
     public let showSensitiveContent: Bool
     public let isSuspiciousPeer: Bool
     public let showTextAsPlaceholder: Bool
+    public let accountCountry: String?
+    public let isParticipant: Bool
+    public let invitedOn: Int32?
     
     public init(
         translateToLanguageSG: String? = nil,
@@ -82,6 +86,8 @@ public final class ChatMessageItemAssociatedData: Equatable {
         channelDiscussionGroup: ChannelDiscussionGroupStatus = .unknown,
         animatedEmojiStickers: [String: [StickerPackItem]] = [:],
         additionalAnimatedEmojiStickers: [String: [Int: StickerPackItem]] = [:],
+        premiumGiftStickers: [Int32: StickerPackItem] = [:],
+        tonGiftStickers: [Int32: StickerPackItem] = [:],
         forcedResourceStatus: FileMediaResourceStatus? = nil,
         currentlyPlayingMessageId: EngineMessage.Index? = nil,
         isCopyProtectionEnabled: Bool = false,
@@ -106,7 +112,10 @@ public final class ChatMessageItemAssociatedData: Equatable {
         isInline: Bool = false,
         showSensitiveContent: Bool = false,
         isSuspiciousPeer: Bool = false,
-        showTextAsPlaceholder: Bool = false
+        showTextAsPlaceholder: Bool = false,
+        accountCountry: String? = nil,
+        isParticipant: Bool = false,
+        invitedOn: Int32? = nil
     ) {
         self.translateToLanguageSG = translateToLanguageSG
         self.translationSettings = translationSettings
@@ -120,6 +129,8 @@ public final class ChatMessageItemAssociatedData: Equatable {
         self.channelDiscussionGroup = channelDiscussionGroup
         self.animatedEmojiStickers = animatedEmojiStickers
         self.additionalAnimatedEmojiStickers = additionalAnimatedEmojiStickers
+        self.premiumGiftStickers = premiumGiftStickers
+        self.tonGiftStickers = tonGiftStickers
         self.forcedResourceStatus = forcedResourceStatus
         self.currentlyPlayingMessageId = currentlyPlayingMessageId
         self.isCopyProtectionEnabled = isCopyProtectionEnabled
@@ -145,6 +156,9 @@ public final class ChatMessageItemAssociatedData: Equatable {
         self.showSensitiveContent = showSensitiveContent
         self.isSuspiciousPeer = isSuspiciousPeer
         self.showTextAsPlaceholder = showTextAsPlaceholder
+        self.accountCountry = accountCountry
+        self.isParticipant = isParticipant
+        self.invitedOn = invitedOn
     }
     
     public static func == (lhs: ChatMessageItemAssociatedData, rhs: ChatMessageItemAssociatedData) -> Bool {
@@ -182,6 +196,12 @@ public final class ChatMessageItemAssociatedData: Equatable {
             return false
         }
         if lhs.additionalAnimatedEmojiStickers != rhs.additionalAnimatedEmojiStickers {
+            return false
+        }
+        if lhs.premiumGiftStickers != rhs.premiumGiftStickers {
+            return false
+        }
+        if lhs.tonGiftStickers != rhs.tonGiftStickers {
             return false
         }
         if lhs.forcedResourceStatus != rhs.forcedResourceStatus {
@@ -247,6 +267,15 @@ public final class ChatMessageItemAssociatedData: Equatable {
         if lhs.isSuspiciousPeer != rhs.isSuspiciousPeer {
             return false
         }
+        if lhs.accountCountry != rhs.accountCountry {
+            return false
+        }
+        if lhs.isParticipant != rhs.isParticipant {
+            return false
+        }
+        if lhs.invitedOn != rhs.invitedOn {
+            return false
+        }
         return true
     }
 }
@@ -259,6 +288,31 @@ public extension ChatMessageItemAssociatedData {
             return false
         }
     }
+
+    var isForwardOptionsPreview: Bool {
+        if case let .messageOptions(_, _, info) = self.subject, case .forward = info {
+            return true
+        } else {
+            return false
+        }
+    }
+
+    func isPollVotingRestricted(poll: TelegramMediaPoll, accountTestingEnvironment: Bool, currentTimestamp: Int32) -> Bool {
+        if !poll.countries.isEmpty, let accountCountry = self.accountCountry, !poll.countries.contains(accountCountry) {
+            return true
+        }
+
+        if poll.restrictToSubscribers {
+            let period: Int32 = accountTestingEnvironment ? 5 * 60 : 24 * 60 * 60
+            if !self.isParticipant {
+                return true
+            } else if let invitedOn = self.invitedOn, invitedOn + period > currentTimestamp {
+                return true
+            }
+        }
+
+        return false
+    }
 }
 
 public enum ChatControllerInteractionLongTapAction {
@@ -270,12 +324,13 @@ public enum ChatControllerInteractionLongTapAction {
     case hashtag(String)
     case timecode(Double, String)
     case bankCard(String)
+    case tonAddress(String)
     case date(Int32)
 }
 
 public enum ChatHistoryMessageSelection: Equatable {
     case none
-    case selectable(selected: Bool)
+    case selectable(selected: Bool, num: Int?)
     
     public static func ==(lhs: ChatHistoryMessageSelection, rhs: ChatHistoryMessageSelection) -> Bool {
         switch lhs {
@@ -285,8 +340,8 @@ public enum ChatHistoryMessageSelection: Equatable {
                 } else {
                     return false
                 }
-            case let .selectable(selected):
-                if case .selectable(selected) = rhs {
+            case let .selectable(selected, num):
+                if case .selectable(selected, num) = rhs {
                     return true
                 } else {
                     return false
@@ -297,7 +352,7 @@ public enum ChatHistoryMessageSelection: Equatable {
 
 public enum ChatControllerInitialBotStartBehavior {
     case interactive
-    case automatic(returnToPeerId: EnginePeer.Id, scheduled: Bool)
+    case automatic(returnToPeerId: EnginePeer.Id, returnToThreadId: Int64?, scheduled: Bool)
 }
 
 public struct ChatControllerInitialBotStart {
@@ -389,44 +444,115 @@ public struct ChatInterfaceForwardOptionsState: Codable, Equatable {
 }
 
 public struct ChatTextInputState: Codable, Equatable {
-    public var inputText: NSAttributedString
-    public var selectionRange: Range<Int>
-    
+    /// The stored source of truth (Piece 5): the structural value model + a structural (tree-path) selection.
+    public var content: ChatInputContent
+    public var selection: ChatInputSelection
+
+    /// Derived transitional compat view — the chat `NSAttributedString` currency. Readers keep working
+    /// unchanged; the model is the storage. (Removed only once all readers move off it — Option B.)
+    ///
+    /// **Reading this, mutating the copy, and reconstructing a state from it destroys block structure.**
+    /// `chatInputContent(from:)` cannot express a heading, list, quote, table or medium, so the
+    /// reconstruction retypes every block as a body paragraph. To change part of the text, use
+    /// `replacingFlatRange(_:with:)`.
+    public var inputText: NSAttributedString {
+        return attributedString(from: self.content)
+    }
+
+    /// Derived transitional flat selection (compat), **read-only** — nothing assigns it (selection writes go
+    /// through `init(inputText:selectionRange:)`). New/migrated code should prefer the structural `selection`
+    /// (and semantic mutation methods) over arithmetic on this flat range.
+    public var selectionRange: Range<Int> {
+        let r = self.selection.nsRange(in: self.content)
+        return r.location ..< (r.location + r.length)
+    }
+
+    /// Whether the composer is empty. Cheap structural check on the stored model — prefer this over
+    /// `inputText.string.isEmpty` / `inputText.length == 0`, which now allocate via the derived `inputText`.
+    public var isEmpty: Bool {
+        return self.content.isEmpty
+    }
+
     public static func ==(lhs: ChatTextInputState, rhs: ChatTextInputState) -> Bool {
-        return lhs.inputText.isEqual(to: rhs.inputText) && lhs.selectionRange == rhs.selectionRange
+        // `content` is a value type whose `==` compares custom emoji by `fileId` + `enableAnimation` (the Piece 3
+        // semantics, now intrinsic to the stored model), so this is plain value equality — no reference caveat.
+        return lhs.content == rhs.content && lhs.selection == rhs.selection
     }
-    
+
     public init() {
-        self.inputText = NSAttributedString()
-        self.selectionRange = 0 ..< 0
+        self.content = ChatInputContent()
+        self.selection = ChatInputSelection(nsRange: NSRange(location: 0, length: 0), in: self.content)
     }
-    
+
+    /// Builds a state from an `NSAttributedString`. Correct for text constructed from scratch (a URL, a
+    /// command, an empty string); **wrong for text derived from an existing state** — see the note on
+    /// `inputText`. Mutating an existing state's text belongs in `replacingFlatRange(_:with:)`.
     public init(inputText: NSAttributedString, selectionRange: Range<Int>) {
-        self.inputText = inputText
-        self.selectionRange = selectionRange
+        self.content = chatInputContent(from: inputText)
+        self.selection = ChatInputSelection(nsRange: NSRange(location: selectionRange.lowerBound, length: selectionRange.upperBound - selectionRange.lowerBound), in: self.content)
     }
-    
+
     public init(inputText: NSAttributedString) {
-        self.inputText = inputText
-        let length = inputText.length
-        self.selectionRange = length ..< length
+        self.content = chatInputContent(from: inputText)
+        self.selection = ChatInputSelection(nsRange: NSRange(location: self.content.length, length: 0), in: self.content)
+    }
+
+    /// Build directly from a structural `ChatInputContent` (the model storage), applying a flat selection
+    /// range against it. Mirrors `init(inputText:selectionRange:)`, but skips the `NSAttributedString`
+    /// round-trip — used by the draft-restore `.instantPage` path, where the content comes straight from
+    /// `chatInputContent(fromInstantPage:)` and would lose structure if flattened to text first.
+    public init(content: ChatInputContent, selectionRange: Range<Int>) {
+        self.content = content
+        self.selection = ChatInputSelection(nsRange: NSRange(location: selectionRange.lowerBound, length: selectionRange.upperBound - selectionRange.lowerBound), in: self.content)
+    }
+
+    /// Replaces the flat (`inputText`) UTF-16 range with `replacement`, preserving every block outside
+    /// it, and leaves a collapsed caret just past the inserted text.
+    ///
+    /// **This is what to use instead of mutating `inputText` and reconstructing the state.** That
+    /// round-trip goes through `chatInputContent(from:)`, which has no vocabulary for headings, lists,
+    /// quotes, tables or media and so retypes every block as a body paragraph — changing a few
+    /// characters would destroy the structure of the whole composer.
+    public func replacingFlatRange(_ range: NSRange, with replacement: NSAttributedString) -> ChatTextInputState {
+        let (content, caret) = self.content.replacingFlatRange(range, with: chatInputRuns(fromAttributedString: replacement))
+        return ChatTextInputState(content: content, selectionRange: caret ..< caret)
+    }
+
+    /// Plain-text overload of `replacingFlatRange(_:with:)` — most composer sites replace with plain text.
+    public func replacingFlatRange(_ range: NSRange, with replacement: String) -> ChatTextInputState {
+        return self.replacingFlatRange(range, with: NSAttributedString(string: replacement))
     }
 
     public init(from decoder: Decoder) throws {
+        // Prefer the structural model persisted under "cm" (the form written since 2026-06-19); fall back to the
+        // legacy `ChatTextInputStateText` under "at" so existing drafts (no "cm") still decode unchanged. The flat
+        // selection ints (`as0`/`as1`) are persisted by both forms and applied against the resolved `content` here,
+        // so the caret is preserved in both branches.
         let container = try decoder.container(keyedBy: StringCodingKey.self)
-        self.inputText = ((try? container.decode(ChatTextInputStateText.self, forKey: "at")) ?? ChatTextInputStateText()).attributedText()
+        if let content = try? container.decode(ChatInputContent.self, forKey: "cm") {
+            self.content = content
+        } else {
+            let attributedText = ((try? container.decode(ChatTextInputStateText.self, forKey: "at")) ?? ChatTextInputStateText()).attributedText()
+            self.content = chatInputContent(from: attributedText)
+        }
         let rangeFrom = (try? container.decode(Int32.self, forKey: "as0")) ?? 0
         let rangeTo = (try? container.decode(Int32.self, forKey: "as1")) ?? 0
+        let flatRange: NSRange
         if rangeFrom <= rangeTo {
-            self.selectionRange = Int(rangeFrom) ..< Int(rangeTo)
+            flatRange = NSRange(location: Int(rangeFrom), length: Int(rangeTo - rangeFrom))
         } else {
-            let length = self.inputText.length
-            self.selectionRange = length ..< length
+            flatRange = NSRange(location: self.content.length, length: 0)
         }
+        self.selection = ChatInputSelection(nsRange: flatRange, in: self.content)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StringCodingKey.self)
+
+        // Store the structural model directly under "cm" — this is the preferred persisted form (it keeps the
+        // structure the flat `ChatTextInputStateText` round-trip would fragment, e.g. a multi-line quote). The
+        // legacy `"at"`/`"as0"`/`"as1"` keys below are kept as a back-compat mirror so any old reader still works.
+        try container.encode(self.content, forKey: "cm")
 
         try container.encode(ChatTextInputStateText(attributedText: self.inputText), forKey: "at")
         try container.encode(Int32(self.selectionRange.lowerBound), forKey: "as0")
@@ -803,15 +929,16 @@ public enum ChatControllerSubject: Equatable {
         }
         
         public var quote: Quote?
-        public var todoTaskId: Int32?
+        public var subject: EngineMessageReplyInnerSubject?
         
-        public init(quote: Quote? = nil, todoTaskId: Int32? = nil) {
+        public init(quote: Quote? = nil, subject: EngineMessageReplyInnerSubject? = nil) {
             self.quote = quote
-            self.todoTaskId = todoTaskId
+            self.subject = subject
         }
     }
     
-    case message(id: MessageSubject, highlight: MessageHighlight?, timecode: Double?, setupReply: Bool)
+    case tag(EngineMessage.Tags)
+    case message(id: MessageSubject, highlight: MessageHighlight?, timecode: Double?, setupReply: Bool, cachedAnchor: Bool = false)
     case scheduledMessages
     case pinnedMessages(id: EngineMessage.Id?)
     case messageOptions(peerIds: [EnginePeer.Id], ids: [EngineMessage.Id], info: MessageOptionsInfo)
@@ -819,8 +946,14 @@ public enum ChatControllerSubject: Equatable {
     
     public static func ==(lhs: ChatControllerSubject, rhs: ChatControllerSubject) -> Bool {
         switch lhs {
-        case let .message(lhsId, lhsHighlight, lhsTimecode, lhsSetupReply):
-            if case let .message(rhsId, rhsHighlight, rhsTimecode, rhsSetupReply) = rhs, lhsId == rhsId && lhsHighlight == rhsHighlight && lhsTimecode == rhsTimecode && lhsSetupReply == rhsSetupReply {
+        case let .tag(lhsTag):
+            if case let .tag(rhsTag) = rhs, lhsTag == rhsTag {
+                return true
+            } else {
+                return false
+            }
+        case let .message(lhsId, lhsHighlight, lhsTimecode, lhsSetupReply, lhsCachedAnchor):
+            if case let .message(rhsId, rhsHighlight, rhsTimecode, rhsSetupReply, rhsCachedAnchor) = rhs, lhsId == rhsId && lhsHighlight == rhsHighlight && lhsTimecode == rhsTimecode && lhsSetupReply == rhsSetupReply && lhsCachedAnchor == rhsCachedAnchor {
                 return true
             } else {
                 return false
@@ -990,9 +1123,11 @@ public enum PeerInfoAvatarUploadStatus {
 }
 
 public protocol PeerInfoScreen: ViewController {
-    var peerId: PeerId { get }
+    var peerId: EnginePeer.Id { get }
     var privacySettings: Promise<AccountPrivacySettings?> { get }
     var twoStepAuthData: Promise<TwoStepAuthData?> { get }
+    var notificationExceptions: Promise<NotificationExceptionsList?> { get }
+    var isGiftsBottomPanelVisible: Bool { get }
     
     func activateEdit()
     func openEmojiStatusSetup()
@@ -1008,7 +1143,7 @@ public protocol PeerInfoScreen: ViewController {
     func updateProfileVideo(_ image: UIImage, video: Any?, values: Any?, markup: UploadPeerPhotoMarkup?)
 }
 
-public extension Peer {
+public extension EngineRawPeer {
     func canSetupAutoremoveTimeout(accountPeerId: EnginePeer.Id) -> Bool {
         if let _ = self as? TelegramSecretChat {
             return false
@@ -1105,12 +1240,15 @@ public protocol ChatController: ViewController {
     func activateSearch(domain: ChatSearchDomain, query: String)
     func activateInput(type: ChatControllerActivateInput)
     func beginClearHistory(type: InteractiveHistoryClearingType)
+    func presentReactionDeletionOptions(author: EnginePeer, messageId: EngineMessage.Id)
     
     func performScrollToTop() -> Bool
+    func scrollToEndOfHistory()
     func transferScrollingVelocity(_ velocity: CGFloat)
     func updateIsScrollingLockedAtTop(isScrollingLockedAtTop: Bool)
     
     func playShakeAnimation()
+    func playConfettiAnimation()
     
     func removeAd(opaqueId: Data)
     
@@ -1144,18 +1282,19 @@ public enum FileMediaResourceMediaStatus: Equatable {
 public protocol ChatMessageItemNodeProtocol: ListViewItemNode {
     func makeProgress() -> Promise<Bool>?
     func targetReactionView(value: MessageReaction.Reaction) -> UIView?
-    func targetForStoryTransition(id: StoryId) -> UIView?
+    func targetForStoryTransition(id: EngineStoryId) -> UIView?
     func contentFrame() -> CGRect
-    func matchesMessage(id: MessageId) -> Bool
+    func matchesMessage(id: EngineMessage.Id) -> Bool
     func cancelInsertionAnimations()
-    func messages() -> [Message]
+    func messages() -> [EngineRawMessage]
+    func updateHiddenMedia()
 }
 
 public final class ChatControllerNavigationData: CustomViewControllerNavigationData {
-    public let peerId: PeerId
+    public let peerId: EnginePeer.Id
     public let threadId: Int64?
-    
-    public init(peerId: PeerId, threadId: Int64?) {
+
+    public init(peerId: EnginePeer.Id, threadId: Int64?) {
         self.peerId = peerId
         self.threadId = threadId
     }
@@ -1198,8 +1337,11 @@ public enum ChatHistoryListSource {
     }
     
     case `default`
-    case custom(messages: Signal<([Message], Int32, Bool), NoError>, messageId: MessageId?, quote: Quote?, isSavedMusic: Bool, canReorder: Bool, loadMore: (() -> Void)?)
-    case customView(historyView: Signal<(MessageHistoryView, ViewUpdateType), NoError>)
+    /// `richMessageId` marks a queue whose rows are synthesized from ONE rich message's InstantPage
+    /// audio tracks; it carries that message's id so a row can be matched against the playing
+    /// InstantPageMediaPlaylist. Nil for every other custom source.
+    case custom(messages: Signal<([EngineRawMessage], Int32, Bool), NoError>, messageId: EngineMessage.Id?, quote: Quote?, isSavedMusic: Bool, canReorder: Bool, richMessageId: EngineMessage.Id?, loadMore: (() -> Void)?)
+    case customView(historyView: Signal<(EngineRawMessageHistoryView, EngineViewUpdateType), NoError>)
 }
 
 public enum ChatQuickReplyShortcutType {
@@ -1212,11 +1354,12 @@ public enum ChatCustomContentsKind: Equatable {
     case quickReplyMessageInput(shortcut: String, shortcutType: ChatQuickReplyShortcutType)
     case businessLinkSetup(link: TelegramBusinessChatLinks.Link)
     case hashTagSearch(publicPosts: Bool)
+    case welcomeMessages
 }
 
 public protocol ChatCustomContentsProtocol: AnyObject {
     var kind: ChatCustomContentsKind { get }
-    var historyView: Signal<(MessageHistoryView, ViewUpdateType), NoError> { get }
+    var historyView: Signal<(EngineRawMessageHistoryView, EngineViewUpdateType), NoError> { get }
     var messageLimit: Int? { get }
     
     func enqueueMessages(messages: [EnqueueMessage])
@@ -1240,7 +1383,7 @@ public enum ChatHistoryListDisplayHeaders {
 
 public enum ChatHistoryListMode: Equatable {
     case bubbles
-    case list(reversed: Bool, reverseGroups: Bool, displayHeaders: ChatHistoryListDisplayHeaders, hintLinks: Bool, isGlobalSearch: Bool)
+    case list(reversed: Bool, reverseGroups: Bool, displayHeaders: ChatHistoryListDisplayHeaders, hintLinks: Bool, isGlobalSearch: Bool, isMusicPlaylist: Bool)
 }
 
 public protocol ChatControllerInteractionProtocol: AnyObject {
@@ -1251,14 +1394,37 @@ public enum ChatHistoryNodeHistoryState: Equatable {
     case loaded(isEmpty: Bool, hasReachedLimits: Bool)
 }
 
-public protocol ChatHistoryListNode: ListView {
+public protocol ChatHistoryListNode: ASDisplayNode {
     var historyState: ValuePromise<ChatHistoryNodeHistoryState> { get }
-    
+
     func scrollToEndOfHistory()
     func updateLayout(transition: ContainedViewLayoutTransition, updateSizeAndInsets: ListViewUpdateSizeAndInsets)
-    func messageInCurrentHistoryView(_ id: MessageId) -> Message?
-    
+    func messageInCurrentHistoryView(_ id: EngineMessage.Id) -> EngineMessage?
+
     var contentPositionChanged: (ListViewVisibleContentOffset) -> Void { get set }
+
+    // Curated ListView surface reached via the ChatHistoryListNode protocol type
+    // (PeerInfoListPaneNode + ChatLoadingNode). Everything else moves to concrete-only forwarders.
+    var bounces: Bool { get set }
+    var scrollEnabled: Bool { get set }
+    var preloadPages: Bool { get set }
+    var defaultToSynchronousTransactionWhileScrolling: Bool { get set }
+    var insets: UIEdgeInsets { get }
+    func visibleContentOffset() -> ListViewVisibleContentOffset
+    func transferVelocity(_ velocity: CGFloat)
+    func forEachItemNode(_ f: (ASDisplayNode) -> Void)
+    func forEachVisibleItemNode(_ f: (ASDisplayNode) -> Void)
+    func forEachItemHeaderNode(_ f: (ListViewItemHeaderNode) -> Void)
+
+    // A loaded node's frame in the history list's own space, or nil when it is not loaded.
+    //
+    // Paired with the enumerators above, and not optional extras: under a hosting list backend a node's
+    // view is a subview of its host at `(0, 0, w, h)`, so `node.frame` read straight off something
+    // `forEachItemNode`/`forEachItemHeaderNode` handed you is host-local and every position derived
+    // from it is zero. That reads as "everything is at the top", which is a plausible-looking answer
+    // rather than a visible failure.
+    func itemNodeFrame(_ node: ListViewItemNode) -> CGRect?
+    func itemHeaderNodeFrame(_ node: ListViewItemHeaderNode) -> CGRect?
 }
 
 public extension ChatFolderTitle {

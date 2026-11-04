@@ -1,6 +1,5 @@
 import Foundation
 import UIKit
-import Postbox
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
@@ -12,10 +11,10 @@ import TelegramPresentationData
 import ChatMessageItemCommon
 
 public enum ChatMessageItemContent: Sequence {
-    case message(message: Message, read: Bool, selection: ChatHistoryMessageSelection, attributes: ChatMessageEntryAttributes, location: MessageHistoryEntryLocation?)
-    case group(messages: [(Message, Bool, ChatHistoryMessageSelection, ChatMessageEntryAttributes, MessageHistoryEntryLocation?)])
-    
-    public func effectivelyIncoming(_ accountPeerId: PeerId, associatedData: ChatMessageItemAssociatedData? = nil) -> Bool {
+    case message(message: EngineRawMessage, read: Bool, selection: ChatHistoryMessageSelection, attributes: ChatMessageEntryAttributes, location: EngineMessageHistoryEntryLocation?)
+    case group(messages: [(EngineRawMessage, Bool, ChatHistoryMessageSelection, ChatMessageEntryAttributes, EngineMessageHistoryEntryLocation?)])
+
+    public func effectivelyIncoming(_ accountPeerId: EnginePeer.Id, associatedData: ChatMessageItemAssociatedData? = nil) -> Bool {
         if let subject = associatedData?.subject, case let .messageOptions(_, _, info) = subject {
             if case .forward = info {
                 return false
@@ -31,7 +30,7 @@ public enum ChatMessageItemContent: Sequence {
         }
     }
     
-    public var index: MessageIndex {
+    public var index: EngineMessage.Index {
         switch self {
             case let .message(message, _, _, _, _):
                 return message.index
@@ -40,7 +39,7 @@ public enum ChatMessageItemContent: Sequence {
         }
     }
     
-    public var firstMessage: Message {
+    public var firstMessage: EngineRawMessage {
         switch self {
             case let .message(message, _, _, _, _):
                 return message
@@ -58,9 +57,9 @@ public enum ChatMessageItemContent: Sequence {
         }
     }
     
-    public func makeIterator() -> AnyIterator<(Message, ChatMessageEntryAttributes)> {
+    public func makeIterator() -> AnyIterator<(EngineRawMessage, ChatMessageEntryAttributes)> {
         var index = 0
-        return AnyIterator { () -> (Message, ChatMessageEntryAttributes)? in
+        return AnyIterator { () -> (EngineRawMessage, ChatMessageEntryAttributes)? in
             switch self {
                 case let .message(message, _, _, attributes, _):
                     if index == 0 {
@@ -84,24 +83,10 @@ public enum ChatMessageItemContent: Sequence {
 }
 
 public enum ChatMessageItemAdditionalContent {
-    case eventLogPreviousMessage(Message)
-    case eventLogPreviousDescription(Message)
-    case eventLogPreviousLink(Message)
-    case eventLogGroupedMessages([Message], Bool)
-}
-
-public enum ChatMessageMerge: Int32 {
-    case none = 0
-    case fullyMerged = 1
-    case semanticallyMerged = 2
-    
-    public var merged: Bool {
-        if case .none = self {
-            return false
-        } else {
-            return true
-        }
-    }
+    case eventLogPreviousMessage(EngineRawMessage)
+    case eventLogPreviousDescription(EngineRawMessage)
+    case eventLogPreviousLink(EngineRawMessage)
+    case eventLogGroupedMessages([EngineRawMessage], Bool)
 }
 
 public struct ChatMessageHeaderSpec: Equatable {
@@ -123,7 +108,20 @@ public protocol ChatMessageAvatarHeaderNode: ListViewItemHeaderNode {
     func updateAvatarIsHidden(isHidden: Bool, transition: ContainedViewLayoutTransition)
 }
 
-public protocol ChatMessageItem: ListViewItem {
+/// An item that publishes floating headers — a date separator, a gutter avatar.
+///
+/// `ListViewImpl` reads headers off the NODE (`ListViewItemNode.headers()`), which is enough when a
+/// node exists by the time headers matter. `CoreListChatHistoryBackend` needs them from the ITEM:
+/// CoreList computes attachment runs over the item collection, before any row view is built.
+///
+/// Every item BETWEEN messages must publish its headers, not just message items. An item that
+/// publishes no key breaks the run, so an unread separator sitting mid-day would split that day into
+/// two runs and float two pills for one date.
+public protocol ChatHistoryItemWithHeaders {
+    var headers: [ListViewItemHeader] { get }
+}
+
+public protocol ChatMessageItem: ListViewItem, ChatHistoryItemWithHeaders {
     var presentationData: ChatPresentationData { get }
     var context: AccountContext { get }
     var chatLocation: ChatLocation { get }
@@ -131,18 +129,16 @@ public protocol ChatMessageItem: ListViewItem {
     var controllerInteraction: ChatControllerInteraction { get }
     var content: ChatMessageItemContent { get }
     var disableDate: Bool { get }
-    var effectiveAuthorId: PeerId? { get }
+    var effectiveAuthorId: EnginePeer.Id? { get }
     var additionalContent: ChatMessageItemAdditionalContent? { get }
 
-    var headers: [ListViewItemHeader] { get }
-    
-    var message: Message { get }
+    var message: EngineRawMessage { get }
     var read: Bool { get }
     var unsent: Bool { get }
     var sending: Bool { get }
     var failed: Bool { get }
     
-    func mergedWithItems(top: ListViewItem?, bottom: ListViewItem?, isRotated: Bool) -> (top: ChatMessageMerge, bottom: ChatMessageMerge, dateAtBottom: ChatMessageHeaderSpec)
+    func merged(with neighbors: ChatHistoryItemNeighbors, isRotated: Bool) -> (top: ChatMessageMerge, bottom: ChatMessageMerge, dateAtBottom: ChatMessageHeaderSpec)
 }
 
 public func hasCommentButton(item: ChatMessageItem) -> Bool {

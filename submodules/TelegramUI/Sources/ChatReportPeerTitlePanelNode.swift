@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import SwiftSignalKit
 import TelegramCore
 import TelegramPresentationData
@@ -17,6 +16,7 @@ import MultiAnimationRenderer
 import AccountContext
 import PremiumUI
 import LegacyChatHeaderPanelComponent
+import AppBundle
 
 private enum ChatReportPeerTitleButton: Equatable {
     case block
@@ -27,6 +27,7 @@ private enum ChatReportPeerTitleButton: Equatable {
     case unarchive
     case addMembers
     case restartTopic
+    case setPhoto
     
     func title(strings: PresentationStrings) -> String {
         switch self {
@@ -54,13 +55,17 @@ private enum ChatReportPeerTitleButton: Equatable {
             return strings.Conversation_AddMembers
         case .restartTopic:
             return strings.Chat_PanelRestartTopic
+        case .setPhoto:
+            return strings.Chat_PanelSetBotPhoto
         }
     }
 }
 
 private func peerButtons(_ state: ChatPresentationInterfaceState) -> [ChatReportPeerTitleButton] {
     var buttons: [ChatReportPeerTitleButton] = []
-    if let peer = state.renderedPeer?.chatMainPeer as? TelegramUser, let contactStatus = state.contactStatus, let peerStatusSettings = contactStatus.peerStatusSettings {
+    if let _ = state.renderedPeer?.chatMainPeer as? TelegramUser, state.isManagedBot {
+        buttons.append(.setPhoto)
+    } else if let peer = state.renderedPeer?.chatMainPeer as? TelegramUser, let contactStatus = state.contactStatus, let peerStatusSettings = contactStatus.peerStatusSettings {
         if peerStatusSettings.contains(.autoArchived) {
             if peerStatusSettings.contains(.canBlock) || peerStatusSettings.contains(.canReport) {
                 if peer.isDeleted {
@@ -178,24 +183,24 @@ private final class ChatInfoTitlePanelInviteInfoNode: ASDisplayNode {
         return result
     }
     
-    func update(width: CGFloat, theme: PresentationTheme, strings: PresentationStrings, wallpaper: TelegramWallpaper, chatPeer: Peer, invitedBy: Peer, transition: ContainedViewLayoutTransition) -> CGFloat {
+    func update(width: CGFloat, theme: PresentationTheme, strings: PresentationStrings, wallpaper: TelegramWallpaper, chatPeer: EnginePeer, invitedBy: EnginePeer, transition: ContainedViewLayoutTransition) -> CGFloat {
         let primaryTextColor = serviceMessageColorComponents(theme: theme, wallpaper: wallpaper).primaryText
-        
+
         if self.theme !== theme {
             self.theme = theme
-            
+
             self.labelNode.linkHighlightColor = primaryTextColor.withAlphaComponent(0.3)
         }
-        
+
         let topInset: CGFloat = 6.0
         let bottomInset: CGFloat = 6.0
         let sideInset: CGFloat = 16.0
-        
+
         let stringAndRanges: PresentationStrings.FormattedString
-        if let channel = chatPeer as? TelegramChannel, case .broadcast = channel.info {
-            stringAndRanges = strings.Conversation_NoticeInvitedByInChannel(EnginePeer(invitedBy).compactDisplayTitle)
+        if case let .channel(channel) = chatPeer, case .broadcast = channel.info {
+            stringAndRanges = strings.Conversation_NoticeInvitedByInChannel(invitedBy.compactDisplayTitle)
         } else {
-            stringAndRanges = strings.Conversation_NoticeInvitedByInGroup(EnginePeer(invitedBy).compactDisplayTitle)
+            stringAndRanges = strings.Conversation_NoticeInvitedByInGroup(invitedBy.compactDisplayTitle)
         }
         
         let attributedString = NSMutableAttributedString(string: stringAndRanges.string, font: Font.regular(13.0), textColor: primaryTextColor)
@@ -243,101 +248,6 @@ private final class ChatInfoTitlePanelInviteInfoNode: ASDisplayNode {
     }
 }
 
-private final class ChatInfoTitlePanelPeerNearbyInfoNode: ASDisplayNode {
-    private var theme: PresentationTheme?
-    
-    private let labelNode: ImmediateTextNode
-    private let filledBackgroundNode: LinkHighlightingNode
-    
-    private let openPeersNearby: () -> Void
-    
-    init(openPeersNearby: @escaping () -> Void) {
-        self.openPeersNearby = openPeersNearby
-        
-        self.labelNode = ImmediateTextNode()
-        self.labelNode.maximumNumberOfLines = 1
-        self.labelNode.textAlignment = .center
-        
-        self.filledBackgroundNode = LinkHighlightingNode(color: .clear)
-        
-        super.init()
-        
-        self.addSubnode(self.filledBackgroundNode)
-        self.addSubnode(self.labelNode)
-    }
-    
-    override func didLoad() {
-        super.didLoad()
-        
-        let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(self.tapGesture(_:)))
-        self.view.addGestureRecognizer(tapRecognizer)
-    }
-    
-    @objc private func tapGesture(_ gestureRecognizer: UITapGestureRecognizer) {
-        self.openPeersNearby()
-    }
-    
-    func update(width: CGFloat, theme: PresentationTheme, strings: PresentationStrings, wallpaper: TelegramWallpaper, chatPeer: Peer, distance: Int32, transition: ContainedViewLayoutTransition) -> CGFloat {
-        let primaryTextColor = serviceMessageColorComponents(theme: theme, wallpaper: wallpaper).primaryText
-        
-        if self.theme !== theme {
-            self.theme = theme
-            
-            self.labelNode.linkHighlightColor = primaryTextColor.withAlphaComponent(0.3)
-        }
-        
-        let topInset: CGFloat = 6.0
-        let bottomInset: CGFloat = 6.0
-        let sideInset: CGFloat = 16.0
-        
-        let stringAndRanges = strings.Conversation_PeerNearbyDistance(EnginePeer(chatPeer).compactDisplayTitle, shortStringForDistance(strings: strings, distance: distance))
-        
-        let attributedString = NSMutableAttributedString(string: stringAndRanges.string, font: Font.regular(13.0), textColor: primaryTextColor)
-        
-        let boldAttributes = [NSAttributedString.Key.font: Font.semibold(13.0), NSAttributedString.Key(rawValue: "_Link"): true as NSNumber]
-        for range in stringAndRanges.ranges.prefix(1) {
-            attributedString.addAttributes(boldAttributes, range: range.range)
-        }
-        
-        self.labelNode.attributedText = attributedString
-        let labelLayout = self.labelNode.updateLayoutFullInfo(CGSize(width: width - sideInset * 2.0, height: CGFloat.greatestFiniteMagnitude))
-        
-        var labelRects = labelLayout.linesRects()
-        if labelRects.count > 1 {
-            let sortedIndices = (0 ..< labelRects.count).sorted(by: { labelRects[$0].width > labelRects[$1].width })
-            for i in 0 ..< sortedIndices.count {
-                let index = sortedIndices[i]
-                for j in -1 ... 1 {
-                    if j != 0 && index + j >= 0 && index + j < sortedIndices.count {
-                        if abs(labelRects[index + j].width - labelRects[index].width) < 40.0 {
-                            labelRects[index + j].size.width = max(labelRects[index + j].width, labelRects[index].width)
-                            labelRects[index].size.width = labelRects[index + j].size.width
-                        }
-                    }
-                }
-            }
-        }
-        for i in 0 ..< labelRects.count {
-            labelRects[i] = labelRects[i].insetBy(dx: -6.0, dy: floor((labelRects[i].height - 20.0) / 2.0))
-            labelRects[i].size.height = 20.0
-            labelRects[i].origin.x = floor((labelLayout.size.width - labelRects[i].width) / 2.0)
-        }
-        
-        let backgroundLayout = self.filledBackgroundNode.asyncLayout()
-        let serviceColor = serviceMessageColorComponents(theme: theme, wallpaper: wallpaper)
-        let backgroundApply = backgroundLayout(serviceColor.fill, labelRects, 10.0, 10.0, 0.0)
-        backgroundApply()
-        
-        let backgroundSize = CGSize(width: labelLayout.size.width + 8.0 + 8.0, height: labelLayout.size.height + 4.0)
-        
-        let labelFrame = CGRect(origin: CGPoint(x: floor((width - labelLayout.size.width) / 2.0), y: topInset + floorToScreenPixels((backgroundSize.height - labelLayout.size.height) / 2.0) - 1.0), size: labelLayout.size)
-        self.labelNode.frame = labelFrame
-        self.filledBackgroundNode.frame = labelFrame.offsetBy(dx: 0.0, dy: -11.0)
-        
-        return topInset + backgroundSize.height + bottomInset
-    }
-}
-
 final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
     private let context: AccountContext
     private let animationCache: AnimationCache
@@ -355,7 +265,6 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
     private var presentationInterfaceState: ChatPresentationInterfaceState?
     
     private var inviteInfoNode: ChatInfoTitlePanelInviteInfoNode?
-    private var peerNearbyInfoNode: ChatInfoTitlePanelPeerNearbyInfoNode?
     
     private var cachedChevronImage: (UIImage, PresentationTheme)?
     
@@ -420,12 +329,8 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
         let fileId = emojiStatus.fileId
         let source: Signal<PremiumSource, NoError> = self.emojiStatusFileAndPackTitle.get()
         |> take(1)
-        |> mapToSignal { emojiStatusFileAndPack -> Signal<PremiumSource, NoError> in
-            if let (file, pack) = emojiStatusFileAndPack {
-                return .single(.emojiStatus(peerId, fileId, file, pack))
-            } else {
-                return .complete()
-            }
+        |> map { emojiStatusFileAndPack -> PremiumSource in
+            return .emojiStatus(peerId, fileId, emojiStatusFileAndPack?.0, emojiStatusFileAndPack?.1)
         }
   
         let _ = (source
@@ -444,7 +349,9 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
     }
     
     override func updateLayout(width: CGFloat, leftInset: CGFloat, rightInset: CGFloat, transition: ContainedViewLayoutTransition, interfaceState: ChatPresentationInterfaceState) -> LayoutResult {
+        var themeUpdated = false
         if interfaceState.theme !== self.theme {
+            themeUpdated = true
             self.theme = interfaceState.theme
             
             self.closeButton.setImage(PresentationResourcesChat.chatInputPanelEncircledCloseIconImage(interfaceState.theme), for: [])
@@ -483,15 +390,33 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
             self.buttons.removeAll()
             for button in updatedButtons {
                 let view = UIButton()
+                if case .setPhoto = button {
+                    if view.image(for: []) == nil || themeUpdated {
+                        if let sourceImage = generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Camera"), color: interfaceState.theme.chat.inputPanel.panelControlColor) {
+                            let image = generateImage(CGSize(width: sourceImage.size.width + 6.0, height: sourceImage.size.height), rotatedContext: { size, context in
+                                UIGraphicsPushContext(context)
+                                defer {
+                                    UIGraphicsPopContext()
+                                }
+                                
+                                context.clear(CGRect(origin: CGPoint(), size: size))
+                                sourceImage.draw(at: CGPoint())
+                            })
+                            
+                            view.setImage(image?.withRenderingMode(.alwaysOriginal), for: [])
+                            view.setImage(generateTintedImage(image: image, color: interfaceState.theme.chat.inputPanel.panelControlColor.withAlphaComponent(0.7))?.withRenderingMode(.alwaysOriginal), for: [.highlighted])
+                        }
+                    }
+                }
                 view.setTitle(button.title(strings: interfaceState.strings), for: [])
-                view.titleLabel?.font = Font.regular(16.0)
+                view.titleLabel?.font = Font.regular(17.0)
                 switch button {
-                    case .block, .reportSpam, .reportUserSpam:
+                case .block, .reportSpam, .reportUserSpam:
                     view.setTitleColor(interfaceState.theme.chat.inputPanel.panelControlDestructiveColor, for: [])
                     view.setTitleColor(interfaceState.theme.chat.inputPanel.panelControlDestructiveColor.withAlphaComponent(0.7), for: [.highlighted])
-                    default:
-                    view.setTitleColor(interfaceState.theme.rootController.navigationBar.accentTextColor, for: [])
-                    view.setTitleColor(interfaceState.theme.rootController.navigationBar.accentTextColor.withAlphaComponent(0.7), for: [.highlighted])
+                default:
+                    view.setTitleColor(interfaceState.theme.chat.inputPanel.panelControlColor, for: [])
+                    view.setTitleColor(interfaceState.theme.chat.inputPanel.panelControlColor.withAlphaComponent(0.7), for: [.highlighted])
                 }
                 view.addTarget(self, action: #selector(self.buttonPressed(_:)), for: [.touchUpInside])
                 self.view.addSubview(view)
@@ -587,7 +512,10 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
         }
         
         var emojiStatus: PeerEmojiStatus?
-        if let user = interfaceState.renderedPeer?.peer as? TelegramUser, let emojiStatusValue = user.emojiStatus {
+        // A suspicious user's emoji status is not shown, so neither is the note explaining it
+        // (`CachedUserData.isSuspiciousPeer`, here from the same settings that show this panel).
+        let isSuspiciousPeer = !(interfaceState.contactStatus?.peerStatusSettings?.flags.isDisjoint(with: .suspiciousPeer) ?? true)
+        if let user = interfaceState.renderedPeer?.peer as? TelegramUser, let emojiStatusValue = user.emojiStatus, !isSuspiciousPeer {
             if user.isFake || user.isScam { 
             } else {
                 emojiStatus = emojiStatusValue
@@ -604,30 +532,22 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
             if self.emojiStatusFileId != fileId {
                 self.emojiStatusFileId = fileId
                 
-                let emojiFileAndPack = self.context.engine.stickers.resolveInlineStickers(fileIds: [fileId])
-                |> mapToSignal { result in
-                    if let emojiFile = result.first?.value {
-                        for attribute in emojiFile.attributes {
-                            if case let .CustomEmoji(_, _, _, packReference) = attribute, let packReference = packReference {
-                                return self.context.engine.stickers.loadedStickerPack(reference: packReference, forceActualized: false)
-                                |> filter { result in
-                                    if case .result = result {
-                                        return true
-                                    } else {
-                                        return false
-                                    }
-                                }
-                                |> mapToSignal { result -> Signal<(TelegramMediaFile, LoadedStickerPack)?, NoError> in
-                                    if case let .result(_, items, _) = result {
-                                        return .single(items.first.flatMap { ($0.file._parse(), result) })
-                                    } else {
-                                        return .complete()
-                                    }
-                                }
-                            }
+                // Always resolves, to nil when there is no pack (the emoji names none, or its owner
+                // deleted it), so the panel's link still opens the Premium screen.
+                let context = self.context
+                let emojiFileAndPack = context.engine.stickers.resolveInlineStickers(fileIds: [fileId])
+                |> mapToSignal { result -> Signal<(TelegramMediaFile, LoadedStickerPack)?, NoError> in
+                    guard let emojiFile = result.first?.value else {
+                        return .single(nil)
+                    }
+                    return context.engine.stickers.customEmojiPack(file: emojiFile)
+                    |> map { pack -> (TelegramMediaFile, LoadedStickerPack)? in
+                        if let pack, case let .result(_, items, _) = pack {
+                            return items.first.flatMap { ($0.file._parse(), pack) }
+                        } else {
+                            return nil
                         }
                     }
-                    return .complete()
                 }
                 self.emojiStatusPackDisposable.set(emojiFileAndPack.startStrict(next: { [weak self] fileAndPackTitle in
                     guard let self else {
@@ -712,12 +632,13 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
             panelInset += 40.0
         }
         
-        var chatPeer: Peer?
+        var chatPeer: EnginePeer?
         if let renderedPeer = interfaceState.renderedPeer {
-            chatPeer = renderedPeer.peers[renderedPeer.peerId]
+            chatPeer = renderedPeer.peers[renderedPeer.peerId].flatMap(EnginePeer.init)
         }
         var hitTestSlop: CGFloat = 0.0
-        if let chatPeer = chatPeer, (updatedButtons.contains(.block) || updatedButtons.contains(.reportSpam) || updatedButtons.contains(.reportUserSpam)), let invitedBy = interfaceState.contactStatus?.invitedBy {
+        if let chatPeer = chatPeer, (updatedButtons.contains(.block) || updatedButtons.contains(.reportSpam) || updatedButtons.contains(.reportUserSpam)), let invitedByPeer = interfaceState.contactStatus?.invitedBy {
+            let invitedBy = EnginePeer(invitedByPeer)
             var inviteInfoTransition = transition
             let inviteInfoNode: ChatInfoTitlePanelInviteInfoNode
             if let current = self.inviteInfoNode {
@@ -745,34 +666,6 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
                 inviteInfoNode?.removeFromSupernode()
             })
         }
-        
-        if let chatPeer = chatPeer, let distance = interfaceState.contactStatus?.peerStatusSettings?.geoDistance {
-            var peerNearbyInfoTransition = transition
-            let peerNearbyInfoNode: ChatInfoTitlePanelPeerNearbyInfoNode
-            if let current = self.peerNearbyInfoNode {
-                peerNearbyInfoNode = current
-            } else {
-                peerNearbyInfoTransition = .immediate
-                peerNearbyInfoNode = ChatInfoTitlePanelPeerNearbyInfoNode(openPeersNearby: { [weak self] in
-                    self?.interfaceInteraction?.openPeersNearby()
-                })
-                self.addSubnode(peerNearbyInfoNode)
-                self.peerNearbyInfoNode = peerNearbyInfoNode
-                peerNearbyInfoNode.alpha = 0.0
-                transition.updateAlpha(node: peerNearbyInfoNode, alpha: 1.0)
-            }
-            
-            if let peerNearbyInfoNode = self.peerNearbyInfoNode {
-                let peerNearbyHeight = peerNearbyInfoNode.update(width: width, theme: interfaceState.theme, strings: interfaceState.strings, wallpaper: interfaceState.chatWallpaper, chatPeer: chatPeer, distance: distance, transition: peerNearbyInfoTransition)
-                peerNearbyInfoTransition.updateFrame(node: peerNearbyInfoNode, frame: CGRect(origin: CGPoint(x: 0.0, y: panelHeight + panelInset), size: CGSize(width: width, height: peerNearbyHeight)))
-                panelHeight += peerNearbyHeight
-            }
-        } else if let peerNearbyInfoNode = self.peerNearbyInfoNode {
-            self.peerNearbyInfoNode = nil
-            transition.updateAlpha(node: peerNearbyInfoNode, alpha: 0.0, completion: { [weak peerNearbyInfoNode] _ in
-                peerNearbyInfoNode?.removeFromSupernode()
-            })
-        }
         return LayoutResult(backgroundHeight: initialPanelHeight, insetHeight: panelHeight + panelInset, hitTestSlop: hitTestSlop)
     }
     
@@ -792,6 +685,8 @@ final class ChatReportPeerTitlePanelNode: ChatTitleAccessoryPanelNode {
                     self.interfaceInteraction?.presentPeerContact()
                 case .restartTopic:
                     self.interfaceInteraction?.restartTopic()
+                case .setPhoto:
+                    self.interfaceInteraction?.openSetPeerAvatar()
                 }
                 break
             }

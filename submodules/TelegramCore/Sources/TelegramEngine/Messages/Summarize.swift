@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 public enum SummarizeError {
@@ -27,7 +27,7 @@ func _internal_summarizeMessage(account: Account, messageId: EngineMessage.Id, t
             flags |= (1 << 0)
         }
         
-        return account.network.request(Api.functions.messages.summarizeText(flags: flags, peer: inputPeer, id: messageId.id, toLang: translateToLang))
+        return account.network.request(Api.functions.messages.summarizeText(flags: flags, peer: inputPeer, id: messageId.id, toLang: translateToLang, tone: nil))
         |> map(Optional.init)
         |> mapError { error -> SummarizeError in
             if error.errorDescription.hasPrefix("FLOOD_WAIT") {

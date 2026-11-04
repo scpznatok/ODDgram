@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -17,9 +16,9 @@ private final class ChatRecentActionsFilterControllerArguments {
     let toggleAllActions: (Bool) -> Void
     let toggleAction: ([AdminLogEventsFlags]) -> Void
     let toggleAllAdmins: (Bool) -> Void
-    let toggleAdmin: (PeerId) -> Void
+    let toggleAdmin: (EnginePeer.Id) -> Void
     
-    init(context: AccountContext, toggleAllActions: @escaping (Bool) -> Void, toggleAction: @escaping ([AdminLogEventsFlags]) -> Void, toggleAllAdmins: @escaping (Bool) -> Void, toggleAdmin: @escaping (PeerId) -> Void) {
+    init(context: AccountContext, toggleAllActions: @escaping (Bool) -> Void, toggleAction: @escaping ([AdminLogEventsFlags]) -> Void, toggleAllAdmins: @escaping (Bool) -> Void, toggleAdmin: @escaping (EnginePeer.Id) -> Void) {
         self.context = context
         self.toggleAllActions = toggleAllActions
         self.toggleAction = toggleAction
@@ -35,7 +34,7 @@ private enum ChatRecentActionsFilterSection: Int32 {
 
 private enum ChatRecentActionsFilterEntryStableId: Hashable {
     case index(Int32)
-    case peer(PeerId)
+    case peer(EnginePeer.Id)
 }
 
 private enum ChatRecentActionsFilterEntry: ItemListNodeEntry {
@@ -213,7 +212,7 @@ private enum ChatRecentActionsFilterEntry: ItemListNodeEntry {
                         peerText = strings.ChatAdmins_AdminLabel.lowercased()
                     }
                 }
-                return ItemListPeerItem(presentationData: presentationData, dateTimeFormat: dateTimeFormat, nameDisplayOrder: nameDisplayOrder, context: arguments.context, peer: EnginePeer(participant.peer), presence: nil, text: .text(peerText, .secondary), label: .none, editing: ItemListPeerItemEditing(editable: false, editing: false, revealed: false), switchValue: ItemListPeerItemSwitch(value: checked, style: .check), enabled: true, selectable: true, sectionId: self.section, action: {
+                return ItemListPeerItem(presentationData: presentationData, dateTimeFormat: dateTimeFormat, nameDisplayOrder: nameDisplayOrder, context: arguments.context, peer: participant.peer, presence: nil, text: .text(peerText, .secondary), label: .none, editing: ItemListPeerItemEditing(editable: false, editing: false, revealed: false), switchValue: ItemListPeerItemSwitch(value: checked, style: .check), enabled: true, selectable: true, sectionId: self.section, action: {
                     arguments.toggleAdmin(participant.peer.id)
                 }, setPeerIdWithRevealedOptions: { _, _ in
                 }, removePeer: { _ in })
@@ -223,9 +222,9 @@ private enum ChatRecentActionsFilterEntry: ItemListNodeEntry {
 
 private struct ChatRecentActionsFilterControllerState: Equatable {
     let events: AdminLogEventsFlags
-    let adminPeerIds: [PeerId]?
+    let adminPeerIds: [EnginePeer.Id]?
     
-    init(events: AdminLogEventsFlags, adminPeerIds: [PeerId]?) {
+    init(events: AdminLogEventsFlags, adminPeerIds: [EnginePeer.Id]?) {
         self.events = events
         self.adminPeerIds = adminPeerIds
     }
@@ -249,14 +248,14 @@ private struct ChatRecentActionsFilterControllerState: Equatable {
         return ChatRecentActionsFilterControllerState(events: events, adminPeerIds: self.adminPeerIds)
     }
     
-    func withUpdatedAdminPeerIds(_ adminPeerIds: [PeerId]?) -> ChatRecentActionsFilterControllerState {
+    func withUpdatedAdminPeerIds(_ adminPeerIds: [EnginePeer.Id]?) -> ChatRecentActionsFilterControllerState {
         return ChatRecentActionsFilterControllerState(events: self.events, adminPeerIds: adminPeerIds)
     }
 }
 
-private func channelRecentActionsFilterControllerEntries(presentationData: PresentationData, accountPeerId: PeerId, peer: Peer, antiSpamBotId: PeerId?, state: ChatRecentActionsFilterControllerState, participants: [RenderedChannelParticipant]?) -> [ChatRecentActionsFilterEntry] {
+private func channelRecentActionsFilterControllerEntries(presentationData: PresentationData, accountPeerId: EnginePeer.Id, peer: EnginePeer, antiSpamBotId: EnginePeer.Id?, state: ChatRecentActionsFilterControllerState, participants: [RenderedChannelParticipant]?) -> [ChatRecentActionsFilterEntry] {
     var isGroup = true
-    if let peer = peer as? TelegramChannel, case .broadcast = peer.info {
+    if case let .channel(peer) = peer, case .broadcast = peer.info {
         isGroup = false
     }
     
@@ -350,7 +349,7 @@ private func channelRecentActionsFilterControllerEntries(presentationData: Prese
     return entries
 }
 
-public func channelRecentActionsFilterController(context: AccountContext, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, peer: Peer, events: AdminLogEventsFlags, adminPeerIds: [PeerId]?, apply: @escaping (_ events: AdminLogEventsFlags, _ adminPeerIds: [PeerId]?) -> Void) -> ViewController {
+public func channelRecentActionsFilterController(context: AccountContext, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, peer: EnginePeer, events: AdminLogEventsFlags, adminPeerIds: [EnginePeer.Id]?, apply: @escaping (_ events: AdminLogEventsFlags, _ adminPeerIds: [EnginePeer.Id]?) -> Void) -> ViewController {
     let statePromise = ValuePromise(ChatRecentActionsFilterControllerState(events: events, adminPeerIds: adminPeerIds), ignoreRepeated: true)
     let stateValue = Atomic(value: ChatRecentActionsFilterControllerState(events: events, adminPeerIds: adminPeerIds))
     let updateState: ((ChatRecentActionsFilterControllerState) -> ChatRecentActionsFilterControllerState) -> Void = { f in
@@ -427,7 +426,7 @@ public func channelRecentActionsFilterController(context: AccountContext, update
     
     adminsPromise.set(.single(nil))
     
-    let (membersDisposable, _) = context.peerChannelMemberCategoriesContextsManager.admins(engine: context.engine, postbox: context.account.postbox, network: context.account.network, accountPeerId: context.account.peerId, peerId: peer.id) { membersState in
+    let (membersDisposable, _) = context.peerChannelMemberCategoriesContextsManager.admins(engine: context.engine, accountPeerId: context.account.peerId, peerId: peer.id) { membersState in
         if case .loading = membersState.loadingState, membersState.list.isEmpty {
             adminsPromise.set(.single(nil))
         } else {
@@ -442,7 +441,7 @@ public func channelRecentActionsFilterController(context: AccountContext, update
         antiSpamBotPeerPromise.set(context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: antiSpamBotId))
         |> map { peer in
             if let peer = peer, case let .user(user) = peer {
-                return RenderedChannelParticipant(participant: .member(id: user.id, invitedAt: 0, adminInfo: nil, banInfo: nil, rank: nil, subscriptionUntilDate: nil), peer: user)
+                return RenderedChannelParticipant(participant: .member(id: user.id, invitedAt: 0, adminInfo: nil, banInfo: nil, rank: nil, subscriptionUntilDate: nil), peer: peer)
             } else {
                 return nil
             }
@@ -455,13 +454,13 @@ public func channelRecentActionsFilterController(context: AccountContext, update
     let signal = combineLatest(presentationData, statePromise.get(), adminsPromise.get(), antiSpamBotPeerPromise.get())
     |> deliverOnMainQueue
     |> map { presentationData, state, admins, antiSpamBot -> (ItemListControllerState, (ItemListNodeState, Any)) in
-        let leftNavigationButton = ItemListNavigationButton(content: .text(presentationData.strings.Common_Cancel), style: .regular, enabled: true, action: {
+        let leftNavigationButton = ItemListNavigationButton(content: .icon(.close), style: .regular, enabled: true, action: {
             dismissImpl?()
         })
         
         let doneEnabled = !state.events.isEmpty
         
-        let rightNavigationButton = ItemListNavigationButton(content: .text(presentationData.strings.Common_Done), style: .bold, enabled: doneEnabled, action: {
+        let rightNavigationButton = ItemListNavigationButton(content: .icon(.done), style: .bold, enabled: doneEnabled, action: {
             var resultState: ChatRecentActionsFilterControllerState?
             updateState { current in
                 resultState = current
@@ -501,4 +500,3 @@ public func channelRecentActionsFilterController(context: AccountContext, update
     }
     return controller
 }
-

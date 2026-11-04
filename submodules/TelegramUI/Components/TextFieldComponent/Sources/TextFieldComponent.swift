@@ -1,3 +1,7 @@
+// MARK: Swiftgram
+import SGInputToolbar
+//
+
 import Foundation
 import UIKit
 import Display
@@ -10,12 +14,13 @@ import EmojiTextAttachmentView
 import AccountContext
 import TextFormat
 import Pasteboard
-import MobileCoreServices
+import UniformTypeIdentifiers
 import ImageTransparency
 import ChatInputTextNode
 import TextInputMenu
 import ObjCRuntimeUtils
 import MultilineTextComponent
+import Speak
 
 public final class EmptyInputView: UIView, UIInputViewAudioFeedback {
     public var enableInputClicksWhenVisible: Bool {
@@ -38,6 +43,8 @@ public final class TextFieldComponent: Component {
         
         public var currentEmojiSearch: EmojiSearch?
         public var dismissedEmojiSearchPosition: EmojiSearch.Position?
+        
+        public var updated: (() -> Void)?
         
         public init() {
         }
@@ -151,6 +158,9 @@ public final class TextFieldComponent: Component {
     public let hideKeyboard: Bool
     public let customInputView: UIView?
     public let placeholder: NSAttributedString?
+    public let placeholderVerticalOffset: CGFloat
+    public let prefix: NSAttributedString?
+    public let suffix: NSAttributedString?
     public let resetText: NSAttributedString?
     public let assumeIsEditing: Bool
     public let isOneLineWhenUnfocused: Bool
@@ -181,6 +191,9 @@ public final class TextFieldComponent: Component {
         hideKeyboard: Bool,
         customInputView: UIView?,
         placeholder: NSAttributedString? = nil,
+        placeholderVerticalOffset: CGFloat = 0.0,
+        prefix: NSAttributedString? = nil,
+        suffix: NSAttributedString? = nil,
         resetText: NSAttributedString?,
         assumeIsEditing: Bool = false,
         isOneLineWhenUnfocused: Bool,
@@ -210,6 +223,9 @@ public final class TextFieldComponent: Component {
         self.hideKeyboard = hideKeyboard
         self.customInputView = customInputView
         self.placeholder = placeholder
+        self.placeholderVerticalOffset = placeholderVerticalOffset
+        self.prefix = prefix
+        self.suffix = suffix
         self.resetText = resetText
         self.assumeIsEditing = assumeIsEditing
         self.isOneLineWhenUnfocused = isOneLineWhenUnfocused
@@ -261,6 +277,15 @@ public final class TextFieldComponent: Component {
             return false
         }
         if lhs.placeholder != rhs.placeholder {
+            return false
+        }
+        if lhs.placeholderVerticalOffset != rhs.placeholderVerticalOffset {
+            return false
+        }
+        if lhs.prefix != rhs.prefix {
+            return false
+        }
+        if lhs.suffix != rhs.suffix {
             return false
         }
         if lhs.resetText != rhs.resetText {
@@ -320,6 +345,8 @@ public final class TextFieldComponent: Component {
     
     public final class View: UIView, UIScrollViewDelegate, ChatInputTextNodeDelegate {
         private var placeholder: ComponentView<Empty>?
+        private var prefix: ComponentView<Empty>?
+        private var suffix: ComponentView<Empty>?
         private let textView: ChatInputTextView
         private let inputMenu: TextInputMenu
         
@@ -334,9 +361,9 @@ public final class TextFieldComponent: Component {
             return InputState(inputText: stateAttributedStringForText(self.textView.attributedText ?? NSAttributedString()), selectionRange: selectionRange)
         }
         
-        // MARK: Swiftgram
-        var sgToolbarActionObserver: NSObjectProtocol? = nil
-        
+        public var inputTextView: UITextView {
+            return self.textView
+        }
         private var component: TextFieldComponent?
         private weak var state: EmptyComponentState?
         private var isUpdating: Bool = false
@@ -348,6 +375,7 @@ public final class TextFieldComponent: Component {
             self.textView.layer.isOpaque = false
             self.textView.indicatorStyle = .white
             self.textView.scrollIndicatorInsets = UIEdgeInsets(top: 9.0, left: 0.0, bottom: 9.0, right: 0.0)
+            self.textView.showsHorizontalScrollIndicator = false
             
             self.inputMenu = TextInputMenu(hasSpoilers: true, hasQuotes: true)
             
@@ -416,20 +444,6 @@ public final class TextFieldComponent: Component {
                 }
             }
             
-            // MARK: Swiftgram
-            self.sgToolbarActionObserver = NotificationCenter.default.addObserver(forName: Notification.Name("sgToolbarAction"), object: nil, queue: .main, using: { [weak self] notification in
-                    guard let self = self else { return }
-                    if let action = notification.userInfo?["action"] as? String {
-                        self.sgToolbarAction(action)
-                    }
-            })
-        }
-        
-        // MARK: Swiftgram
-        deinit {
-            if let sgToolbarActionObserver = self.sgToolbarActionObserver {
-                NotificationCenter.default.removeObserver(sgToolbarActionObserver)
-            }
         }
         
         required init?(coder: NSCoder) {
@@ -503,7 +517,7 @@ public final class TextFieldComponent: Component {
             let pasteboard = UIPasteboard.general
                         
             var attributedString: NSAttributedString?
-            if let data = pasteboard.data(forPasteboardType: kUTTypeRTF as String) {
+            if let data = pasteboard.data(forPasteboardType: UTType.rtf.identifier) {
                 attributedString = chatInputStateStringFromRTF(data, type: NSAttributedString.DocumentType.rtf)
             } else if let data = pasteboard.data(forPasteboardType: "com.apple.flat-rtfd") {
                 attributedString = chatInputStateStringFromRTF(data, type: NSAttributedString.DocumentType.rtfd)
@@ -551,15 +565,15 @@ public final class TextFieldComponent: Component {
                         images.append(image)
                         isPNG = true
                         isMemoji = true
-                    } else if let image = item[kUTTypePNG as String] as? UIImage {
+                    } else if let image = item[UTType.png.identifier] as? UIImage {
                         images.append(image)
                         isPNG = true
                     } else if let image = item["com.apple.uikit.image"] as? UIImage {
                         images.append(image)
                         isPNG = true
-                    } else if let image = item[kUTTypeJPEG as String] as? UIImage {
+                    } else if let image = item[UTType.jpeg.identifier] as? UIImage {
                         images.append(image)
-                    } else if let image = item[kUTTypeGIF as String] as? UIImage {
+                    } else if let image = item[UTType.gif.identifier] as? UIImage {
                         images.append(image)
                     }
                 }
@@ -600,6 +614,11 @@ public final class TextFieldComponent: Component {
                 self.spoilerIsDisappearing = false
                 self.updateInternalSpoilersRevealed(false, animated: false)
             }
+            
+            component.externalState.hasText = self.textView.textStorage.length != 0
+            component.externalState.textLength = self.textView.textStorage.string.count
+            component.externalState.text = NSAttributedString(attributedString: self.textView.textStorage)
+            component.externalState.updated?()
             
             self.updateEntities()
             if !self.isUpdating {
@@ -880,6 +899,26 @@ public final class TextFieldComponent: Component {
             return true
         }
         
+        private var currentSpeechHolder: SpeechSynthesizerHolder?
+        @objc public func _accessibilitySpeak(_ sender: Any) {
+            let selectionRange = self.inputState.selectionRange
+            let text = self.inputState.inputText.attributedSubstring(from: NSRange(location: selectionRange.startIndex, length: selectionRange.count))
+            if let speechHolder = speakText(text: text.string) {
+                speechHolder.completion = { [weak self, weak speechHolder] in
+                    if let strongSelf = self, strongSelf.currentSpeechHolder == speechHolder {
+                        strongSelf.currentSpeechHolder = nil
+                    }
+                }
+                self.currentSpeechHolder = speechHolder
+            }
+            if #available(iOS 13.0, *) {
+                UIMenuController.shared.hideMenu()
+            } else {
+                UIMenuController.shared.isMenuVisible = false
+                UIMenuController.shared.update()
+            }
+        }
+        
         public func chatInputTextNodeTargetForAction(action: Selector) -> ChatInputTextNode.TargetForAction? {
             if action == makeSelectorFromString("_accessibilitySpeak:") {
                 if case .format = self.inputMenu.state {
@@ -1021,7 +1060,7 @@ public final class TextFieldComponent: Component {
             
             let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }.withUpdated(theme: component.theme)
             let updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>) = (presentationData, .single(presentationData))
-            let controller = component.context.sharedContext.makeLinkEditController(context: component.context, updatedPresentationData: updatedPresentationData, text: text.string, link: link, apply: { [weak self] link in
+            let controller = component.context.sharedContext.makeLinkEditController(context: component.context, updatedPresentationData: updatedPresentationData, text: text.string, link: link, apply: { [weak self] link, _ in
                 if let self {
                     if let link {
                         if !link.isEmpty {
@@ -1433,6 +1472,30 @@ public final class TextFieldComponent: Component {
                 self.textView.autocorrectionType = component.autocorrectionType
             }
             
+            var prefixSize: CGSize?
+            if let prefixValue = component.prefix {
+                let prefix: ComponentView<Empty>
+                if let current = self.prefix {
+                    prefix = current
+                } else {
+                    prefix = ComponentView()
+                    self.prefix = prefix
+                }
+                prefixSize = prefix.update(
+                    transition: .immediate,
+                    component: AnyComponent(MultilineTextComponent(
+                        text: .plain(prefixValue)
+                    )),
+                    environment: {},
+                    containerSize: CGSize(width: availableSize.width, height: 1000.0)
+                )
+            } else {
+                if let prefix = self.prefix {
+                    self.prefix = nil
+                    prefix.view?.removeFromSuperview()
+                }
+            }
+            
             if let initialText = component.externalState.initialText {
                 component.externalState.initialText = nil
                 self.updateInputState { _ in
@@ -1464,7 +1527,9 @@ public final class TextFieldComponent: Component {
             var innerTextInsets = component.insets
             innerTextInsets.left = 0.0
             
-            let textLeftInset = component.insets.left + 8.0
+            var textLeftInset = component.insets.left + 8.0
+            let prefixWidth = prefixSize?.width ?? 0.0
+            textLeftInset += prefixWidth
             
             if self.textView.defaultTextContainerInset != innerTextInsets {
                 self.textView.defaultTextContainerInset = innerTextInsets
@@ -1475,10 +1540,45 @@ public final class TextFieldComponent: Component {
                 availableSize.width += 32.0
             }
             
-            let textHeight = self.textView.textHeightForWidth(availableSize.width - component.insets.left, rightInset: innerTextInsets.right)
+            let textHeight = self.textView.textHeightForWidth(availableSize.width - component.insets.left - prefixWidth, rightInset: innerTextInsets.right)
             let size = CGSize(width: availableSize.width, height: min(textHeight, availableSize.height))
             
-            let textFrame = CGRect(origin: CGPoint(x: textLeftInset, y: 0.0), size: CGSize(width: size.width - component.insets.left, height: size.height))
+            let textFrame = CGRect(origin: CGPoint(x: textLeftInset, y: 0.0), size: CGSize(width: size.width - component.insets.left - prefixWidth, height: size.height))
+            
+            if let suffixValue = component.suffix {
+                let suffix: ComponentView<Empty>
+                if let current = self.suffix {
+                    suffix = current
+                } else {
+                    suffix = ComponentView()
+                    self.suffix = suffix
+                }
+                let suffixString = NSMutableAttributedString(attributedString: self.textView.textStorage)
+                suffixString.addAttribute(.foregroundColor, value: UIColor.clear, range: NSRange(location: 0, length: suffixString.length))
+                suffixString.append(suffixValue)
+                let suffixSize = suffix.update(
+                    transition: .immediate,
+                    component: AnyComponent(MultilineTextComponent(
+                        text: .plain(suffixString)
+                    )),
+                    environment: {},
+                    containerSize: CGSize(width: textFrame.width, height: 1000.0)
+                )
+                let suffixFrame = CGRect(origin: CGPoint(x: textFrame.minX, y: textFrame.minY + 16.0 + UIScreenPixel), size: suffixSize)
+                if let suffixView = suffix.view {
+                    if suffixView.superview == nil {
+                        suffixView.layer.anchorPoint = CGPoint(x: 1.0, y: 0.0)
+                        self.insertSubview(suffixView, belowSubview: self.textView)
+                    }
+                    ComponentTransition.immediate.setPosition(view: suffixView, position: CGPoint(x: suffixFrame.maxX, y: suffixFrame.minY))
+                    suffixView.bounds = CGRect(origin: CGPoint(), size: suffixFrame.size)
+                }
+            } else {
+                if let suffix = self.suffix {
+                    self.suffix = nil
+                    suffix.view?.removeFromSuperview()
+                }
+            }
             
             var refreshScrolling = self.textView.bounds.size != textFrame.size
             if component.isOneLineWhenUnfocused && !isEditing && isEditing != wasEditing {
@@ -1499,6 +1599,14 @@ public final class TextFieldComponent: Component {
             self.textView.updateLayout(size: textFrame.size)
             self.textView.panGestureRecognizer.isEnabled = isEditing
             
+            if let prefixView = self.prefix?.view, let prefixSize {
+                if prefixView.superview == nil {
+                    self.insertSubview(prefixView, belowSubview: self.textView)
+                }
+                let prefixFrame = CGRect(origin: CGPoint(x: textFrame.minX - prefixSize.width, y: textFrame.minY + 16.0 + UIScreenPixel), size: prefixSize)
+                prefixView.frame = prefixFrame
+            }
+            
             if let placeholderValue = component.placeholder {
                 var placeholderTransition = transition
                 let placeholder: ComponentView<Empty>
@@ -1511,26 +1619,28 @@ public final class TextFieldComponent: Component {
                 }
                 let placeholderSize = placeholder.update(
                     transition: .immediate,
-                    component: AnyComponent(MultilineTextComponent(
-                        text: .plain(placeholderValue)
-                    )),
+                    component: AnyComponent(
+                        Text(attributedString: placeholderValue)                        
+                    ),
                     environment: {},
                     containerSize: textFrame.size
                 )
-                let placeholderFrame = CGRect(origin: CGPoint(x: textFrame.minX, y: textFrame.minY + floor((textFrame.height - placeholderSize.height) * 0.5) - 1.0), size: placeholderSize)
+                let placeholderFrame = CGRect(origin: CGPoint(x: 0.0, y: floor((textFrame.height - placeholderSize.height) * 0.5) - 1.0 + component.placeholderVerticalOffset), size: placeholderSize)
                 if let placeholderView = placeholder.view {
                     if placeholderView.superview == nil {
-                        placeholderView.layer.anchorPoint = CGPoint()
-                        self.insertSubview(placeholderView, belowSubview: self.textView)
+                        placeholderView.isUserInteractionEnabled = false
+                        self.textView.insertSubview(placeholderView, at: 0)
                     }
-                    placeholderTransition.setPosition(view: placeholderView, position: placeholderFrame.origin)
+                    placeholderTransition.setPosition(view: placeholderView, position: placeholderFrame.center)
                     placeholderView.bounds = CGRect(origin: CGPoint(), size: placeholderFrame.size)
                     
                     placeholderView.isHidden = self.textView.textStorage.length != 0
                 }
-            } else if let placeholder = self.placeholder {
-                self.placeholder = nil
-                placeholder.view?.removeFromSuperview()
+            } else {
+                if let placeholder = self.placeholder {
+                    self.placeholder = nil
+                    placeholder.view?.removeFromSuperview()
+                }
             }
             
             self.updateEmojiSuggestion(transition: .immediate)
@@ -1815,45 +1925,47 @@ extension TextFieldComponent.InputState {
 
 extension TextFieldComponent.View {
     
-    func sgToolbarAction(_ action: String) {
+    // MARK: Swiftgram
+    public func sgToolbarAction(_ action: SGInputToolbarAction) {
         switch action {
-            case "quote":
+            case .quote:
                 self.sgSelectLastWordIfIdle()
                 self.toggleAttribute(key: ChatTextInputAttributes.block, value: ChatTextInputTextQuoteAttribute(kind: .quote, isCollapsed: false))
-            case "spoiler":
+            case .spoiler:
                 self.sgSelectLastWordIfIdle()
                 self.toggleAttribute(key: ChatTextInputAttributes.spoiler)
-            case "bold":
+            case .bold:
                 self.sgSelectLastWordIfIdle()
                 self.toggleAttribute(key: ChatTextInputAttributes.bold)
-            case "italic":
+            case .italic:
                 self.sgSelectLastWordIfIdle()
                 self.toggleAttribute(key: ChatTextInputAttributes.italic)
-            case "monospace":
+            case .date:
+                break
+            case .monospace:
                 self.sgSelectLastWordIfIdle()
                 self.toggleAttribute(key: ChatTextInputAttributes.monospace)
-            case "link":
+            case .link:
                 self.sgSelectLastWordIfIdle()
                 self.openLinkEditing()
-            case "strikethrough":
-                self.sgSelectLastWordIfIdle()
-                self.toggleAttribute(key: ChatTextInputAttributes.strikethrough)
-            case "underline":
+            case .underline:
                 self.sgSelectLastWordIfIdle()
                 self.toggleAttribute(key: ChatTextInputAttributes.underline)
-            case "code":
+            case .strikethrough:
+                self.sgSelectLastWordIfIdle()
+                self.toggleAttribute(key: ChatTextInputAttributes.strikethrough)
+            case .code:
                 self.sgSelectLastWordIfIdle()
                 self.toggleAttribute(key: ChatTextInputAttributes.block, value: ChatTextInputTextQuoteAttribute(kind: .code(language: nil), isCollapsed: false))
-            case "newline":
+            case .newLine:
                 self.sgSetNewLine()
-            case "clearFormatting":
+            case .clearFormatting:
                 self.updateInputState { current in
                     return current.clearFormattingAttributes()
                 }
-            default:
-                assert(false, "Unhandled action \(action)")
         }
     }
+    //
     
     func sgSelectLastWordIfIdle() {
         self.updateInputState { current in

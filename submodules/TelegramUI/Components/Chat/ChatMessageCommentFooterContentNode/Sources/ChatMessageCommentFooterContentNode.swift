@@ -1,6 +1,6 @@
 import Foundation
+import LottieSettings
 import UIKit
-import Postbox
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
@@ -24,7 +24,7 @@ public final class ChatMessageCommentFooterContentNode: ChatMessageBubbleContent
     private let unreadIconNode: ASImageNode
     private var statusNode: RadialStatusNode?
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.separatorNode = ASDisplayNode()
         self.separatorNode.isUserInteractionEnabled = false
         
@@ -52,7 +52,7 @@ public final class ChatMessageCommentFooterContentNode: ChatMessageBubbleContent
         
         self.buttonNode = HighlightTrackingButtonNode()
         
-        super.init()
+        super.init(lottieSettings: lottieSettings)
         
         self.buttonNode.addSubnode(self.separatorNode)
         self.buttonNode.addSubnode(self.countNode)
@@ -102,7 +102,7 @@ public final class ChatMessageCommentFooterContentNode: ChatMessageBubbleContent
         let makeCountLayout = self.countNode.asyncLayout()
         let makeAlternativeCountLayout = self.alternativeCountNode.asyncLayout()
         
-        return { item, layoutConstants, preparePosition, _, constrainedSize, _ in
+        return { [weak self] item, layoutConstants, preparePosition, _, constrainedSize, _ in
             let contentProperties = ChatMessageBubbleContentProperties(hidesSimpleAuthorHeader: false, headerSpacing: 0.0, hidesBackground: .never, forceFullCorners: false, forceAlignment: .none)
             
             let displaySeparator: Bool
@@ -118,7 +118,7 @@ public final class ChatMessageCommentFooterContentNode: ChatMessageBubbleContent
                 topSeparatorOffset = 2.0
             }
             
-            return (contentProperties, nil, CGFloat.greatestFiniteMagnitude, { constrainedSize, position in
+            return (contentProperties, nil, CGFloat.greatestFiniteMagnitude, { [weak self] constrainedSize, position in
                 let incoming = item.message.effectivelyIncoming(item.context.account.peerId)
                 
                 let maxTextWidth = CGFloat.greatestFiniteMagnitude
@@ -126,13 +126,13 @@ public final class ChatMessageCommentFooterContentNode: ChatMessageBubbleContent
                 let horizontalInset = layoutConstants.text.bubbleInsets.left + layoutConstants.text.bubbleInsets.right
                 
                 var dateReplies = 0
-                var replyPeers: [Peer] = []
+                var replyPeers: [EnginePeer] = []
                 var hasUnseenReplies = false
                 for attribute in item.message.attributes {
                     if let attribute = attribute as? ReplyThreadMessageAttribute {
                         dateReplies = Int(attribute.count)
-                        replyPeers = attribute.latestUsers.compactMap { peerId -> Peer? in
-                            return item.message.peers[peerId]
+                        replyPeers = attribute.latestUsers.compactMap { peerId -> EnginePeer? in
+                            return item.message.peers[peerId].flatMap(EnginePeer.init)
                         }
                         if let maxMessageId = attribute.maxMessageId, let maxReadMessageId = attribute.maxReadMessageId {
                             hasUnseenReplies = maxMessageId > maxReadMessageId
@@ -244,7 +244,7 @@ public final class ChatMessageCommentFooterContentNode: ChatMessageBubbleContent
                 let arrowImage = PresentationResourcesChat.chatMessageCommentsArrowIcon(item.presentationData.theme.theme, incoming: incoming)
                 let unreadIconImage = PresentationResourcesChat.chatMessageCommentsUnreadDotIcon(item.presentationData.theme.theme, incoming: incoming)
                 
-                return (suggestedBoundingWidth, { boundingWidth in
+                return (suggestedBoundingWidth, { [weak self] boundingWidth in
                     var boundingSize: CGSize
                     
                     boundingSize = textFrameWithoutInsets.size
@@ -358,7 +358,7 @@ public final class ChatMessageCommentFooterContentNode: ChatMessageBubbleContent
                                 }
                             }
                             
-                            let avatarContent = strongSelf.avatarsContext.update(peers: replyPeers.map(EnginePeer.init), animated: animation.isAnimated)
+                            let avatarContent = strongSelf.avatarsContext.update(peers: replyPeers, animated: animation.isAnimated)
                             let avatarsSize = strongSelf.avatarsNode.update(context: item.context, content: avatarContent, animated: animation.isAnimated, synchronousLoad: synchronousLoad)
                             
                             let iconAlpha: CGFloat = avatarsSize.width.isZero ? 1.0 : 0.0

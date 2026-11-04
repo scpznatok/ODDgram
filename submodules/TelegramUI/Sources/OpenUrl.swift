@@ -1,17 +1,9 @@
-import SGLogging
-import SGAPIWebSettings
-import SGConfig
-import SGSettingsUI
-import SGDebugUI
-import SFSafariViewControllerPlus
 import UndoUI
 //
 import ContactListUI
 import Foundation
 import Display
-import SafariServices
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import MtProtoKit
 import TelegramPresentationData
@@ -24,9 +16,12 @@ import OpenInExternalAppUI
 import BrowserUI
 import OverlayStatusController
 import PresentationDataUtils
+import UrlWhitelist
+import OpenUserGeneratedUrl
+import DebugCompanionScreen
 
 public struct ParsedSecureIdUrl {
-    public let peerId: PeerId
+    public let peerId: EnginePeer.Id
     public let scope: String
     public let publicKey: String
     public let callbackUrl: String
@@ -35,6 +30,11 @@ public struct ParsedSecureIdUrl {
 }
 
 public func parseProxyUrl(sharedContext: SharedAccountContext, url: URL) -> ProxyServerSettings? {
+    // Checked first: a WEB link is a distinct scheme/path and must never be
+    // downgraded into an .mtp entry by the generic proxy parser.
+    if let webSettings = parseWebProxySettingsLink(url.absoluteString) {
+        return webSettings
+    }
     guard let proxy = parseProxyUrl(sharedContext: sharedContext, url: url.absoluteString) else {
         return nil
     }
@@ -109,7 +109,7 @@ public func parseSecureIdUrl(_ url: URL) -> ParsedSecureIdUrl? {
                 return nil
             }
             
-            return ParsedSecureIdUrl(peerId: PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(botId)), scope: scope, publicKey: publicKey, callbackUrl: callbackUrl, opaquePayload: opaquePayload, opaqueNonce: opaqueNonce)
+            return ParsedSecureIdUrl(peerId: EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(botId)), scope: scope, publicKey: publicKey, callbackUrl: callbackUrl, opaquePayload: opaquePayload, opaqueNonce: opaqueNonce)
         }
     }
     
@@ -148,19 +148,6 @@ func formattedConfirmationCode(_ code: Int) -> String {
     return result
 }
 
-private func canonicalExternalUrl(from url: String) -> URL? {
-    var urlWithScheme = url
-    if !url.contains("://") && !url.hasPrefix("mailto:") {
-        urlWithScheme = "http://" + url
-    }
-    if let parsed = URL(string: urlWithScheme) {
-        return parsed
-    } else if let encoded = (urlWithScheme as NSString).addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) {
-        return URL(string: encoded)
-    }
-    return nil
-}
-
 private func makeResolvedUrlHandler(
     context: AccountContext,
     presentationData: PresentationData,
@@ -181,7 +168,7 @@ private func makeResolvedUrlHandler(
                 openPeer: { peer, navigation in
                     switch navigation {
                     case .info:
-                        if let infoController = context.sharedContext.makePeerInfoController(context: context, updatedPresentationData: nil, peer: peer._asPeer(), mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) {
+                        if let infoController = context.sharedContext.makePeerInfoController(context: context, updatedPresentationData: nil, peer: peer, mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) {
                             context.sharedContext.applicationBindings.dismissNativeController()
                             navigationController?.pushViewController(infoController)
                         }
@@ -264,27 +251,22 @@ private func handleInternetUrl(
         if let host = parsedUrl.host, telegramMeHosts.contains(host) {
             handleInternalUrl(parsedUrl.absoluteString)
         } else {
-            let settings = combineLatest(context.sharedContext.accountManager.sharedData(keys: [ApplicationSpecificSharedDataKeys.webBrowserSettings, ApplicationSpecificSharedDataKeys.presentationPasscodeSettings]), context.sharedContext.accountManager.accessChallengeData())
+            let settings = combineLatest(
+                context.sharedContext.accountManager.sharedData(keys: [ApplicationSpecificSharedDataKeys.webBrowserSettings]),
+                context.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.ApplicationSpecificPreference(key: PreferencesKeys.webBrowserSettings))
+            )
             |> take(1)
-            |> map { sharedData, accessChallengeData -> WebBrowserSettings in
-                let passcodeSettings = sharedData.entries[ApplicationSpecificSharedDataKeys.presentationPasscodeSettings]?.get(PresentationPasscodeSettings.self) ?? PresentationPasscodeSettings.defaultSettings
-                
-                var settings: WebBrowserSettings
-                if let current = sharedData.entries[ApplicationSpecificSharedDataKeys.webBrowserSettings]?.get(WebBrowserSettings.self) {
-                    settings = current
-                } else {
-                    settings = .defaultSettings
-                }
-                if accessChallengeData.data.isLockable {
-                    if passcodeSettings.autolockTimeout != nil && settings.defaultWebBrowser == "inApp" {
-                        settings = WebBrowserSettings(defaultWebBrowser: "safari", exceptions: [])
-                    }
-                }
-                return settings
+            |> map { sharedData, accountSettingsEntry -> (WebBrowserSettings, AccountWebBrowserSettings) in
+                let localSettings = sharedData.entries[ApplicationSpecificSharedDataKeys.webBrowserSettings]?.get(WebBrowserSettings.self) ?? WebBrowserSettings.defaultSettings
+                let accountSettings = accountSettingsEntry?.get(AccountWebBrowserSettings.self) ?? AccountWebBrowserSettings.defaultSettings
+                return (localSettings, accountSettings)
             }
             
             let _ = (settings
             |> deliverOnMainQueue).startStandalone(next: { settings in
+                let localSettings = settings.0
+                let accountSettings = settings.1
+                
                 var isTonSite = false
                 if let host = parsedUrl.host, host.lowercased().hasSuffix(".ton") {
                     isTonSite = true
@@ -292,49 +274,49 @@ private func handleInternetUrl(
                     isTonSite = true
                 }
                 
-                if let defaultWebBrowser = settings.defaultWebBrowser, defaultWebBrowser != "inApp" && !isTonSite {
-                    let openInOptions = availableOpenInOptions(context: context, item: .url(url: originalUrl))
-                    if let option = openInOptions.first(where: { $0.identifier == settings.defaultWebBrowser }) {
-                        if case let .openUrl(openInUrl) = option.action() {
-                            context.sharedContext.applicationBindings.openUrl(openInUrl)
+                var isExceptedDomain = false
+                let host = ".\((parsedUrl.host ?? "").lowercased())"
+                let exceptions = accountSettings.openExternalBrowser ? accountSettings.inAppExceptions : accountSettings.externalExceptions
+                for exception in exceptions {
+                    if host.hasSuffix(".\(exception.domain.lowercased())") {
+                        isExceptedDomain = true
+                        break
+                    }
+                }
+                
+                let shouldOpenInApp: Bool
+                if isTonSite {
+                    shouldOpenInApp = true
+                } else if accountSettings.openExternalBrowser {
+                    shouldOpenInApp = isExceptedDomain
+                } else {
+                    shouldOpenInApp = !isExceptedDomain
+                }
+                
+                if shouldOpenInApp {
+                    let controller = BrowserScreen(context: context, subject: .webPage(url: parsedUrl.absoluteString))
+                    navigationController?.pushViewController(controller)
+                } else {
+                    // MARK: Swiftgram
+                    if localSettings.defaultWebBrowser == "inApp" {
+                        sgOpenUrlWithSafariController(parsedUrl: parsedUrl, originalUrl: originalUrl, context: context, presentationData: presentationData, navigationController: navigationController)
+                    } else {
+                        let openInOptions = availableOpenInOptions(context: context, item: .url(url: originalUrl))
+                        var defaultWebBrowser = localSettings.defaultWebBrowser
+                        if defaultWebBrowser == nil || defaultWebBrowser == "inAppSafari" {
+                            defaultWebBrowser = "safari"
+                        }
+                        if let option = openInOptions.first(where: { $0.identifier == defaultWebBrowser }) {
+                            if case let .openUrl(openInUrl) = option.action() {
+                                context.sharedContext.applicationBindings.openUrl(openInUrl)
+                            } else {
+                                context.sharedContext.applicationBindings.openUrl(originalUrl)
+                            }
                         } else {
                             context.sharedContext.applicationBindings.openUrl(originalUrl)
                         }
-                    } else {
-                        context.sharedContext.applicationBindings.openUrl(originalUrl)
                     }
-                } else {
-                    var isExceptedDomain = false
-                    let host = ".\((parsedUrl.host ?? "").lowercased())"
-                    for exception in settings.exceptions {
-                        if host.hasSuffix(".\(exception.domain)") {
-                            isExceptedDomain = true
-                            break
-                        }
-                    }
-                    if settings.defaultWebBrowser == "inApp" { isExceptedDomain = false } // MARK: Swiftgram
-
-                    if (settings.defaultWebBrowser == nil && !isExceptedDomain) || isTonSite {
-                        let controller = BrowserScreen(context: context, subject: .webPage(url: parsedUrl.absoluteString))
-                        navigationController?.pushViewController(controller)
-                    } else {
-                        if let window = navigationController?.view.window, !isExceptedDomain {
-                            let controller = SFSafariViewControllerPlusDidFinish(url: parsedUrl) // MARK: Swiftgram
-                            controller.preferredBarTintColor = presentationData.theme.rootController.navigationBar.opaqueBackgroundColor
-                            controller.preferredControlTintColor = presentationData.theme.rootController.navigationBar.accentTextColor
-                            // MARK: Swiftgram
-                            if parsedUrl.host?.lowercased() == SG_API_WEBAPP_URL_PARSED.host?.lowercased() {
-                                controller.onDidFinish = {
-                                    SGLogger.shared.log("SafariController", "Closed webapp")
-                                    updateSGWebSettingsInteractivelly(context: context)
-                                }
-                            }
-                            //
-                            window.rootViewController?.present(controller, animated: true)
-                        } else {
-                            context.sharedContext.applicationBindings.openUrl(parsedUrl.absoluteString)
-                        }
-                    }
+                    //
                 }
             })
         }
@@ -384,6 +366,25 @@ private func makeTelegramUrl(_ path: String, queryItems: [URLQueryItem] = []) ->
 }
 
 func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, url: String, forceExternal: Bool, presentationData: PresentationData, navigationController: NavigationController?, dismissInput: @escaping () -> Void) {
+    // A login part hides the host a link opens (see `externalUrlWithLoginPart`). Every external link leaves through
+    // here, whoever opens it, so here it is confirmed, unless a prompt that showed the real host was just accepted.
+    if let loginPartUrl = externalUrlWithLoginPart(url), !consumeLoginPartConfirmation(loginPartUrl) {
+        let controller = openLinkConfirmationController(
+            context: context,
+            presentationData: presentationData,
+            updatedPresentationData: .single(presentationData),
+            displayUrl: urlRemovingLoginPart(loginPartUrl).absoluteString,
+            open: {
+                openCheckedExternalUrl(context: context, urlContext: urlContext, url: url, forceExternal: forceExternal, presentationData: presentationData, navigationController: navigationController, dismissInput: dismissInput)
+            }
+        )
+        context.sharedContext.presentGlobalController(controller, nil)
+        return
+    }
+    openCheckedExternalUrl(context: context, urlContext: urlContext, url: url, forceExternal: forceExternal, presentationData: presentationData, navigationController: navigationController, dismissInput: dismissInput)
+}
+
+private func openCheckedExternalUrl(context: AccountContext, urlContext: OpenURLContext, url: String, forceExternal: Bool, presentationData: PresentationData, navigationController: NavigationController?, dismissInput: @escaping () -> Void) {
     if forceExternal || url.lowercased().hasPrefix("tel:") || url.lowercased().hasPrefix("calshow:") {
         if url.lowercased().hasPrefix("tel:+888") {
             context.sharedContext.presentGlobalController(textAlertController(context: context, title: nil, text: presentationData.strings.Conversation_CantPhoneCallAnonymousNumberError, actions: [
@@ -400,6 +401,17 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
         return
     }
     
+    if canonicalUrl.scheme?.lowercased() == "tg", canonicalUrl.host?.lowercased() == "companion" {
+        dismissInput()
+        let controller = DebugCompanionScreen(context: context, standalone: navigationController == nil)
+        if let navigationController {
+            navigationController.pushViewController(controller)
+        } else {
+            context.sharedContext.presentGlobalController(controller, nil)
+        }
+        return
+    }
+
     if canonicalUrl.scheme == "mailto" {
         context.sharedContext.applicationBindings.openUrl(url)
         return
@@ -450,11 +462,23 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
         if let scheme = parsedUrl.scheme, (scheme == "tg" || scheme == context.sharedContext.applicationBindings.appSpecificScheme) {
             var convertedUrl: String?
             let host = parsedUrl.host?.lowercased() ?? ""
+            if host == "debug", parsedUrl.path == "/crash_reports" {
+                handleResolvedUrl(.settings(.path("debug/crash_reports")))
+                return
+            }
+            if host == "sendgrams" {
+                guard parsedUrl.path.isEmpty || parsedUrl.path == "/",
+                      let components = URLComponents(url: parsedUrl, resolvingAgainstBaseURL: false) else {
+                    return
+                }
+                handleInternalUrl("https://t.me/sendgrams" + (components.percentEncodedQuery.map { "?" + $0 } ?? ""))
+                return
+            }
             if let query = parsedUrl.query, let params = QueryParameters(query) {
                 switch host {
                 case "localpeer":
                     if let peerIdValue = params["id"].flatMap(Int64.init), let accountId = params["accountId"].flatMap(Int64.init) {
-                        let peerId = PeerId(peerIdValue)
+                        let peerId = EnginePeer.Id(peerIdValue)
                         context.sharedContext.applicationBindings.dismissNativeController()
                         context.sharedContext.navigateToChat(accountId: AccountRecordId(rawValue: accountId), peerId: peerId, messageId: nil)
                     }
@@ -492,6 +516,16 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                             queryItems.append(URLQueryItem(name: "text", value: shareText))
                         }
                         convertedUrl = makeTelegramUrl("/share/url", queryItems: queryItems)
+                    }
+                case "webproxy":
+                    // A WEB relay has no port (always 443) and no user/pass, so it cannot
+                    // reuse the socks/proxy conversion below without being read back as .mtp.
+                    // `host` is a legacy input alias for `server`.
+                    if let server = params["server"] ?? params["host"], !server.isEmpty, let secret = params["secret"], !secret.isEmpty {
+                        convertedUrl = makeTelegramUrl("/webproxy", queryItems: [
+                            URLQueryItem(name: "server", value: server),
+                            URLQueryItem(name: "secret", value: secret)
+                        ])
                     }
                 case "socks", "proxy":
                     let server = params["server"] ?? params["proxy"]
@@ -545,12 +579,12 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                     }
                 case "user":
                     if let idValue = params["id"].flatMap(Int64.init), idValue > 0 {
-                        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(idValue))))
+                        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(idValue))))
                         |> deliverOnMainQueue).startStandalone(next: { peer in
                             if let peer = peer, let controller = context.sharedContext.makePeerInfoController(
                                 context: context,
                                 updatedPresentationData: nil,
-                                peer: peer._asPeer(),
+                                peer: peer,
                                 mode: .generic,
                                 avatarInitiallyExpanded: false,
                                 fromChat: false,
@@ -578,7 +612,11 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                     }
                 case "contact":
                     if let token = params["token"] {
-                        convertedUrl = makeTelegramUrl("/contact/\(token)")
+                        var queryItems: [URLQueryItem] = []
+                        if let noPaidMessagesToken = params["free"], !noPaidMessagesToken.isEmpty {
+                            queryItems.append(URLQueryItem(name: "free", value: noPaidMessagesToken))
+                        }
+                        convertedUrl = makeTelegramUrl("/contact/\(token)", queryItems: queryItems)
                     }
                 case "confirmphone":
                     if let phone = params["phone"], let hash = params["hash"] {
@@ -643,15 +681,6 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                     if let parameter = params["slug"] {
                         convertedUrl = makeTelegramUrl("/m/\(parameter)")
                     }
-                case "hostoverride":
-                    if let override = params["host"] {
-                        let _ = updateNetworkSettingsInteractively(postbox: context.account.postbox, network: context.account.network, { settings in
-                            var settings = settings
-                            settings.backupHostOverride = override
-                            return settings
-                        }).startStandalone()
-                        return
-                    }
                 case "premium_offer":
                     let reference = params["ref"]
                     handleResolvedUrl(.premiumOffer(reference: reference))
@@ -688,7 +717,7 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                 case "send_gift":
                     if let recipient = params["to"] {
                         if let id = Int64(recipient) {
-                            handleResolvedUrl(.sendGift(peerId: PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(id))))
+                            handleResolvedUrl(.sendGift(peerId: EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(id))))
                         } else {
                             let _ = (context.engine.peers.resolvePeerByName(name: recipient, referrer: nil)
                             |> deliverOnMainQueue).start(next: { result in
@@ -700,6 +729,20 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                         }
                     } else {
                         handleResolvedUrl(.sendGift(peerId: nil))
+                    }
+                case "newbot":
+                    if let managerBotName = params["manager"] {
+                        let _ = (context.engine.peers.resolvePeerByName(name: managerBotName, referrer: nil)
+                        |> deliverOnMainQueue).start(next: { result in
+                            guard case let .result(peer) = result, let peer else {
+                                return
+                            }
+                            handleResolvedUrl(.createBot(parentBot: peer.id, username: params["username"], title: params["name"]))
+                        })
+                    }
+                case "textStyle":
+                    if let slug = params["slug"] {
+                        convertedUrl = makeTelegramUrl("/addstyle/\(slug)")
                     }
                 default:
                     break
@@ -727,10 +770,13 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                     var referrer: String?
                     var albumId: Int64?
                     var collectionId: Int64?
+                    var noPaidMessagesToken: String?
                     
                     for queryItem in params.items {
                         if let value = queryItem.value {
                             switch queryItem.name {
+                            case "free":
+                                noPaidMessagesToken = value
                             case "phone":
                                 phone = value
                             case "domain":
@@ -806,6 +852,9 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                         if direct {
                             queryItems.append(URLQueryItem(name: "direct", value: nil))
                         }
+                        if let noPaidMessagesToken {
+                            queryItems.append(URLQueryItem(name: "free", value: noPaidMessagesToken))
+                        }
                         convertedUrl = makeTelegramUrl("/+\(phone)", queryItems: queryItems)
                     } else if let domain = domain {
                         var path = "/\(domain)"
@@ -868,6 +917,9 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                         if direct {
                             queryItems.append(URLQueryItem(name: "direct", value: nil))
                         }
+                        if let noPaidMessagesToken {
+                            queryItems.append(URLQueryItem(name: "free", value: noPaidMessagesToken))
+                        }
                         
                         convertedUrl = makeTelegramUrl(path, queryItems: queryItems)
                     }
@@ -877,70 +929,11 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
                 case "stars":
                     handleResolvedUrl(.stars)
                 case "sg":
-                    if let path = parsedUrl.pathComponents.last {
-                        switch path {
-                            case "debug":
-                                if let debugController = context.sharedContext.makeDebugSettingsController(context: context) {
-                                    navigationController?.pushViewController(debugController)
-                                    return
-                                }
-                            case "sgdebug", "sg_debug":
-                                navigationController?.pushViewController(sgDebugController(context: context))
-                                return
-                            case "settings":
-                                navigationController?.pushViewController(sgSettingsController(context: context))
-                                return
-                            case "ios_settings":
-                                context.sharedContext.applicationBindings.openSettings()
-                                return
-                            case "contacts":
-                                if let lastViewController = navigationController?.viewControllers.last as? ViewController {
-                                    lastViewController.present(ContactsController(context: context), in: .window(.root), with: ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
-                                }
-                                return
-                            case "pro", "premium", "buy":
-                                if context.sharedContext.immediateSGStatus.status > 1 {
-                                    navigationController?.pushViewController(context.sharedContext.makeSGProController(context: context))
-                                } else {
-                                    if let lastViewController = navigationController?.viewControllers.last as? ViewController {
-                                        if let payWallController = context.sharedContext.makeSGPayWallController(context: context) {
-                                            lastViewController.present(payWallController, in: .window(.root), with: ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
-                                        } else {
-                                            lastViewController.present(context.sharedContext.makeSGUpdateIOSController(), animated: true)
-                                        }
-                                    }
-                                }
-                            case "restart":
-                                let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                                let lang = presentationData.strings.baseLanguageCode
-                                context.sharedContext.presentGlobalController(
-                                    UndoOverlayController(
-                                        presentationData: presentationData,
-                                        content: .info(title: nil,
-                                            text: "Common.RestartRequired".i18n(lang),
-                                            timeout: nil,
-                                            customUndoText: "Common.RestartNow".i18n(lang)
-                                        ),
-                                        elevatedLayout: false,
-                                        action: { action in if action == .undo { exit(0) }; return true }
-                                    ),
-                                    nil
-                                )
-                            case "restore_purchases", "pro_restore", "validate", "restore":
-                                let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                                let lang = presentationData.strings.baseLanguageCode
-                                context.sharedContext.presentGlobalController(UndoOverlayController(
-                                        presentationData: presentationData,
-                                        content: .info(title: nil, text: "PayWall.Button.Restoring".i18n(lang), timeout: nil, customUndoText: nil),
-                                        elevatedLayout: false,
-                                        action: { _ in return false }
-                                    ),
-                                nil)
-                                context.sharedContext.SGIAP?.restorePurchases {}
-                            default:
-                                break
-                        }
+                    // MARK: Swiftgram
+                    if sgHandleInternalUrlRoute(context: context, parsedUrl: parsedUrl, navigationController: navigationController) {
+                        return
                     }
+                    //
                 case "ton":
                     handleResolvedUrl(.ton)
                 case "importstickers":
@@ -1087,7 +1080,16 @@ func openExternalUrlImpl(context: AccountContext, urlContext: OpenURLContext, ur
         if let host = parsedUrl.host, telegramMeHosts.contains(host) {
             continueHandling()
         } else {
-            if isTelegraPhLink(parsedUrl.absoluteString) {
+            if isTelegramWebShortLink(parsedUrl.absoluteString) {
+                handleInternetUrl(
+                    parsedUrl: parsedUrl,
+                    originalUrl: url,
+                    context: context,
+                    presentationData: presentationData,
+                    navigationController: navigationController,
+                    handleInternalUrl: handleInternalUrl
+                )
+            } else if isTelegraPhLink(parsedUrl.absoluteString) {
                 continueHandling()
             } else {
                 context.sharedContext.applicationBindings.openUniversalUrl(url, TelegramApplicationOpenUrlCompletion(completion: { success in

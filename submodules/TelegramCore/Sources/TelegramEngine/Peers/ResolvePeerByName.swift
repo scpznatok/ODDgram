@@ -1,18 +1,7 @@
 import Foundation
 import Postbox
-import TelegramApi
+internal import TelegramApi
 import SwiftSignalKit
-
-public enum ResolvePeerByNameOptionCached {
-    case none
-    case cached
-    case cachedIfLaterThan(timestamp: Int32)
-}
-
-public enum ResolvePeerByNameOptionRemote {
-    case updateIfEarlierThan(timestamp: Int32)
-    case update
-}
 
 public enum ResolvePeerIdByNameResult {
     case progress

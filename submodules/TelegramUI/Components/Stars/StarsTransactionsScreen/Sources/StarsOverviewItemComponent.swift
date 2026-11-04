@@ -73,11 +73,11 @@ final class StarsOverviewItemComponent: Component {
             
             let sideInset: CGFloat = 16.0
             
-            let iconY: CGFloat = component.value.currency == .ton ? 13.0 + UIScreenPixel : 10.0
+            let iconY: CGFloat = component.value.currency == .ton ? 9.0 + UIScreenPixel : 10.0
             if self.icon.image == nil {
                 switch component.value.currency {
                 case .ton:
-                    self.icon.image = generateTintedImage(image: UIImage(bundleImageName: "Ads/TonMedium"), color: component.theme.list.itemAccentColor)
+                    self.icon.image = UIImage(bundleImageName: "Wallet/TopGram")
                 case .stars:
                     self.icon.image = UIImage(bundleImageName: "Premium/Stars/StarMedium")
                 }

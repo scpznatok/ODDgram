@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import ComponentFlow
@@ -13,6 +14,7 @@ import BundleIconComponent
 import BalancedTextComponent
 import MultilineTextComponent
 import SolidRoundedButtonComponent
+import ButtonComponent
 import LottieComponent
 import AccountContext
 import GlassBarButtonComponent
@@ -110,7 +112,7 @@ private final class SheetContent: CombinedComponent {
         
         let premiumTitle = Child(BalancedTextComponent.self)
         let premiumText = Child(BalancedTextComponent.self)
-        let premiumButton = Child(SolidRoundedButtonComponent.self)
+        let premiumButton = Child(ButtonComponent.self)
         
         return { context in
             let environment = context.environment[EnvironmentType.self]
@@ -205,7 +207,8 @@ private final class SheetContent: CombinedComponent {
             let icon = icon.update(
                 component: LottieComponent(
                     content: LottieComponent.AppBundleContent(name: iconName),
-                    playOnce: state.playOnce
+                    playOnce: state.playOnce,
+                    lottieSettings: component.context.lottieRenderingSettings
                 ),
                 availableSize: CGSize(width: 70, height: 70),
                 transition: .immediate
@@ -342,28 +345,32 @@ private final class SheetContent: CombinedComponent {
             contentSize.height += premiumText.size.height
             contentSize.height += spacing + 5.0
             
+            let premiumGradientColors = [
+                UIColor(rgb: 0x0077ff),
+                UIColor(rgb: 0x6b93ff),
+                UIColor(rgb: 0x8878ff),
+                UIColor(rgb: 0xe46ace)
+            ]
             let premiumButton = premiumButton.update(
-                component: SolidRoundedButtonComponent(
-                    title: premiumButtonTitle,
-                    theme: SolidRoundedButtonComponent.Theme(
-                        backgroundColor: .black,
-                        backgroundColors: [
-                            UIColor(rgb: 0x0077ff),
-                            UIColor(rgb: 0x6b93ff),
-                            UIColor(rgb: 0x8878ff),
-                            UIColor(rgb: 0xe46ace)
-                        ],
-                        foregroundColor: .white
+                component: ButtonComponent(
+                    background: ButtonComponent.Background(
+                        style: .glass,
+                        color: premiumGradientColors[0],
+                        foreground: .white,
+                        pressedColor: premiumGradientColors[0],
+                        isShimmering: false,
+                        gradient: ButtonComponent.Background.Gradient(colors: premiumGradientColors)
                     ),
-                    font: .bold,
-                    fontSize: 17.0,
-                    height: 52.0,
-                    cornerRadius: 26.0,
-                    gloss: false,
-                    glass: true,
-                    iconName: nil,
-                    animationName: nil,
-                    iconPosition: .left,
+                    content: AnyComponentWithIdentity(
+                        id: AnyHashable(premiumButtonTitle),
+                        component: AnyComponent(ButtonTextContentComponent(
+                            text: premiumButtonTitle,
+                            badge: 0,
+                            textColor: .white,
+                            badgeBackground: .white,
+                            badgeForeground: premiumGradientColors[0]
+                        ))
+                    ),
                     action: {
                         component.openPremiumIntro()
                         component.dismiss()
@@ -460,7 +467,7 @@ private final class SheetContainerComponent: CombinedComponent {
                         metrics: environment.metrics,
                         deviceMetrics: environment.deviceMetrics,
                         isDisplaying: environment.value.isVisible,
-                        isCentered: environment.metrics.widthClass == .regular,
+                        isCentered: environment.presentsFloatingPanels,
                         hasInputHeight: !environment.inputHeight.isZero,
                         regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                         dismiss: { animated in
@@ -493,11 +500,14 @@ private final class SheetContainerComponent: CombinedComponent {
                     deviceMetrics: environment.deviceMetrics,
                     intrinsicInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: max(environment.safeInsets.bottom, sheetExternalState.contentHeight), right: 0.0),
                     safeInsets: UIEdgeInsets(top: 0.0, left: environment.safeInsets.left, bottom: 0.0, right: environment.safeInsets.right),
+                    reservedCorners: environment.reservedCorners,
+                    division: nil,
                     additionalInsets: .zero,
-                    statusBarHeight: environment.statusBarHeight,
+                    statusBarHeight: environment.fullStatusBarHeight,
                     inputHeight: nil,
                     inputHeightIsInteractivellyChanging: false,
-                    inVoiceOver: false
+                    inVoiceOver: false,
+                    presentedInFormSheet: false
                 )
                 controller.presentationContext.containerLayoutUpdated(layout, transition: context.transition.containedViewLayoutTransition)
             }

@@ -1,6 +1,6 @@
 import Foundation
 import Postbox
-import TelegramApi
+internal import TelegramApi
 import SwiftSignalKit
 import Emoji
 
@@ -9,24 +9,65 @@ public enum EnqueueMessageGrouping {
     case auto
 }
 
+public enum EngineMessageReplyInnerSubject: Codable, Equatable {
+    case todoItem(Int32)
+    case pollOption(Data)
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "t"
+        case value = "v"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(Int32.self, forKey: .type)
+        switch type {
+        case 0:
+            self = .todoItem(try container.decode(Int32.self, forKey: .value))
+        case 1:
+            self = .pollOption(try container.decode(Data.self, forKey: .value))
+        default:
+            self = .todoItem(try container.decode(Int32.self, forKey: .value))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .todoItem(id):
+            try container.encode(Int32(0), forKey: .type)
+            try container.encode(id, forKey: .value)
+        case let .pollOption(data):
+            try container.encode(Int32(1), forKey: .type)
+            try container.encode(data, forKey: .value)
+        }
+    }
+}
+
 public struct EngineMessageReplyQuote: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case text = "t"
         case entities = "e"
         case media = "m"
         case offset = "o"
+        case richText = "r"
     }
     
     public var text: String
     public var offset: Int?
     public var entities: [MessageTextEntity]
     public var media: Media?
+    /// The fragments of a quote of a rich message, one per quoted text node, as sent in
+    /// `quote_rich`. `text` and `entities` are then their flat form (`richReplyQuoteTextAndEntities`),
+    /// which is what every display and search path reads.
+    public var richText: [RichText]?
     
-    public init(text: String, offset: Int?, entities: [MessageTextEntity], media: Media?) {
+    public init(text: String, offset: Int?, entities: [MessageTextEntity], media: Media?, richText: [RichText]? = nil) {
         self.text = text
         self.offset = offset
         self.entities = entities
         self.media = media
+        self.richText = richText
     }
     
     public init(from decoder: Decoder) throws {
@@ -41,6 +82,12 @@ public struct EngineMessageReplyQuote: Codable, Equatable {
         } else {
             self.media = nil
         }
+        
+        if let richTextData = try container.decodeIfPresent(Data.self, forKey: .richText) {
+            self.richText = PostboxDecoder(buffer: MemoryBuffer(data: richTextData)).decodeObjectArrayWithDecoderForKey("f") as [RichText]
+        } else {
+            self.richText = nil
+        }
     }
     
     public func encode(to encoder: Encoder) throws {
@@ -54,6 +101,11 @@ public struct EngineMessageReplyQuote: Codable, Equatable {
             mediaEncoder.encodeRootObject(media)
             try container.encode(mediaEncoder.makeData(), forKey: .media)
         }
+        if let richText = self.richText {
+            let richTextEncoder = PostboxEncoder()
+            richTextEncoder.encodeObjectArray(richText, forKey: "f")
+            try container.encode(richTextEncoder.makeData(), forKey: .richText)
+        }
     }
     
     public static func ==(lhs: EngineMessageReplyQuote, rhs: EngineMessageReplyQuote) -> Bool {
@@ -64,6 +116,9 @@ public struct EngineMessageReplyQuote: Codable, Equatable {
             return false
         }
         if lhs.entities != rhs.entities {
+            return false
+        }
+        if lhs.richText != rhs.richText {
             return false
         }
         if let lhsMedia = lhs.media, let rhsMedia = rhs.media {
@@ -82,13 +137,20 @@ public struct EngineMessageReplyQuote: Codable, Equatable {
 public struct EngineMessageReplySubject: Codable, Equatable {
     public var messageId: EngineMessage.Id
     public var quote: EngineMessageReplyQuote?
-    public var todoItemId: Int32?
+    public var innerSubject: EngineMessageReplyInnerSubject?
     
-    public init(messageId: EngineMessage.Id, quote: EngineMessageReplyQuote?, todoItemId: Int32?) {
+    public init(messageId: EngineMessage.Id, quote: EngineMessageReplyQuote?, innerSubject: EngineMessageReplyInnerSubject?) {
         self.messageId = messageId
         self.quote = quote
-        self.todoItemId = todoItemId
+        self.innerSubject = innerSubject
     }
+}
+
+/// The reply a resend asks for: the stored attribute's, keeping its quote only if the original asked
+/// for one. A cross-chat reply stores the replied message's text as a display-only quote
+/// (`isQuote == false`), which the original send never sent.
+func resentReplySubject(_ attribute: ReplyMessageAttribute) -> EngineMessageReplySubject {
+    return EngineMessageReplySubject(messageId: attribute.messageId, quote: attribute.isQuote ? attribute.quote : nil, innerSubject: attribute.innerSubject)
 }
 
 public enum EnqueueMessage {
@@ -220,6 +282,8 @@ private func filterMessageAttributesForOutgoingMessage(_ attributes: [MessageAtt
         switch attribute {
         case _ as TextEntitiesMessageAttribute:
             return true
+        case _ as RichTextMessageAttribute:
+            return true
         case _ as InlineBotMessageAttribute:
             return true
         case _ as OutgoingMessageInfoAttribute:
@@ -260,16 +324,321 @@ private func filterMessageAttributesForOutgoingMessage(_ attributes: [MessageAtt
             return true
         case _ as SuggestedPostMessageAttribute:
             return true
+        case _ as EphemeralOutgoingMessageAttribute:
+            assertionFailure("EphemeralOutgoingMessageAttribute must be routed before normal outgoing enqueue")
+            return false
         default:
             return false
         }
     }
 }
 
+/// The attributes an outgoing message stores for the ones it was requested with. A media timer is
+/// requested as `AutoremoveTimeoutMessageAttribute`: a secret chat stores it as-is in place of the
+/// chat's own timer, any other chat stores it as `AutoclearTimeoutMessageAttribute` beside the chat's
+/// auto-delete period (`peerAutoremoveTimeout`).
+func outgoingMessageAttributes(requestedAttributes: [MessageAttribute], isSecretChat: Bool, peerAutoremoveTimeout: Int32?) -> [MessageAttribute] {
+    var peerAutoremoveTimeout = peerAutoremoveTimeout
+    var attributes: [MessageAttribute] = []
+    for attribute in filterMessageAttributesForOutgoingMessage(requestedAttributes) {
+        if let attribute = attribute as? AutoremoveTimeoutMessageAttribute {
+            if isSecretChat {
+                peerAutoremoveTimeout = nil
+                attributes.append(attribute)
+            } else {
+                attributes.append(AutoclearTimeoutMessageAttribute(timeout: attribute.timeout, countdownBeginTime: nil))
+            }
+        } else {
+            attributes.append(attribute)
+        }
+    }
+    if let peerAutoremoveTimeout = peerAutoremoveTimeout {
+        attributes.append(AutoremoveTimeoutMessageAttribute(timeout: peerAutoremoveTimeout, countdownBeginTime: nil))
+    }
+    return attributes
+}
+
+/// What a resent message requests in place of `attribute`, which the failed message stores in the
+/// form `outgoingMessageAttributes` produced; nil when it is not requested again.
+func resentMessageRequestedAttribute(_ attribute: MessageAttribute, isSecretChat: Bool) -> MessageAttribute? {
+    if attribute is PaidStarsMessageAttribute {
+        return nil
+    }
+    if let attribute = attribute as? AutoclearTimeoutMessageAttribute {
+        // The media timer of a cloud chat, which is requested in its autoremove form.
+        return AutoremoveTimeoutMessageAttribute(timeout: attribute.timeout, countdownBeginTime: nil)
+    }
+    if attribute is AutoremoveTimeoutMessageAttribute && !isSecretChat {
+        // The chat's auto-delete period, derived again when the message is enqueued. Requested, it
+        // would become a media timer.
+        return nil
+    }
+    return attribute
+}
+
+/// What a forward requests when the server cannot forward it and it is sent as a copy, a new message
+/// with the source's content: the source is not a cloud message, or the destination is a secret chat.
+/// The copy takes the source's content and the forward's own attributes, which say how and where it
+/// is sent. Nothing else the source stores is requested: its timer belongs to its chat and would
+/// become a media timer in a cloud chat or override a secret chat's own, and its paid stars, send-as
+/// peer and schedule are the source chat's. `hidesCaption` drops the formatting of a caption the
+/// forward hides.
+func forwardCopyRequestedAttributes(sourceAttributes: [MessageAttribute], forwardAttributes: [MessageAttribute], hidesCaption: Bool) -> [MessageAttribute] {
+    let contentAttributes = sourceAttributes.filter { attribute in
+        switch attribute {
+        case _ as TextEntitiesMessageAttribute:
+            return !hidesCaption
+        case _ as RichTextMessageAttribute:
+            return true
+        case _ as InlineBotMessageAttribute:
+            return true
+        case _ as OutgoingContentInfoMessageAttribute:
+            return true
+        case _ as ReplyMarkupMessageAttribute:
+            return true
+        case _ as OutgoingChatContextResultMessageAttribute:
+            return true
+        case _ as EmbeddedMediaStickersMessageAttribute:
+            return true
+        case _ as EmojiSearchQueryMessageAttribute:
+            return true
+        case _ as MediaSpoilerMessageAttribute:
+            return true
+        case _ as WebpagePreviewMessageAttribute:
+            return true
+        case _ as InvertMediaMessageAttribute:
+            return true
+        default:
+            return false
+        }
+    }
+    return contentAttributes + forwardAttributes
+}
+
+/// The attributes a forwarded message stores from the forward's request and from its source: one of
+/// each kind, the request's where both have one. A resent forward requests what the failed one
+/// stored, which already includes the source's; and the sender reads the last paid stars a message
+/// stores, which must be the destination's price rather than what the source was paid.
+func forwardedMessageAttributes(requestedAttributes: [MessageAttribute], sourceAttributes: [MessageAttribute], forwardedMessageIds: Set<MessageId>?) -> [MessageAttribute] {
+    let requested = filterMessageAttributesForForwardedMessage(requestedAttributes)
+    let requestedKinds = Set(requested.map { ObjectIdentifier(type(of: $0)) })
+    let source = filterMessageAttributesForForwardedMessage(sourceAttributes, forwardedMessageIds: forwardedMessageIds).filter { attribute in
+        return !requestedKinds.contains(ObjectIdentifier(type(of: attribute)))
+    }
+    return requested + source
+}
+
+/// The local grouping key of a forwarded message: an album stays one album, under a key of its own
+/// so it does not join the source's.
+func forwardGroupingKey(grouping: EnqueueMessageGrouping, sourceGroupingKey: Int64?, generatedKeys: inout [Int64: Int64]) -> Int64? {
+    switch grouping {
+    case .none:
+        return nil
+    case .auto:
+        guard let sourceGroupingKey = sourceGroupingKey else {
+            return nil
+        }
+        if let generatedKey = generatedKeys[sourceGroupingKey] {
+            return generatedKey
+        }
+        let generatedKey = Int64.random(in: Int64.min ... Int64.max)
+        generatedKeys[sourceGroupingKey] = generatedKey
+        return generatedKey
+    }
+}
+
+private func filterMessageAttributesForEphemeralOutgoingMessage(_ attributes: [MessageAttribute]) -> [MessageAttribute] {
+    return attributes.filter { attribute in
+        switch attribute {
+        case _ as TextEntitiesMessageAttribute:
+            return true
+        case _ as RichTextMessageAttribute:
+            return true
+        case _ as EmbeddedMediaStickersMessageAttribute:
+            return true
+        case _ as EmojiSearchQueryMessageAttribute:
+            return true
+        case _ as MediaSpoilerMessageAttribute:
+            return true
+        case _ as WebpagePreviewMessageAttribute:
+            return true
+        case _ as InvertMediaMessageAttribute:
+            return true
+        case _ as ForwardVideoTimestampAttribute:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+private func transientEphemeralOutgoingAttribute(_ attributes: [MessageAttribute]) -> EphemeralOutgoingMessageAttribute? {
+    for attribute in attributes {
+        if let attribute = attribute as? EphemeralOutgoingMessageAttribute, attribute.randomId == 0, attribute.state == .sending {
+            return attribute
+        }
+    }
+    return nil
+}
+
+private func ephemeralReplyTargetBotPeerId(transaction: Transaction, accountPeerId: PeerId, replySubject: EngineMessageReplySubject) -> PeerId? {
+    guard replySubject.messageId.namespace == Namespaces.Message.EphemeralLocal, replySubject.messageId.id > 0, let replyMessage = transaction.getMessage(replySubject.messageId) else {
+        return nil
+    }
+
+    if replyMessage.flags.contains(.Incoming) {
+        guard let authorId = replyMessage.author?.id, authorId != accountPeerId else {
+            return nil
+        }
+        return authorId
+    }
+
+    if let attribute = replyMessage.attributes.first(where: { $0 is EphemeralMessageAttribute }) as? EphemeralMessageAttribute, attribute.receiverId != 0 {
+        return PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(attribute.receiverId))
+    }
+
+    return nil
+}
+
+private func ephemeralBotPeerIdForEnqueuedMessage(transaction: Transaction, accountPeerId: PeerId, message: EnqueueMessage) -> PeerId? {
+    switch message {
+    case let .message(_, attributes, _, _, _, replyToMessageId, _, _, _, _):
+        if let attribute = transientEphemeralOutgoingAttribute(attributes) {
+            return attribute.botPeerId
+        }
+        if let replyToMessageId, replyToMessageId.messageId.namespace == Namespaces.Message.EphemeralLocal {
+            return ephemeralReplyTargetBotPeerId(transaction: transaction, accountPeerId: accountPeerId, replySubject: replyToMessageId)
+        }
+        return nil
+    case .forward:
+        return nil
+    }
+}
+
+private func replyMessageAttributeForEphemeralOutgoingMessage(transaction: Transaction, peerId: PeerId, replySubject: EngineMessageReplySubject?) -> ReplyMessageAttribute? {
+    guard let replySubject else {
+        return nil
+    }
+
+    if replySubject.messageId.namespace == Namespaces.Message.EphemeralLocal {
+        guard replySubject.messageId.id > 0 else {
+            return nil
+        }
+        return ReplyMessageAttribute(messageId: replySubject.messageId, threadMessageId: nil, quote: nil, isQuote: false, innerSubject: nil)
+    }
+
+    guard replySubject.messageId.namespace == Namespaces.Message.Cloud else {
+        return nil
+    }
+
+    var threadMessageId: MessageId?
+    var quote = replySubject.quote
+    let isQuote = quote != nil
+    if let replyMessage = transaction.getMessage(replySubject.messageId) {
+        if replyMessage.id.namespace == Namespaces.Message.Cloud, let threadId = replyMessage.threadId {
+            threadMessageId = MessageId(peerId: replyMessage.id.peerId, namespace: Namespaces.Message.Cloud, id: Int32(clamping: threadId))
+        }
+        if quote == nil, replySubject.messageId.peerId != peerId {
+            let nsText = replyMessage.text as NSString
+            var replyMedia: Media?
+            for media in replyMessage.media {
+                switch media {
+                case _ as TelegramMediaImage, _ as TelegramMediaFile:
+                    replyMedia = media
+                default:
+                    break
+                }
+            }
+            if let richText = replyMessage.richText {
+                // A rich message has no `text`: show the head of its page instead. Display only, like the
+                // flat quote below: `isQuote` was settled above and only `isQuote` quotes are sent.
+                quote = richText.instantPage.wholeRichReplyQuote(maxLength: quoteMaxLength(appConfig: currentAppConfiguration(transaction: transaction)), media: replyMedia)
+            } else {
+                quote = EngineMessageReplyQuote(text: replyMessage.text, offset: nil, entities: messageTextEntitiesInRange(entities: replyMessage.textEntitiesAttribute?.entities ?? [], range: NSRange(location: 0, length: nsText.length), onlyQuoteable: true), media: replyMedia)
+            }
+        }
+    }
+
+    return ReplyMessageAttribute(messageId: replySubject.messageId, threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, innerSubject: replySubject.innerSubject)
+}
+
+private func generateEphemeralOutgoingRandomId() -> Int64 {
+    while true {
+        let value = Int64.random(in: Int64.min ... Int64.max)
+        if value != 0 {
+            return value
+        }
+    }
+}
+
+private func enqueueEphemeralOutgoingMessage(transaction: Transaction, account: Account, peerId: PeerId, transformedMedia: Bool, message: EnqueueMessage, botPeerId: PeerId, isWelcomeTemplate: Bool = false) -> MessageId? {
+    guard case let .message(text, requestedAttributes, inlineStickers, mediaReference, threadId, replyToMessageId, _, _, correlationId, bubbleUpEmojiOrStickersets) = message else {
+        return nil
+    }
+    guard transaction.getPeer(peerId).flatMap(apiInputPeer) != nil else {
+        return nil
+    }
+    if !isWelcomeTemplate && transaction.getPeer(botPeerId).flatMap(apiInputUser) == nil {
+        return nil
+    }
+
+    for (_, file) in inlineStickers {
+        transaction.storeMediaIfNotPresent(media: file)
+    }
+
+    var flags = StoreMessageFlags()
+    flags.insert(.Sending)
+    if isWelcomeTemplate {
+        flags.insert(.Incoming)
+    }
+
+    let randomId = generateEphemeralOutgoingRandomId()
+    var infoFlags = OutgoingMessageInfoFlags()
+    if transformedMedia {
+        infoFlags.insert(.transformedMedia)
+    }
+
+    var partialReference: PartialMediaReference?
+    if let mediaReference {
+        partialReference = mediaReference.partial
+    }
+
+    var attributes: [MessageAttribute] = filterMessageAttributesForEphemeralOutgoingMessage(requestedAttributes)
+    attributes.append(OutgoingMessageInfoAttribute(uniqueId: randomId, flags: infoFlags, acknowledged: false, correlationId: correlationId, bubbleUpEmojiOrStickersets: bubbleUpEmojiOrStickersets, partialReference: partialReference))
+    attributes.append(EphemeralOutgoingMessageAttribute(botPeerId: botPeerId, randomId: randomId, state: .sending, isWelcomeTemplate: isWelcomeTemplate))
+
+    if let replyAttribute = replyMessageAttributeForEphemeralOutgoingMessage(transaction: transaction, peerId: peerId, replySubject: replyToMessageId) {
+        attributes.append(replyAttribute)
+    }
+
+    var mediaList: [Media] = []
+    if let mediaReference {
+        mediaList.append(augmentMediaWithReference(mediaReference))
+    }
+
+    if let file = mediaReference?.media as? TelegramMediaFile, file.isVoice || file.isInstantVideo {
+        if peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup {
+            attributes.append(ConsumableContentMessageAttribute(consumed: false))
+        }
+    }
+
+    let localId = generateEphemeralLocalMessageId(peerId: peerId, transaction: transaction, namespace: isWelcomeTemplate ? Namespaces.Message.WelcomeMessageLocal : Namespaces.Message.EphemeralLocal)
+    var timestamp = Int32(account.network.context.globalTime())
+    if isWelcomeTemplate {
+        timestamp += 1
+    }
+    let storeMessage = StoreMessage(id: localId, customStableId: nil, globallyUniqueId: randomId, groupingKey: nil, threadId: threadId, timestamp: timestamp, flags: flags, tags: [], globalTags: [], localTags: [], forwardInfo: nil, authorId: isWelcomeTemplate ? peerId : account.peerId, text: text, attributes: attributes, media: mediaList)
+    let _ = transaction.addMessages([storeMessage], location: .Random)
+
+    return localId
+}
+
 private func filterMessageAttributesForForwardedMessage(_ attributes: [MessageAttribute], forwardedMessageIds: Set<MessageId>? = nil) -> [MessageAttribute] {
     return attributes.filter { attribute in
         switch attribute {
             case _ as TextEntitiesMessageAttribute:
+                return true
+            case _ as RichTextMessageAttribute:
                 return true
             case _ as InlineBotMessageAttribute:
                 return true
@@ -311,7 +680,7 @@ func opportunisticallyTransformMessageWithMedia(network: Network, postbox: Postb
 
 private func forwardedMessageToBeReuploaded(transaction: Transaction, id: MessageId) -> Message? {
     if let message = transaction.getMessage(id) {
-        if message.id.namespace != Namespaces.Message.Cloud {
+        if message.id.namespace != Namespaces.Message.Cloud && !Namespaces.Message.allEphemeral.contains(message.id.namespace) {
             return message
         } else {
             return nil
@@ -367,13 +736,44 @@ public func enqueueMessages(account: Account, peerId: PeerId, messages: [Enqueue
     }
     return signal
     |> mapToSignal { messages -> Signal<[MessageId?], NoError> in
-        return account.postbox.transaction { transaction -> [MessageId?] in
-            return enqueueMessages(transaction: transaction, account: account, peerId: peerId, messages: messages)
+        return account.postbox.transaction { transaction -> ([MessageId?], [MessageId]) in
+            var resultIds = Array<MessageId?>(repeating: nil, count: messages.count)
+            var ephemeralMessageIds: [MessageId] = []
+            var normalMessages: [(Bool, EnqueueMessage)] = []
+            var normalMessageIndices: [Int] = []
+
+            for i in 0 ..< messages.count {
+                let (transformedMedia, message) = messages[i]
+                if let botPeerId = ephemeralBotPeerIdForEnqueuedMessage(transaction: transaction, accountPeerId: account.peerId, message: message) {
+                    if let messageId = enqueueEphemeralOutgoingMessage(transaction: transaction, account: account, peerId: peerId, transformedMedia: transformedMedia, message: message, botPeerId: botPeerId) {
+                        resultIds[i] = messageId
+                        ephemeralMessageIds.append(messageId)
+                    }
+                } else {
+                    normalMessages.append((transformedMedia, message))
+                    normalMessageIndices.append(i)
+                }
+            }
+
+            if !normalMessages.isEmpty {
+                let normalIds = enqueueMessages(transaction: transaction, account: account, peerId: peerId, messages: normalMessages)
+                for i in 0 ..< min(normalIds.count, normalMessageIndices.count) {
+                    resultIds[normalMessageIndices[i]] = normalIds[i]
+                }
+            }
+
+            return (resultIds, ephemeralMessageIds)
+        }
+        |> map { resultIds, ephemeralMessageIds -> [MessageId?] in
+            for messageId in ephemeralMessageIds {
+                let _ = _internal_sendEphemeralOutgoingMessage(account: account, messageId: messageId).startStandalone()
+            }
+            return resultIds
         }
     }
 }
 
-public func enqueueMessagesToMultiplePeers(account: Account, peerIds: [PeerId], threadIds: [PeerId: Int64], messages: [EnqueueMessage]) -> Signal<[MessageId], NoError> {
+public func enqueueWelcomeMessages(account: Account, peerId: PeerId, messages: [EnqueueMessage]) -> Signal<[MessageId?], NoError> {
     let signal: Signal<[(Bool, EnqueueMessage)], NoError>
     if let transformOutgoingMessageMedia = account.transformOutgoingMessageMedia {
         signal = opportunisticallyTransformOutgoingMedia(network: account.network, postbox: account.postbox, transformOutgoingMessageMedia: transformOutgoingMessageMedia, messages: messages, userInteractive: true)
@@ -381,25 +781,24 @@ public func enqueueMessagesToMultiplePeers(account: Account, peerIds: [PeerId], 
         signal = .single(messages.map { (false, $0) })
     }
     return signal
-    |> mapToSignal { messages -> Signal<[MessageId], NoError> in
-        return account.postbox.transaction { transaction -> [MessageId] in
-            var messageIds: [MessageId] = []
-            for peerId in peerIds {
-                var replyToMessageId: EngineMessageReplySubject?
-                if let threadIds = threadIds[peerId] {
-                    replyToMessageId = EngineMessageReplySubject(messageId: MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(clamping: threadIds)), quote: nil, todoItemId: nil)
-                }
-                var messages = messages
-                if let replyToMessageId = replyToMessageId {
-                    messages = messages.map { ($0.0, $0.1.withUpdatedReplyToMessageId(replyToMessageId)) }
-                }
-                for id in enqueueMessages(transaction: transaction, account: account, peerId: peerId, messages: messages, disableAutoremove: false, transformGroupingKeysWithPeerId: true) {
-                    if let id = id {
-                        messageIds.append(id)
-                    }
+    |> mapToSignal { messages -> Signal<[MessageId?], NoError> in
+        return account.postbox.transaction { transaction -> ([MessageId?], [MessageId]) in
+            var resultIds = Array<MessageId?>(repeating: nil, count: messages.count)
+            var pendingMessageIds: [MessageId] = []
+            for i in 0 ..< messages.count {
+                let (transformedMedia, message) = messages[i]
+                if let messageId = enqueueEphemeralOutgoingMessage(transaction: transaction, account: account, peerId: peerId, transformedMedia: transformedMedia, message: message, botPeerId: peerId, isWelcomeTemplate: true) {
+                    resultIds[i] = messageId
+                    pendingMessageIds.append(messageId)
                 }
             }
-            return messageIds
+            return (resultIds, pendingMessageIds)
+        }
+        |> map { resultIds, pendingMessageIds -> [MessageId?] in
+            for messageId in pendingMessageIds {
+                let _ = _internal_sendEphemeralOutgoingMessage(account: account, messageId: messageId).startStandalone()
+            }
+            return resultIds
         }
     }
 }
@@ -433,7 +832,7 @@ public func resendMessages(account: Account, messageIds: [MessageId]) -> Signal<
                     var forwardSource: MessageId?
                     inner: for attribute in message.attributes {
                         if let attribute = attribute as? ReplyMessageAttribute {
-                            replyToMessageId = EngineMessageReplySubject(messageId: attribute.messageId, quote: attribute.quote, todoItemId: attribute.todoItemId)
+                            replyToMessageId = resentReplySubject(attribute)
                         } else if let attribute = attribute as? ReplyStoryAttribute {
                             replyToStoryId = attribute.storyId
                         } else if let attribute = attribute as? OutgoingMessageInfoAttribute {
@@ -441,11 +840,8 @@ public func resendMessages(account: Account, messageIds: [MessageId]) -> Signal<
                             continue inner
                         } else if let attribute = attribute as? ForwardSourceInfoAttribute {
                             forwardSource = attribute.messageId
-                        } else {
-                            if attribute is PaidStarsMessageAttribute {
-                            } else {
-                                filteredAttributes.append(attribute)
-                            }
+                        } else if let attribute = resentMessageRequestedAttribute(attribute, isSecretChat: peerId.namespace == Namespaces.Peer.SecretChat) {
+                            filteredAttributes.append(attribute)
                         }
                     }
                     
@@ -483,12 +879,27 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
         }
     }
     
+    // Sending to a user whose chat still shows the report/block panel ends its suspicious state
+    // (`CachedUserData.isSuspiciousPeer`): only the report and block flags go, so an Add Contact
+    // offer stays. A scheduled message reaches no one yet and changes nothing.
+    if peerId.namespace == Namespaces.Peer.CloudUser, messages.contains(where: { !$0.1.attributes.contains(where: { $0 is OutgoingScheduleInfoMessageAttribute }) }) {
+        transaction.updatePeerCachedData(peerIds: Set([peerId]), update: { _, current in
+            guard let current = current as? CachedUserData, current.isSuspiciousPeer, var peerStatusSettings = current.peerStatusSettings else {
+                return current
+            }
+            peerStatusSettings.flags.subtract(.suspiciousPeer)
+            return current.withUpdatedPeerStatusSettings(peerStatusSettings)
+        })
+    }
+    
     var forwardedMessageIds = Set<MessageId>()
     for (_, message) in messages {
         if case let .forward(sourceId, _, _, _, _) = message {
             forwardedMessageIds.insert(sourceId)
         }
     }
+    
+    var localGroupingKeyBySourceKey: [Int64: Int64] = [:]
     
     var updatedMessages: [(Bool, EnqueueMessage)] = []
     outer: for (transformedMedia, message) in messages {
@@ -520,7 +931,7 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                         updatedMessages.append((true, .forward(source: replyToMessageId.messageId, threadId: threadId, grouping: .none, attributes: attributes, correlationId: nil)))
                     }
                 }
-            case let .forward(sourceId, threadId, _, _, _):
+            case let .forward(sourceId, threadId, grouping, forwardAttributes, _):
                 if let sourceMessage = forwardedMessageToBeReuploaded(transaction: transaction, id: sourceId) {
                     var mediaReference: AnyMediaReference?
                     if sourceMessage.id.peerId.namespace == Namespaces.Peer.SecretChat {
@@ -528,7 +939,13 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                             mediaReference = .standalone(media: media)
                         }
                     }
-                    updatedMessages.append((transformedMedia, .message(text: sourceMessage.text, attributes: sourceMessage.attributes, inlineStickers: [:], mediaReference: mediaReference, threadId: threadId, replyToMessageId: threadId.flatMap { EngineMessageReplySubject(messageId: MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(clamping: $0)), quote: nil, todoItemId: nil) }, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])))
+                    var text = sourceMessage.text
+                    var hidesCaption = false
+                    if let media = mediaReference?.media, media is TelegramMediaImage || media is TelegramMediaFile, forwardAttributes.contains(where: { ($0 as? ForwardOptionsMessageAttribute)?.hideCaptions == true }) {
+                        text = ""
+                        hidesCaption = true
+                    }
+                    updatedMessages.append((transformedMedia, .message(text: text, attributes: forwardCopyRequestedAttributes(sourceAttributes: sourceMessage.attributes, forwardAttributes: forwardAttributes, hidesCaption: hidesCaption), inlineStickers: [:], mediaReference: mediaReference, threadId: threadId, replyToMessageId: threadId.flatMap { EngineMessageReplySubject(messageId: MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(clamping: $0)), quote: nil, innerSubject: nil) }, replyToStoryId: nil, localGroupingKey: forwardGroupingKey(grouping: grouping, sourceGroupingKey: sourceMessage.groupingKey, generatedKeys: &localGroupingKeyBySourceKey), correlationId: nil, bubbleUpEmojiOrStickersets: [])))
                     continue outer
                 }
         }
@@ -552,10 +969,22 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
         var addedHashtags: [String] = []
         var emojiItems: [RecentEmojiItem] = []
         
-        var localGroupingKeyBySourceKey: [Int64: Int64] = [:]
-        
         var globallyUniqueIds: [Int64] = []
         for (transformedMedia, message) in updatedMessages {
+            if case let .message(_, requestedAttributes, _, _, _, replyToMessageId, _, _, _, _) = message {
+                if requestedAttributes.contains(where: { $0 is EphemeralOutgoingMessageAttribute }) {
+                    assertionFailure("Ephemeral outgoing messages must be routed before normal enqueue")
+                    continue
+                }
+                if replyToMessageId?.messageId.namespace == Namespaces.Message.EphemeralLocal {
+                    assertionFailure("Normal outgoing messages must not reply to EphemeralLocal")
+                    continue
+                }
+            } else if case let .forward(_, _, _, requestedAttributes, _) = message, requestedAttributes.contains(where: { $0 is EphemeralOutgoingMessageAttribute }) {
+                assertionFailure("Ephemeral outgoing forwards are not supported")
+                continue
+            }
+
             var attributes: [MessageAttribute] = []
             var flags = StoreMessageFlags()
             flags.insert(.Unsent)
@@ -627,23 +1056,8 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                         }
                     }
                     
-                    for attribute in filterMessageAttributesForOutgoingMessage(requestedAttributes) {
-                        if let attribute = attribute as? AutoremoveTimeoutMessageAttribute {
-                            if let _ = peer as? TelegramSecretChat {
-                                peerAutoremoveTimeout = nil
-                                attributes.append(attribute)
-                            } else {
-                                attributes.append(AutoclearTimeoutMessageAttribute(timeout: attribute.timeout, countdownBeginTime: nil))
-                            }
-                        } else {
-                            attributes.append(attribute)
-                        }
-                    }
-                    
-                    if let peerAutoremoveTimeout = peerAutoremoveTimeout {
-                        attributes.append(AutoremoveTimeoutMessageAttribute(timeout: peerAutoremoveTimeout, countdownBeginTime: nil))
-                    }
-                        
+                    attributes.append(contentsOf: outgoingMessageAttributes(requestedAttributes: requestedAttributes, isSecretChat: peer is TelegramSecretChat, peerAutoremoveTimeout: peerAutoremoveTimeout))
+
                     if let replyToMessageId = replyToMessageId {
                         var threadMessageId: MessageId?
                         var quote = replyToMessageId.quote
@@ -663,10 +1077,16 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                                         break
                                     }
                                 }
-                                quote = EngineMessageReplyQuote(text: replyMessage.text, offset: nil, entities: messageTextEntitiesInRange(entities: replyMessage.textEntitiesAttribute?.entities ?? [], range: NSRange(location: 0, length: nsText.length), onlyQuoteable: true), media: replyMedia)
+                                if let richText = replyMessage.richText {
+                                    // A rich message has no `text`: show the head of its page instead. Display only, like the
+                                    // flat quote below: `isQuote` was settled above and only `isQuote` quotes are sent.
+                                    quote = richText.instantPage.wholeRichReplyQuote(maxLength: quoteMaxLength(appConfig: currentAppConfiguration(transaction: transaction)), media: replyMedia)
+                                } else {
+                                    quote = EngineMessageReplyQuote(text: replyMessage.text, offset: nil, entities: messageTextEntitiesInRange(entities: replyMessage.textEntitiesAttribute?.entities ?? [], range: NSRange(location: 0, length: nsText.length), onlyQuoteable: true), media: replyMedia)
+                                }
                             }
                         }
-                        attributes.append(ReplyMessageAttribute(messageId: replyToMessageId.messageId, threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, todoItemId: replyToMessageId.todoItemId))
+                        attributes.append(ReplyMessageAttribute(messageId: replyToMessageId.messageId, threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, innerSubject: replyToMessageId.innerSubject))
                     }
                     if let replyToStoryId = replyToStoryId {
                         attributes.append(ReplyStoryAttribute(storyId: replyToStoryId))
@@ -838,7 +1258,7 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                         }
                     }
                 
-                if threadId == nil, let peer = transaction.getPeer(peerId), (peer is TelegramChannel), peer.isForum {
+                    if threadId == nil, let peer = transaction.getPeer(peerId), (peer is TelegramChannel), peer.isForum {
                         threadId = 1
                     }
                     
@@ -901,27 +1321,36 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                             }
                         }
                         
+                        var hidesCaption = false
                         if hideCaptions {
                             for media in sourceMessage.media {
                                 if media is TelegramMediaImage || media is TelegramMediaFile {
                                     messageText = ""
+                                    hidesCaption = true
                                     break
                                 }
                             }
                         }
                         
-                        if sourceMessage.id.namespace == Namespaces.Message.Cloud && peerId.namespace != Namespaces.Peer.SecretChat {
+                        if (sourceMessage.id.namespace == Namespaces.Message.Cloud || Namespaces.Message.allEphemeral.contains(sourceMessage.id.namespace)) && peerId.namespace != Namespaces.Peer.SecretChat {
                             attributes.append(ForwardSourceInfoAttribute(messageId: sourceMessage.id))
                         
-                            if peerId == account.peerId {
+                            if sourceMessage.id.namespace == Namespaces.Message.Cloud && peerId == account.peerId {
                                 attributes.append(SourceReferenceMessageAttribute(messageId: sourceMessage.id))
                             }
                             
-                            attributes.append(contentsOf: filterMessageAttributesForForwardedMessage(requestedAttributes))
-                            attributes.append(contentsOf: filterMessageAttributesForForwardedMessage(sourceMessage.attributes, forwardedMessageIds: forwardedMessageIds))
+                            attributes.append(contentsOf: forwardedMessageAttributes(requestedAttributes: requestedAttributes, sourceAttributes: sourceMessage.attributes, forwardedMessageIds: forwardedMessageIds))
+
+                            let ephemeralParams = ephemeralForwardParams(sourceMessage)
+                            let ephemeralBotPeerId = ephemeralParams?.botPeerId
+                            if sourceMessage.id.namespace == Namespaces.Message.EphemeralLocal {
+                                attributes.removeAll(where: { $0 is InlineBotMessageAttribute })
+                            } else if sourceMessage.id.namespace == Namespaces.Message.EphemeralAnchored, let inlineBotPeerId = ephemeralParams?.inlineBotPeerId, !attributes.contains(where: { $0 is InlineBotMessageAttribute }) {
+                                attributes.append(InlineBotMessageAttribute(peerId: inlineBotPeerId, title: nil))
+                            }
                             
                             var sourceReplyMarkup: ReplyMarkupMessageAttribute? = nil
-                            var sourceSentViaBot = false
+                            var sourceSentViaBot = ephemeralBotPeerId != nil
                             for attribute in attributes {
                                 if let attribute = attribute as? ReplyMarkupMessageAttribute {
                                     sourceReplyMarkup = attribute
@@ -958,39 +1387,31 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                             
                             if hideSendersNames {
                                 
+                            } else if sourceMessage.id.namespace == Namespaces.Message.EphemeralLocal {
+                                forwardInfo = StoreMessageForwardInfo(authorId: ephemeralParams?.authorId ?? author.id, sourceId: nil, sourceMessageId: nil, date: sourceMessage.timestamp, authorSignature: nil, psaType: nil, flags: [])
                             } else if let sourceForwardInfo = sourceMessage.forwardInfo {
                                 forwardInfo = StoreMessageForwardInfo(authorId: sourceForwardInfo.author?.id, sourceId: sourceForwardInfo.source?.id, sourceMessageId: sourceForwardInfo.sourceMessageId, date: sourceForwardInfo.date, authorSignature: sourceForwardInfo.authorSignature, psaType: nil, flags: [])
                             } else {
                                 if sourceMessage.id.peerId != account.peerId {
-                                    var hasHiddenForwardMedia = false
-                                    for media in sourceMessage.media {
-                                        if let file = media as? TelegramMediaFile {
-                                            if file.isMusic {
-                                                hasHiddenForwardMedia = true
-                                            }
+                                    var sourceId = ephemeralParams?.sourceId
+                                    var sourceMessageId = ephemeralParams?.sourceMessageId
+                                    if ephemeralParams == nil, case let .channel(peer) = messageMainPeer(EngineMessage(sourceMessage)), case .broadcast = peer.info {
+                                        sourceId = peer.id
+                                        sourceMessageId = sourceMessage.id
+                                    }
+
+                                    var authorSignature: String?
+                                    for attribute in sourceMessage.attributes {
+                                        if let attribute = attribute as? AuthorSignatureMessageAttribute {
+                                            authorSignature = attribute.signature
+                                            break
                                         }
                                     }
-                                    
-                                    if !hasHiddenForwardMedia {
-                                        var sourceId: PeerId? = nil
-                                        var sourceMessageId: MessageId? = nil
-                                        if case let .channel(peer) = messageMainPeer(EngineMessage(sourceMessage)), case .broadcast = peer.info {
-                                            sourceId = peer.id
-                                            sourceMessageId = sourceMessage.id
-                                        }
-                                        
-                                        var authorSignature: String?
-                                        for attribute in sourceMessage.attributes {
-                                            if let attribute = attribute as? AuthorSignatureMessageAttribute {
-                                                authorSignature = attribute.signature
-                                                break
-                                            }
-                                        }
-                                        
-                                        let psaType: String? = nil
-                                        
-                                        forwardInfo = StoreMessageForwardInfo(authorId: author.id, sourceId: sourceId, sourceMessageId: sourceMessageId, date: sourceMessage.timestamp, authorSignature: authorSignature, psaType: psaType, flags: [])
-                                    }
+
+                                    let psaType: String? = nil
+
+                                    let forwardAuthorId = ephemeralParams?.authorId ?? author.id
+                                    forwardInfo = StoreMessageForwardInfo(authorId: forwardAuthorId, sourceId: sourceId, sourceMessageId: sourceMessageId, date: sourceMessage.timestamp, authorSignature: authorSignature, psaType: psaType, flags: [])
                                 } else {
                                     forwardInfo = nil
                                 }
@@ -1002,7 +1423,10 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                                 }
                             }
                         } else {
-                            attributes.append(contentsOf: filterMessageAttributesForOutgoingMessage(sourceMessage.attributes))
+                            // A copy into a secret chat, whose own timer is already in `attributes`. The requested
+                            // attributes are not necessarily the forward's own: a reply that quotes another chat's
+                            // message becomes a forward carrying the reply's attributes.
+                            attributes.append(contentsOf: filterMessageAttributesForOutgoingMessage(forwardCopyRequestedAttributes(sourceAttributes: sourceMessage.attributes, forwardAttributes: [], hidesCaption: hidesCaption)))
                         }
                                                 
                         var messageNamespace = Namespaces.Message.Local
@@ -1057,23 +1481,7 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
                         
                         let (tags, globalTags) = tagsForStoreMessage(incoming: false, attributes: attributes, media: sourceMessage.media, textEntities: entitiesAttribute?.entities, isPinned: false)
                         
-                        let localGroupingKey: Int64?
-                        switch grouping {
-                            case .none:
-                                localGroupingKey = nil
-                            case .auto:
-                                if let groupingKey = sourceMessage.groupingKey {
-                                    if let generatedKey = localGroupingKeyBySourceKey[groupingKey] {
-                                        localGroupingKey = generatedKey
-                                    } else {
-                                        let generatedKey = Int64.random(in: Int64.min ... Int64.max)
-                                        localGroupingKeyBySourceKey[groupingKey] = generatedKey
-                                        localGroupingKey = generatedKey
-                                    }
-                                } else {
-                                    localGroupingKey = nil
-                                }
-                        }
+                        let localGroupingKey = forwardGroupingKey(grouping: grouping, sourceGroupingKey: sourceMessage.groupingKey, generatedKeys: &localGroupingKeyBySourceKey)
                         
                         var augmentedMediaList = sourceMessage.media.map { media -> Media in
                             return augmentMediaWithReference(.message(message: MessageReference(sourceMessage), media: media))

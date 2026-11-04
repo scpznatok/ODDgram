@@ -1,10 +1,10 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
 import TelegramCore
 import SwiftSignalKit
-import Postbox
 import AVFoundation
 import RadialStatusNode
 import StickerResources
@@ -19,6 +19,10 @@ import BatchVideoRendering
 import GifVideoLayer
 
 final class HorizontalListContextResultsChatInputPanelItem: ListViewItem {
+    var neighborDescriptor: AnyEquatable {
+        return AnyEquatable.noNeighborInfluence
+    }
+
     let context: AccountContext
     let theme: PresentationTheme
     let result: ChatContextResult
@@ -35,12 +39,12 @@ final class HorizontalListContextResultsChatInputPanelItem: ListViewItem {
         self.resultSelected = resultSelected
     }
     
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         let configure = { () -> Void in
             let node = HorizontalListContextResultsChatInputPanelItemNode()
             
             let nodeLayout = node.asyncLayout()
-            let (top, bottom) = (previousItem != nil, nextItem != nil)
+            let (top, bottom) = (neighbors.previous != nil, neighbors.next != nil)
             let (layout, apply) = nodeLayout(self, params, top, bottom)
             
             node.contentSize = layout.contentSize
@@ -61,13 +65,13 @@ final class HorizontalListContextResultsChatInputPanelItem: ListViewItem {
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? HorizontalListContextResultsChatInputPanelItemNode {
                 let nodeLayout = nodeValue.asyncLayout()
                 
                 async {
-                    let (top, bottom) = (previousItem != nil, nextItem != nil)
+                    let (top, bottom) = (neighbors.previous != nil, neighbors.next != nil)
                     
                     let (layout, apply) = nodeLayout(self, params, top, bottom)
                     Queue.mainQueue().async {
@@ -97,7 +101,7 @@ final class HorizontalListContextResultsChatInputPanelItemNode: ListViewItemNode
     private var currentImageResource: TelegramMediaResource?
     private var currentVideoFile: TelegramMediaFile?
     private var currentAnimatedStickerFile: TelegramMediaFile?
-    private var resourceStatus: MediaResourceStatus?
+    private var resourceStatus: EngineMediaResource.FetchStatus?
     private(set) var item: HorizontalListContextResultsChatInputPanelItem?
     private var statusDisposable = MetaDisposable()
     private let statusNode: RadialStatusNode = RadialStatusNode(backgroundNodeColor: UIColor(white: 0.0, alpha: 0.5))
@@ -179,10 +183,10 @@ final class HorizontalListContextResultsChatInputPanelItemNode: ListViewItemNode
         }
     }
     
-    override public func layoutForParams(_ params: ListViewItemLayoutParams, item: ListViewItem, previousItem: ListViewItem?, nextItem: ListViewItem?) {
+    override public func layoutForParams(_ params: ListViewItemLayoutParams, item: ListViewItem, neighbors: ListViewItemNeighbors) {
         if let item = item as? HorizontalListContextResultsChatInputPanelItem {
             let doLayout = self.asyncLayout()
-            let merged = (top: previousItem != nil, bottom: nextItem != nil)
+            let merged = (top: neighbors.previous != nil, bottom: neighbors.next != nil)
             let (layout, apply) = doLayout(item, params, merged.top, merged.bottom)
             self.contentSize = layout.contentSize
             self.insets = layout.insets
@@ -202,7 +206,7 @@ final class HorizontalListContextResultsChatInputPanelItemNode: ListViewItemNode
             let sideInset: CGFloat = 4.0
             
             var updateImageSignal: Signal<(TransformImageArguments) -> DrawingContext?, NoError>?
-            var updatedStatusSignal: Signal<MediaResourceStatus, NoError>?
+            var updatedStatusSignal: Signal<EngineMediaResource.FetchStatus, NoError>?
 
             var imageResource: TelegramMediaResource?
             var stickerFile: TelegramMediaFile?
@@ -218,14 +222,14 @@ final class HorizontalListContextResultsChatInputPanelItemNode: ListViewItemNode
                     }
                     imageDimensions = externalReference.content?.dimensions?.cgSize
                     if externalReference.type == "gif", let thumbnailResource = externalReference.thumbnail?.resource, let content = externalReference.content, let dimensions = content.dimensions {
-                        videoFile = TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.LocalFile, id: 0), partialReference: nil, resource: thumbnailResource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "video/mp4", size: nil, attributes: [.Animated, .Video(duration: 0, size: dimensions, flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)], alternativeRepresentations: [])
+                        videoFile = TelegramMediaFile(fileId: EngineMedia.Id(namespace: Namespaces.Media.LocalFile, id: 0), partialReference: nil, resource: thumbnailResource, previewRepresentations: [], videoThumbnails: [], immediateThumbnailData: nil, mimeType: "video/mp4", size: nil, attributes: [.Animated, .Video(duration: 0, size: dimensions, flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)], alternativeRepresentations: [])
                         imageResource = nil
                     }
                 
                     if let file = videoFile {
-                        updatedStatusSignal = item.context.account.postbox.mediaBox.resourceStatus(file.resource)
+                        updatedStatusSignal = item.context.engine.resources.status(resource: EngineMediaResource(file.resource))
                     } else if let imageResource = imageResource {
-                        updatedStatusSignal = item.context.account.postbox.mediaBox.resourceStatus(imageResource)
+                        updatedStatusSignal = item.context.engine.resources.status(resource: EngineMediaResource(imageResource))
                     }
                 case let .internalReference(internalReference):
                     if let image = internalReference.image {
@@ -254,12 +258,12 @@ final class HorizontalListContextResultsChatInputPanelItemNode: ListViewItemNode
                         if file.isVideo && file.isAnimated {
                             videoFile = file
                             imageResource = nil
-                            updatedStatusSignal = item.context.account.postbox.mediaBox.resourceStatus(file.resource)
+                            updatedStatusSignal = item.context.engine.resources.status(resource: EngineMediaResource(file.resource))
                         } else if let imageResource = imageResource {
-                            updatedStatusSignal = item.context.account.postbox.mediaBox.resourceStatus(imageResource)
+                            updatedStatusSignal = item.context.engine.resources.status(resource: EngineMediaResource(imageResource))
                         }
                     } else if let imageResource = imageResource {
-                        updatedStatusSignal = item.context.account.postbox.mediaBox.resourceStatus(imageResource)
+                        updatedStatusSignal = item.context.engine.resources.status(resource: EngineMediaResource(imageResource))
                     }
             }
             
@@ -312,7 +316,7 @@ final class HorizontalListContextResultsChatInputPanelItemNode: ListViewItemNode
                         updateImageSignal = chatMessageSticker(account: item.context.account, userLocation: .other, file: stickerFile, small: false, fetched: true)
                     } else {
                         let tmpRepresentation = TelegramMediaImageRepresentation(dimensions: PixelDimensions(CGSize(width: fittedImageDimensions.width * 2.0, height: fittedImageDimensions.height * 2.0)), resource: imageResource, progressiveSizes: [], immediateThumbnailData: nil, hasVideo: false, isPersonal: false)
-                        let tmpImage = TelegramMediaImage(imageId: MediaId(namespace: 0, id: 0), representations: [tmpRepresentation], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
+                        let tmpImage = TelegramMediaImage(imageId: EngineMedia.Id(namespace: 0, id: 0), representations: [tmpRepresentation], immediateThumbnailData: nil, reference: nil, partialReference: nil, flags: [])
                         updateImageSignal = chatMessagePhoto(postbox: item.context.account.postbox, userLocation: .other, photoReference: .standalone(media: tmpImage), synchronousLoad: true)
                     }
                 } else {
@@ -375,7 +379,7 @@ final class HorizontalListContextResultsChatInputPanelItemNode: ListViewItemNode
                             if let currentAnimationNode = strongSelf.animationNode {
                                 animationNode = currentAnimationNode
                             } else {
-                                animationNode = DefaultAnimatedStickerNodeImpl()
+                                animationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: item.context.lottieRenderingSettings)
                                 animationNode.transform = CATransform3DMakeRotation(CGFloat.pi / 2.0, 0.0, 0.0, 1.0)
                                 animationNode.visibility = true
                                 if let placeholderNode = strongSelf.placeholderNode {

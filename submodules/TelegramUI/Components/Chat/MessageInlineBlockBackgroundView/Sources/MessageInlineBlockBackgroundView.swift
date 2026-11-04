@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import HierarchyTrackingLayer
-import Postbox
 import TelegramCore
 import AnimationCache
 import MultiAnimationRenderer
@@ -506,6 +505,8 @@ public final class MessageInlineBlockBackgroundView: UIView {
                         thirdColor: params.thirdColor,
                         backgroundColor: params.backgroundColor,
                         pattern: params.pattern,
+                        patternTopRightPosition: params.patternTopRightPosition,
+                        patternAlpha: params.patternAlpha,
                         animation: .None
                     )
                 }
@@ -592,7 +593,8 @@ public final class MessageInlineBlockBackgroundView: UIView {
                 resource: .media(media: .standalone(media: patternFile), resource: patternFile.resource),
                 type: AnimationCacheAnimationType(file: patternFile),
                 keyframeOnly: false,
-                customColor: .white
+                customColor: .white,
+                lottieSettings: pattern.context.lottieRenderingSettings
             ),
             completion: { [weak self] _, _ in
                 guard let self else {
@@ -640,7 +642,7 @@ public final class MessageInlineBlockBackgroundView: UIView {
         let previousParams = self.params
         self.params = params
 
-        if previousParams?.primaryColor != params.primaryColor || previousParams?.secondaryColor != params.secondaryColor {
+        if previousParams?.primaryColor != params.primaryColor || previousParams?.secondaryColor != params.secondaryColor || previousParams?.backgroundColor != params.backgroundColor {
             for patternContentLayer in self.patternContentLayers {
                 patternContentLayer.layerTintColor = primaryColor.cgColor
             }

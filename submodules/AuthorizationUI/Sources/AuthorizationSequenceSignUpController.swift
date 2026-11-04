@@ -10,7 +10,6 @@ import LegacyComponents
 import ProgressNavigationButtonNode
 import ImageCompression
 import LegacyMediaPickerUI
-import Postbox
 import TextFormat
 import MoreButtonNode
 import ContextUI
@@ -54,7 +53,7 @@ final class AuthorizationSequenceSignUpController: ViewController {
         self.presentationData = presentationData
         self.back = back
         
-        self.moreButtonNode = MoreButtonNode(theme: self.presentationData.theme)
+        self.moreButtonNode = MoreButtonNode(theme: self.presentationData.theme, encircled: false, navigation: true)
         self.moreButtonNode.iconNode.enqueueState(.more, animated: false)
         
         super.init(navigationBarPresentationData: NavigationBarPresentationData(theme: AuthorizationSequenceController.navigationBarTheme(presentationData.theme), strings: NavigationBarStrings(presentationStrings: presentationData.strings)))
@@ -272,9 +271,9 @@ final class AuthorizationSequenceSignUpController: ViewController {
         
         if let name = name {
             self.signUpWithName?(name.0, name.1, self.controllerNode.currentPhoto.flatMap({ image in
-                let tempFile = TempBox.shared.tempFile(fileName: "file")
+                let tempFile = EngineTempBox.shared.tempFile(fileName: "file")
                 let result = compressImageToJPEG(image, quality: 0.7, tempFilePath: tempFile.path)
-                TempBox.shared.dispose(tempFile)
+                EngineTempBox.shared.dispose(tempFile)
                 return result
             }), self.avatarAsset, self.avatarAdjustments, self.announceSignUp)
         }
@@ -291,6 +290,6 @@ private final class AuthorizationContextReferenceContentSource: ContextReference
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }

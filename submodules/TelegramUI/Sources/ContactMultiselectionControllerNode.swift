@@ -1,8 +1,8 @@
 import Display
 import UIKit
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
+import TelegramStringFormatting
 import SwiftSignalKit
 import TelegramPresentationData
 import MergeLists
@@ -20,16 +20,16 @@ import CheckComponent
 
 private struct SearchResultEntry: Identifiable {
     let index: Int
-    let peer: Peer
-    
+    let peer: EnginePeer
+
     var stableId: Int64 {
         return self.peer.id.toInt64()
     }
-    
+
     static func ==(lhs: SearchResultEntry, rhs: SearchResultEntry) -> Bool {
-        return lhs.index == rhs.index && lhs.peer.isEqual(rhs.peer)
+        return lhs.index == rhs.index && lhs.peer == rhs.peer
     }
-    
+
     static func <(lhs: SearchResultEntry, rhs: SearchResultEntry) -> Bool {
         return lhs.index < rhs.index
     }
@@ -189,7 +189,7 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
             }
             
             placeholder = placeholderValue
-            let chatListNode = ChatListNode(context: context, location: .chatList(groupId: .root), chatListFilter: chatListFilter, previewing: false, fillPreloadItems: false, mode: .peers(filter: [.excludeSecretChats], isSelecting: true, additionalCategories: additionalCategories?.categories ?? [], chatListFilters: chatListFilters, displayAutoremoveTimeout: chatSelection.displayAutoremoveTimeout, displayPresence: chatSelection.displayPresence), isPeerEnabled: isPeerEnabled, theme: self.presentationData.theme, fontSize: self.presentationData.listsFontSize, strings: self.presentationData.strings, dateTimeFormat: self.presentationData.dateTimeFormat, nameSortOrder: self.presentationData.nameSortOrder, nameDisplayOrder: self.presentationData.nameDisplayOrder, animationCache: self.animationCache, animationRenderer: self.animationRenderer, disableAnimations: true, isInlineMode: false, autoSetReady: true, isMainTab: false)
+            let chatListNode = ChatListNode(context: context, location: .chatList(groupId: .root), chatListFilter: chatListFilter, previewing: false, fillPreloadItems: false, mode: .peers(filter: [.excludeSecretChats], isSelecting: true, additionalCategories: additionalCategories?.categories ?? [], topPeers: [], chatListFilters: chatListFilters, displayAutoremoveTimeout: chatSelection.displayAutoremoveTimeout, displayPresence: chatSelection.displayPresence), isPeerEnabled: isPeerEnabled, theme: self.presentationData.theme, fontSize: self.presentationData.listsFontSize, strings: self.presentationData.strings, dateTimeFormat: self.presentationData.dateTimeFormat, nameSortOrder: self.presentationData.nameSortOrder, nameDisplayOrder: self.presentationData.nameDisplayOrder, animationCache: self.animationCache, animationRenderer: self.animationRenderer, disableAnimations: true, isInlineMode: false, autoSetReady: true, isMainTab: false)
             chatListNode.passthroughPeerSelection = true
             chatListNode.disabledPeerSelected = { peer, _, reason in
                 attemptDisabledItemSelection?(peer, reason)
@@ -219,22 +219,26 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
             var selectedPeers: [EnginePeer.Id] = []
             if case let .premiumGifting(birthdays, selectToday, hasActions) = mode {
                 if let birthdays {
-                    let today = Calendar(identifier: .gregorian).component(.day, from: Date())
+                    let currentDate = Date()
+                    let currentTimeZone = TimeZone.current
                     var sections: [(String, [EnginePeer.Id], Bool)] = []
                     var todayPeers: [EnginePeer.Id] = []
                     var yesterdayPeers: [EnginePeer.Id] = []
                     var tomorrowPeers: [EnginePeer.Id] = []
                     
                     for (peerId, birthday) in birthdays {
-                        if birthday.day == today {
+                        switch relativeDateForBirthday(birthday, relativeTo: currentDate, timeZone: currentTimeZone) {
+                        case .today:
                             todayPeers.append(peerId)
                             if selectToday {
                                 selectedPeers.append(peerId)
                             }
-                        } else if birthday.day == today - 1 || birthday.day > today + 5 {
+                        case .yesterday:
                             yesterdayPeers.append(peerId)
-                        } else if birthday.day == today + 1 || birthday.day < today + 5 {
+                        case .tomorrow:
                             tomorrowPeers.append(peerId)
+                        case nil:
+                            break
                         }
                     }
                     
@@ -314,7 +318,7 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
             }
         case let .chats(chatsNode):
             chatsNode.peerSelected = { [weak self] peer, _, _, _, _ in
-                self?.openPeer?(.peer(peer: peer._asPeer(), isGlobal: false, participantCount: nil))
+                self?.openPeer?(.peer(peer: peer, isGlobal: false, participantCount: nil))
             }
             chatsNode.additionalCategorySelected = { [weak self] id in
                 guard let strongSelf = self else {
@@ -327,7 +331,7 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
         let searchText = ValuePromise<String>()
         
         self.tokenListNode.deleteToken = { [weak self] id in
-            if let id = id as? PeerId {
+            if let id = id as? EnginePeer.Id {
                 self?.removeSelectedPeer?(ContactListPeerId.peer(id))
             } else if let id = id as? Int {
                 self?.removeSelectedCategory?(id)
@@ -418,7 +422,7 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
                             var headerInsets = layout.insets(options: [.input])
                             headerInsets.top += actualNavigationBarHeight
                             headerInsets.top += strongSelf.tokenListNode.bounds.size.height
-                            searchResultsNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: layout.safeInsets, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver), headerInsets: headerInsets, storiesInset: 0.0, transition: .immediate)
+                            searchResultsNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: layout.safeInsets, reservedCorners: layout.reservedCorners, division: layout.division, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver, presentedInFormSheet: layout.presentedInFormSheet), headerInsets: headerInsets, storiesInset: 0.0, transition: .immediate)
                             searchResultsNode.frame = CGRect(origin: CGPoint(), size: layout.size)
                         }
                         
@@ -468,9 +472,11 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
         insets.top += navigationBarHeight
         insets.top += 10.0
                 
-        let tokenListHeight = self.tokenListNode.updateLayout(tokens: self.editableTokens, width: layout.size.width - (16.0 + layout.safeInsets.left) * 2.0, leftInset: 0.0, rightInset: 0.0, transition: transition)
+        // Per side: on iPhone Duo the right inset is the side strip, beside the status corner.
+        let tokenListWidth = layout.size.width - 16.0 * 2.0 - layout.safeInsets.left - layout.safeInsets.right
+        let tokenListHeight = self.tokenListNode.updateLayout(tokens: self.editableTokens, width: tokenListWidth, leftInset: 0.0, rightInset: 0.0, transition: transition)
         
-        transition.updateFrame(node: self.tokenListNode, frame: CGRect(origin: CGPoint(x: 16.0 + layout.safeInsets.left, y: insets.top), size: CGSize(width: layout.size.width - (16.0 + layout.safeInsets.left) * 2.0, height: tokenListHeight)))
+        transition.updateFrame(node: self.tokenListNode, frame: CGRect(origin: CGPoint(x: 16.0 + layout.safeInsets.left, y: insets.top), size: CGSize(width: tokenListWidth, height: tokenListHeight)))
         
         var headerInsets = layout.insets(options: [.input])
         headerInsets.top += actualNavigationBarHeight
@@ -489,7 +495,7 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
                 } else if count <= 1 {
                     let callTitle: String
                     if case let .contacts(contactListNode) = self.contentNode, let peer = contactListNode.selectedPeers.first, case let .peer(peer, _, _) = peer {
-                        callTitle = self.presentationData.strings.NewCall_ActionCallSingle(EnginePeer(peer).compactDisplayTitle).string
+                        callTitle = self.presentationData.strings.NewCall_ActionCallSingle(peer.compactDisplayTitle).string
                     } else {
                         callTitle = self.presentationData.strings.NewCall_ActionCallMultiple
                     }
@@ -500,7 +506,9 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
             } else {
                 footerPanelNode.content = FooterPanelNode.Content(title: self.presentationData.strings.Premium_Gift_ContactSelection_Proceed, badge: count == 0 ? "" : "\(count)")
             }
-            let panelHeight = footerPanelNode.updateLayout(width: layout.size.width, sideInset: layout.safeInsets.left, bottomInset: headerInsets.bottom, transition: transition)
+            // The bottom footer panel spans iPhone Duo's side strip; it keeps clear only of a corner block at the bottom.
+            let bottomInsets = layout.bottomEdgeSideInsets()
+            let panelHeight = footerPanelNode.updateLayout(width: layout.size.width, leftInset: bottomInsets.left, rightInset: bottomInsets.right, bottomInset: headerInsets.bottom, transition: transition)
             if count == 0 {
                 transition.updateFrame(node: footerPanelNode, frame: CGRect(origin: CGPoint(x: 0.0, y: layout.size.height), size: CGSize(width: layout.size.width, height: panelHeight)))
             } else {
@@ -511,7 +519,7 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
         
         switch self.contentNode {
         case let .contacts(contactsNode):
-            contactsNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: layout.safeInsets, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver), headerInsets: headerInsets, storiesInset: 0.0, transition: transition)
+            contactsNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: layout.safeInsets, reservedCorners: layout.reservedCorners, division: layout.division, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver, presentedInFormSheet: layout.presentedInFormSheet), headerInsets: headerInsets, storiesInset: 0.0, transition: transition)
         case let .chats(chatsNode):
             var combinedInsets = insets
             combinedInsets.left += layout.safeInsets.left
@@ -523,7 +531,7 @@ final class ContactMultiselectionControllerNode: ASDisplayNode {
         self.contentNode.node.frame = CGRect(origin: CGPoint(), size: layout.size)
         
         if let searchResultsNode = self.searchResultsNode {
-            searchResultsNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: layout.safeInsets, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver), headerInsets: headerInsets, storiesInset: 0.0, transition: transition)
+            searchResultsNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: layout.safeInsets, reservedCorners: layout.reservedCorners, division: layout.division, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver, presentedInFormSheet: layout.presentedInFormSheet), headerInsets: headerInsets, storiesInset: 0.0, transition: transition)
             searchResultsNode.frame = CGRect(origin: CGPoint(), size: layout.size)
         }
 
@@ -569,7 +577,7 @@ private final class FooterPanelNode: ASDisplayNode {
 
     private(set) var isCheckOptionSelected: Bool = false
     
-    private var validLayout: (CGFloat, CGFloat, CGFloat)?
+    private var validLayout: (CGFloat, CGFloat, CGFloat, CGFloat)?
     
     var content: Content {
         didSet {
@@ -577,8 +585,8 @@ private final class FooterPanelNode: ASDisplayNode {
                 self.button.title = content.title
                 self.button.badge = content.badge.isEmpty ? nil : content.badge
                 
-                if let (width, sideInset, bottomInset) = self.validLayout {
-                    let _ = self.updateLayout(width: width, sideInset: sideInset, bottomInset: bottomInset, transition: .immediate)
+                if let (width, leftInset, rightInset, bottomInset) = self.validLayout {
+                    let _ = self.updateLayout(width: width, leftInset: leftInset, rightInset: rightInset, bottomInset: bottomInset, transition: .immediate)
                 }
             }
         }
@@ -615,19 +623,19 @@ private final class FooterPanelNode: ASDisplayNode {
     @objc private func checkOptionButtonPressed() {
         self.isCheckOptionSelected = !self.isCheckOptionSelected
         if let validLayout = self.validLayout {
-            let _ = self.updateLayout(width: validLayout.0, sideInset: validLayout.1, bottomInset: validLayout.2, transition: .animated(duration: 0.2, curve: .easeInOut))
+            let _ = self.updateLayout(width: validLayout.0, leftInset: validLayout.1, rightInset: validLayout.2, bottomInset: validLayout.3, transition: .animated(duration: 0.2, curve: .easeInOut))
         }
     }
     
-    func updateLayout(width: CGFloat, sideInset: CGFloat, bottomInset: CGFloat, transition: ContainedViewLayoutTransition) -> CGFloat {
-        self.validLayout = (width, sideInset, bottomInset)
+    func updateLayout(width: CGFloat, leftInset: CGFloat, rightInset: CGFloat, bottomInset: CGFloat, transition: ContainedViewLayoutTransition) -> CGFloat {
+        self.validLayout = (width, leftInset, rightInset, bottomInset)
 
         let topInset: CGFloat = 9.0
         var bottomInset = bottomInset
         bottomInset += topInset - (bottomInset.isZero ? 0.0 : 4.0)
         
-        let buttonInset: CGFloat = 16.0 + sideInset
-        let buttonWidth = width - buttonInset * 2.0
+        let buttonInset: CGFloat = 16.0 + leftInset
+        let buttonWidth = width - buttonInset - 16.0 - rightInset
         let buttonHeight = self.button.updateLayout(width: buttonWidth, transition: transition)
         
         transition.updateFrame(node: self.separatorNode, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: width, height: UIScreenPixel)))
@@ -670,7 +678,7 @@ private final class FooterPanelNode: ASDisplayNode {
                     text: .plain(NSAttributedString(string: checkOptionTitle, font: Font.regular(13.0), textColor: theme.rootController.navigationBar.primaryTextColor))
                 )),
                 environment: {},
-                containerSize: CGSize(width: width - sideInset * 2.0 - checkSpacing - 20.0, height: 100.0)
+                containerSize: CGSize(width: width - leftInset - rightInset - checkSpacing - 20.0, height: 100.0)
             )
 
             let checkTheme = CheckComponent.Theme(
@@ -695,7 +703,7 @@ private final class FooterPanelNode: ASDisplayNode {
             let checkContentWidth = checkOptionControlSize.width + checkSpacing + checkOptionTextSize.width
             let checkContentHeight = 49.0
 
-            let checkOptionControlFrame = CGRect(origin: CGPoint(x: floor((width - checkContentWidth) * 0.5), y: floor(checkContentHeight - checkOptionControlSize.height) * 0.5), size: checkOptionControlSize)
+            let checkOptionControlFrame = CGRect(origin: CGPoint(x: leftInset + floor((width - leftInset - rightInset - checkContentWidth) * 0.5), y: floor(checkContentHeight - checkOptionControlSize.height) * 0.5), size: checkOptionControlSize)
             let checkOptionTextFrame = CGRect(origin: CGPoint(x: checkOptionControlFrame.maxX + checkSpacing, y: floor((checkContentHeight - checkOptionTextSize.height) * 0.5)), size: checkOptionTextSize)
 
             if let checkOptionControlView = checkOptionControl.view {

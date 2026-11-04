@@ -11,9 +11,9 @@ swift_library(
     ],
     deps = [
         "//submodules/AsyncDisplayKit",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/Display",
         "//submodules/TelegramCore",
-        "//submodules/Postbox",
         "//submodules/TextFormat",
         "//submodules/UrlEscaping",
         "//submodules/TelegramUniversalVideoContent",
@@ -24,6 +24,7 @@ swift_library(
         "//submodules/TelegramAnimatedStickerNode",
         "//submodules/SSignalKit/SwiftSignalKit",
         "//submodules/AccountContext",
+        "//submodules/WalletContext",
         "//submodules/YuvConversion",
         "//submodules/TelegramUI/Components/AnimationCache",
         "//submodules/TelegramUI/Components/LottieAnimationCache",
@@ -38,6 +39,8 @@ swift_library(
         "//submodules/TelegramUI/Components/TextLoadingEffect",
         "//submodules/TelegramUI/Components/ChatControllerInteraction",
         "//submodules/TelegramUI/Components/InteractiveTextComponent",
+        "//submodules/TelegramUI/Components/ShimmeringMask",
+        "//submodules/TelegramUI/Components/StreamingTextReveal:StreamingTextReveal",
     ],
     visibility = [
         "//visibility:public",

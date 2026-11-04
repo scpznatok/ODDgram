@@ -10,8 +10,10 @@ swift_library(
         "-warnings-as-errors",
     ],
     deps = [
+        "//submodules/TelegramUI/Components/SideColumnLayout",
         "//submodules/Display",
         "//submodules/AsyncDisplayKit",
+        "//submodules/AppBundle",
         "//submodules/SSignalKit/SwiftSignalKit",
         "//submodules/TelegramCore",
         "//submodules/TelegramPresentationData",
@@ -21,6 +23,7 @@ swift_library(
         "//submodules/PresentationDataUtils",
         "//submodules/ContactsPeerItem",
         "//submodules/TelegramUI/Components/ChatListHeaderComponent",
+        "//submodules/TelegramUI/Components/NavigationBarComponent",
         "//submodules/SearchBarNode",
         "//submodules/Components/ViewControllerComponent",
         "//submodules/ComponentFlow",

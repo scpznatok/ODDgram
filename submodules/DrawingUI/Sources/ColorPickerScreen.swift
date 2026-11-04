@@ -10,10 +10,12 @@ import TelegramPresentationData
 import SheetComponent
 import ViewControllerComponent
 import BlurredBackgroundComponent
-import SegmentedControlNode
+import SegmentControlComponent
 import MultilineTextComponent
 import HexColor
 import MediaEditor
+import GlassBarButtonComponent
+import BundleIconComponent
 
 private let palleteColors: [UInt32] = [
     0xffffff, 0xebebeb, 0xd6d6d6, 0xc2c2c2, 0xadadad, 0x999999, 0x858585, 0x707070, 0x5c5c5c, 0x474747, 0x333333, 0x000000,
@@ -1494,73 +1496,6 @@ private func generateCloseButtonImage(backgroundColor: UIColor, foregroundColor:
     })
 }
 
-private class SegmentedControlComponent: Component {
-    let values: [String]
-    let selectedIndex: Int
-    let selectionChanged: (Int) -> Void
-    
-    init(values: [String], selectedIndex: Int, selectionChanged: @escaping (Int) -> Void) {
-        self.values = values
-        self.selectedIndex = selectedIndex
-        self.selectionChanged = selectionChanged
-    }
-    
-    static func ==(lhs: SegmentedControlComponent, rhs: SegmentedControlComponent) -> Bool {
-        if lhs.values != rhs.values {
-            return false
-        }
-        if lhs.selectedIndex != rhs.selectedIndex {
-            return false
-        }
-        return true
-    }
-
-    final class View: UIView {
-        private let backgroundNode: NavigationBackgroundNode
-        private let node: SegmentedControlNode
-
-        init() {
-            self.backgroundNode = NavigationBackgroundNode(color: UIColor(rgb: 0x888888, alpha: 0.1))
-            self.node = SegmentedControlNode(theme: SegmentedControlTheme(backgroundColor: .clear, foregroundColor: UIColor(rgb: 0x6f7075, alpha: 0.6), shadowColor: .black, textColor: UIColor(rgb: 0xffffff), dividerColor: UIColor(rgb: 0x505155, alpha: 0.6)), items: [], selectedIndex: 0)
-
-            super.init(frame: CGRect())
-
-            self.addSubview(self.backgroundNode.view)
-            self.addSubview(self.node.view)
-        }
-
-        required init?(coder aDecoder: NSCoder) {
-            preconditionFailure()
-        }
-
-        func update(component: SegmentedControlComponent, availableSize: CGSize, transition: ComponentTransition) -> CGSize {
-            self.node.items = component.values.map { SegmentedControlItem(title: $0) }
-            self.node.selectedIndex = component.selectedIndex
-            let selectionChanged = component.selectionChanged
-            self.node.selectedIndexChanged = { [weak self] index in
-                self?.window?.endEditing(true)
-                selectionChanged(index)
-            }
-            
-            let size = self.node.updateLayout(.stretchToFill(width: availableSize.width), transition: transition.containedViewLayoutTransition)
-            transition.setFrame(view: self.node.view, frame: CGRect(origin: CGPoint(), size: size))
-            
-            transition.setFrame(view: self.backgroundNode.view, frame: CGRect(origin: CGPoint(), size: size))
-            self.backgroundNode.update(size: size, cornerRadius: 10.0, transition: .immediate)
-            
-            return size
-        }
-    }
-
-    func makeView() -> View {
-        return View()
-    }
-
-    func update(view: View, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
-        return view.update(component: self, availableSize: availableSize, transition: transition)
-    }
-}
-
 final class ColorSwatchComponent: Component {
     enum SwatchType: Equatable {
         case main
@@ -1859,57 +1794,40 @@ private final class ColorPickerContent: CombinedComponent {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
     
     let context: AccountContext
+    /// The screen the sheet rises on: the sheet hands its content no height to keep to.
+    let screenSize: CGSize
     let initialColor: DrawingColor
     let colorChanged: (DrawingColor) -> Void
     let eyedropper: () -> Void
     let dismiss: () -> Void
-    
+
     init(
         context: AccountContext,
+        screenSize: CGSize,
         initialColor: DrawingColor,
         colorChanged: @escaping (DrawingColor) -> Void,
         eyedropper: @escaping () -> Void,
         dismiss: @escaping () -> Void
     ) {
         self.context = context
+        self.screenSize = screenSize
         self.initialColor = initialColor
         self.colorChanged = colorChanged
         self.eyedropper = eyedropper
         self.dismiss = dismiss
     }
-    
+
     static func ==(lhs: ColorPickerContent, rhs: ColorPickerContent) -> Bool {
         if lhs.context !== rhs.context {
+            return false
+        }
+        if lhs.screenSize != rhs.screenSize {
             return false
         }
         return true
     }
     
     final class State: ComponentState {
-        var cachedEyedropperImage: UIImage?
-        var eyedropperImage: UIImage {
-            let eyedropperImage: UIImage
-            if let image = self.cachedEyedropperImage {
-                eyedropperImage = image
-            } else {
-                eyedropperImage = generateTintedImage(image: UIImage(bundleImageName: "Media Editor/Eyedropper"), color: .white)!
-                self.cachedEyedropperImage = eyedropperImage
-            }
-            return eyedropperImage
-        }
-        
-        var cachedCloseImage: UIImage?
-        var closeImage: UIImage {
-            let closeImage: UIImage
-            if let image = self.cachedCloseImage {
-                closeImage = image
-            } else {
-                closeImage = generateCloseButtonImage(backgroundColor: .clear, foregroundColor: UIColor(rgb: 0xa8aab1))!
-                self.cachedCloseImage = closeImage
-            }
-            return closeImage
-        }
-        
         var selectedMode: Int = 0
         var selectedColor: DrawingColor
         
@@ -1951,10 +1869,10 @@ private final class ColorPickerContent: CombinedComponent {
     }
     
     static var body: Body {
-        let eyedropperButton = Child(Button.self)
-        let closeButton = Child(Button.self)
+        let eyedropperButton = Child(GlassBarButtonComponent.self)
+        let closeButton = Child(GlassBarButtonComponent.self)
         let title = Child(MultilineTextComponent.self)
-        let modeControl = Child(SegmentedControlComponent.self)
+        let modeControl = Child(SegmentControlComponent.self)
         
         let colorGrid = Child(ColorGridComponent.self)
         let colorSpectrum = Child(ColorSpectrumComponent.self)
@@ -1985,50 +1903,45 @@ private final class ColorPickerContent: CombinedComponent {
             let sideInset: CGFloat = 16.0
                         
             let eyedropperButton = eyedropperButton.update(
-                component: Button(
-                    content: AnyComponent(
-                        Image(image: state.eyedropperImage)
+                component: GlassBarButtonComponent(
+                    size: CGSize(width: 44.0, height: 44.0),
+                    backgroundColor: nil,
+                    isDark: true,
+                    state: .glass,
+                    component: AnyComponentWithIdentity(
+                        id: "icon",
+                        component: AnyComponent(BundleIconComponent(name: "Media Editor/Eyedropper", tintColor: .white))
                     ),
-                    action: { [weak component] in
-                        component?.eyedropper()
+                    action: { _ in
+                        component.eyedropper()
                     }
-                ).minSize(CGSize(width: 30.0, height: 30.0)),
-                availableSize: CGSize(width: 19.0, height: 19.0),
+                ),
+                availableSize: CGSize(width: 44.0, height: 44.0),
                 transition: .immediate
             )
             context.add(eyedropperButton
-                .position(CGPoint(x: environment.safeInsets.left + eyedropperButton.size.width + 1.0, y: 29.0))
+                .position(CGPoint(x: context.availableSize.width - environment.safeInsets.right - eyedropperButton.size.width / 2.0 - 16.0, y: 16.0 + eyedropperButton.size.height / 2.0))
             )
             
             let closeButton = closeButton.update(
-                component: Button(
-                    content: AnyComponent(ZStack([
-                        AnyComponentWithIdentity(
-                            id: "background",
-                            component: AnyComponent(
-                                BlurredBackgroundComponent(
-                                    color:  UIColor(rgb: 0x888888, alpha: 0.1)
-                                )
-                            )
-                        ),
-                        AnyComponentWithIdentity(
-                            id: "icon",
-                            component: AnyComponent(
-                                Image(image: state.closeImage)
-                            )
-                        ),
-                    ])),
-                    action: { [weak component] in
-                        component?.dismiss()
+                component: GlassBarButtonComponent(
+                    size: CGSize(width: 44.0, height: 44.0),
+                    backgroundColor: nil,
+                    isDark: true,
+                    state: .glass,
+                    component: AnyComponentWithIdentity(
+                        id: "icon",
+                        component: AnyComponent(BundleIconComponent(name: "Navigation/Close", tintColor: .white))
+                    ),
+                    action: { _ in
+                        component.dismiss()
                     }
                 ),
                 availableSize: CGSize(width: 30.0, height: 30.0),
                 transition: .immediate
             )
             context.add(closeButton
-                .position(CGPoint(x: context.availableSize.width - environment.safeInsets.right - closeButton.size.width - 1.0, y: 29.0))
-                .clipsToBounds(true)
-                .cornerRadius(15.0)
+                .position(CGPoint(x: 16.0 + closeButton.size.width / 2.0, y: 16.0 + closeButton.size.height / 2.0))
             )
             
             let title = title.update(
@@ -2046,17 +1959,24 @@ private final class ColorPickerContent: CombinedComponent {
                 transition: .immediate
             )
             context.add(title
-                .position(CGPoint(x: context.availableSize.width / 2.0, y: 29.0))
+                .position(CGPoint(x: context.availableSize.width / 2.0, y: 16.0 + 22.0))
             )
             
-            var contentHeight: CGFloat = 58.0
+            var contentHeight: CGFloat = 76.0
             
             let modeControl = modeControl.update(
-                component: SegmentedControlComponent(
-                    values: [strings.Paint_ColorGrid, strings.Paint_ColorSpectrum, strings.Paint_ColorSliders],
-                    selectedIndex: 0,
-                    selectionChanged: { [weak state] index in
-                        state?.updateSelectedMode(index)
+                component: SegmentControlComponent(
+                    theme: SegmentControlComponent.Theme(backgroundColor: UIColor(rgb: 0xffffff, alpha: 0.07), legacyBackgroundColor: .clear, foregroundColor: UIColor(rgb: 0x6f7075, alpha: 0.6), textColor: .white, dividerColor: UIColor(rgb: 0x505155, alpha: 0.6)),
+                    items: [
+                        .init(id: 0, title: strings.Paint_ColorGrid),
+                        .init(id: 1, title: strings.Paint_ColorSpectrum),
+                        .init(id: 2, title: strings.Paint_ColorSliders),
+                    ],
+                    selectedId: state.selectedMode,
+                    action: { [weak state] index in
+                        if let value = index.base as? Int {
+                            state?.updateSelectedMode(value)
+                        }
                     }
                 ),
                 availableSize: CGSize(width: context.availableSize.width - sideInset * 2.0, height: context.availableSize.height),
@@ -2068,9 +1988,37 @@ private final class ColorPickerContent: CombinedComponent {
             contentHeight += modeControl.size.height
             contentHeight += 20.0
             
-            let squareSize = floorToScreenPixels((context.availableSize.width - sideInset * 2.0) / 12.0)
-            let fieldSize = CGSize(width: context.availableSize.width - sideInset * 2.0, height: squareSize * 10.0)
-            
+            let bottomPanelPadding: CGFloat = 12.0
+            var bottomInset: CGFloat
+            if case .regular = environment.metrics.widthClass {
+                bottomInset = bottomPanelPadding
+            } else {
+                bottomInset = environment.safeInsets.bottom > 0.0 ? environment.safeInsets.bottom + 5.0 : bottomPanelPadding
+            }
+
+            // The field's squares also keep to the height the screen leaves: a field sized by the width alone made the
+            // sheet taller than iPhone Duo's folded screen (466x678) and its unfolded one in landscape, pushing the
+            // header above the top edge; beside the unfolded screen's status island the sheet stays below the island.
+            // A narrower field, centred, keeps its squares square. Where the width-sized field fits, nothing changes; other
+            // devices keep their layout.
+            var fieldWidth: CGFloat = context.availableSize.width - sideInset * 2.0
+            if !environment.presentsFloatingPanels && environment.reservedCorners != .none {
+                let glassInset: CGFloat = component.screenSize.width < component.screenSize.height ? 6.0 : 0.0
+                var maxContentHeight: CGFloat = component.screenSize.height - glassInset
+                if environment.navigationBarTrailingButtonsInset > 0.0 {
+                    // The island stays while the editor hides the status bar, so its corner block counts as well.
+                    maxContentHeight -= max(environment.fullStatusBarHeight, environment.reservedCorners.topRight?.height ?? 0.0)
+                }
+                // The rows below the field: opacity title and slider, divider, preview and swatches.
+                let belowFieldHeight: CGFloat = 21.0 + 16.0 + 8.0 + 36.0 + 24.0 + 1.0 + 22.0 + 82.0 + 10.0 + bottomInset
+                let maxSquareSize = floorToScreenPixels((maxContentHeight - contentHeight - belowFieldHeight) / 10.0)
+                if maxSquareSize > 0.0 && maxSquareSize < floorToScreenPixels(fieldWidth / 12.0) {
+                    fieldWidth = maxSquareSize * 12.0
+                }
+            }
+            let squareSize = floorToScreenPixels(fieldWidth / 12.0)
+            let fieldSize = CGSize(width: fieldWidth, height: squareSize * 10.0)
+
             if state.selectedMode == 0 {
                 let colorGrid = colorGrid.update(
                     component: ColorGridComponent(
@@ -2079,7 +2027,7 @@ private final class ColorPickerContent: CombinedComponent {
                             state?.updateColor(color, keepAlpha: true)
                         }
                     ),
-                    availableSize: CGSize(width: context.availableSize.width - sideInset * 2.0, height: context.availableSize.height),
+                    availableSize: CGSize(width: fieldWidth, height: context.availableSize.height),
                     transition: .immediate
                 )
                 context.add(colorGrid
@@ -2299,15 +2247,7 @@ private final class ColorPickerContent: CombinedComponent {
             
             contentHeight += preview.size.height
             contentHeight += 10.0
-            
-            let bottomPanelPadding: CGFloat = 12.0
-            var bottomInset: CGFloat
-            if case .regular = environment.metrics.widthClass {
-                bottomInset = bottomPanelPadding
-            } else {
-                bottomInset = environment.safeInsets.bottom > 0.0 ? environment.safeInsets.bottom + 5.0 : bottomPanelPadding
-            }
-            
+
             if environment.inputHeight > 0.0 {
                 bottomInset += environment.inputHeight - bottomInset - 120.0
             }
@@ -2358,6 +2298,7 @@ private final class ColorPickerSheetComponent: CombinedComponent {
                 component: SheetComponent<EnvironmentType>(
                     content: AnyComponent<EnvironmentType>(ColorPickerContent(
                         context: context.component.context,
+                        screenSize: context.availableSize,
                         initialColor: context.component.initialColor,
                         colorChanged: { color in
                             updated(color)
@@ -2379,6 +2320,7 @@ private final class ColorPickerSheetComponent: CombinedComponent {
                             })
                         }
                     )),
+                    style: .glass,
                     backgroundColor: .blur(.dark),
                     animateOut: animateOut
                 ),
@@ -2388,7 +2330,7 @@ private final class ColorPickerSheetComponent: CombinedComponent {
                         metrics: environment.metrics,
                         deviceMetrics: environment.deviceMetrics,
                         isDisplaying: environment.value.isVisible,
-                        isCentered: environment.metrics.widthClass == .regular,
+                        isCentered: environment.presentsFloatingPanels,
                         hasInputHeight: !environment.inputHeight.isZero,
                         regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                         dismiss: { animated in

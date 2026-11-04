@@ -18,7 +18,6 @@ import TextFormat
 import AppBundle
 import GZip
 import EmojiStatusComponent
-import Postbox
 import TelegramNotices
 
 private func randomGenericReactionEffect(context: AccountContext) -> Signal<String?, NoError> {
@@ -38,8 +37,8 @@ private func randomGenericReactionEffect(context: AccountContext) -> Signal<Stri
         }
         return Signal { subscriber in
             let fetchDisposable = freeMediaFileInteractiveFetched(account: context.account, userLocation: .other, fileReference: .standalone(media: file)).start()
-            let dataDisposable = (context.account.postbox.mediaBox.resourceData(file.resource)
-            |> filter(\.complete)
+            let dataDisposable = (context.engine.resources.data(resource: EngineMediaResource(file.resource))
+            |> filter(\.isComplete)
             |> take(1)).start(next: { data in
                 subscriber.putNext(data.path)
                 subscriber.putCompletion()
@@ -66,6 +65,9 @@ public final class EmojiStatusSelectionComponent: Component {
     public let hideTopPanel: Bool
     public let disableTopPanel: Bool
     public let hideTopPanelUpdated: (Bool, ComponentTransition) -> Void
+    public let externalTintMaskContainer: UIView?
+    public let contentFadeHeight: CGFloat?
+    public let keepsTopPanelVisible: Bool
     
     public init(
         theme: PresentationTheme,
@@ -77,7 +79,10 @@ public final class EmojiStatusSelectionComponent: Component {
         separatorColor: UIColor,
         hideTopPanel: Bool,
         disableTopPanel: Bool,
-        hideTopPanelUpdated: @escaping (Bool, ComponentTransition) -> Void
+        hideTopPanelUpdated: @escaping (Bool, ComponentTransition) -> Void,
+        externalTintMaskContainer: UIView? = nil,
+        contentFadeHeight: CGFloat? = nil,
+        keepsTopPanelVisible: Bool = false
     ) {
         self.theme = theme
         self.strings = strings
@@ -89,6 +94,9 @@ public final class EmojiStatusSelectionComponent: Component {
         self.hideTopPanel = hideTopPanel
         self.disableTopPanel = disableTopPanel
         self.hideTopPanelUpdated = hideTopPanelUpdated
+        self.externalTintMaskContainer = externalTintMaskContainer
+        self.contentFadeHeight = contentFadeHeight
+        self.keepsTopPanelVisible = keepsTopPanelVisible
     }
     
     public static func ==(lhs: EmojiStatusSelectionComponent, rhs: EmojiStatusSelectionComponent) -> Bool {
@@ -119,12 +127,19 @@ public final class EmojiStatusSelectionComponent: Component {
         if lhs.disableTopPanel != rhs.disableTopPanel {
             return false
         }
+        if lhs.contentFadeHeight != rhs.contentFadeHeight {
+            return false
+        }
+        if lhs.keepsTopPanelVisible != rhs.keepsTopPanelVisible {
+            return false
+        }
         return true
     }
     
     public final class View: UIView {
         private let keyboardView: ComponentView<Empty>
         private let keyboardClippingView: UIView
+        private var contentFadeMask: CAGradientLayer?
         private let panelHostView: PagerExternalTopPanelContainer
         private let panelBackgroundView: BlurredBackgroundView
         private let panelSeparatorView: UIView
@@ -187,7 +202,7 @@ public final class EmojiStatusSelectionComponent: Component {
                     defaultToEmojiTab: true,
                     externalTopPanelContainer: self.panelHostView,
                     externalBottomPanelContainer: nil,
-                    externalTintMaskContainer: nil,
+                    externalTintMaskContainer: component.externalTintMaskContainer,
                     displayTopPanelBackground: .blur,
                     topPanelExtensionUpdated: { _, _ in },
                     topPanelScrollingOffset: { _, _ in },
@@ -211,7 +226,8 @@ public final class EmojiStatusSelectionComponent: Component {
                     clipContentToTopPanel: false,
                     useExternalSearchContainer: false,
                     hidePanels: component.disableTopPanel,
-                    customTintColor: component.color
+                    customTintColor: component.color,
+                    alwaysShowsTopPanel: component.keepsTopPanelVisible
                 )),
                 environment: {},
                 forceUpdate: forceUpdate, 
@@ -222,10 +238,31 @@ public final class EmojiStatusSelectionComponent: Component {
                     self.keyboardClippingView.addSubview(keyboardComponentView)
                 }
                 
-                if panelBackgroundColor.alpha < 0.01 {
-                    self.keyboardClippingView.clipsToBounds = true
-                } else {
+                if panelBackgroundColor.alpha < 0.01, let fadeHeight = component.contentFadeHeight {
                     self.keyboardClippingView.clipsToBounds = false
+                    let fadeMask: CAGradientLayer
+                    if let current = self.contentFadeMask {
+                        fadeMask = current
+                    } else {
+                        fadeMask = CAGradientLayer()
+                        fadeMask.colors = [UIColor.clear.cgColor, UIColor.black.cgColor, UIColor.black.cgColor]
+                        fadeMask.startPoint = CGPoint(x: 0.5, y: 0.0)
+                        fadeMask.endPoint = CGPoint(x: 0.5, y: 1.0)
+                        self.contentFadeMask = fadeMask
+                        self.keyboardClippingView.layer.mask = fadeMask
+                    }
+                    let maskHeight = max(1.0, availableSize.height - topPanelHeight)
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    fadeMask.frame = CGRect(origin: CGPoint(), size: CGSize(width: availableSize.width, height: maskHeight))
+                    fadeMask.locations = [0.0, NSNumber(value: Double(min(1.0, fadeHeight / maskHeight))), 1.0]
+                    CATransaction.commit()
+                } else {
+                    if self.contentFadeMask != nil {
+                        self.contentFadeMask = nil
+                        self.keyboardClippingView.layer.mask = nil
+                    }
+                    self.keyboardClippingView.clipsToBounds = panelBackgroundColor.alpha < 0.01
                 }
                 
                 transition.setFrame(view: self.keyboardClippingView, frame: CGRect(origin: CGPoint(x: 0.0, y: topPanelHeight), size: CGSize(width: availableSize.width, height: availableSize.height - topPanelHeight)))
@@ -260,6 +297,7 @@ public final class EmojiStatusSelectionController: ViewController {
             var id: AnyHashable
             var version: Int
             var isPreset: Bool
+            var canLoadMore: Bool
         }
         
         private struct EmojiSearchState {
@@ -297,6 +335,7 @@ public final class EmojiStatusSelectionController: ViewController {
         private var scheduledEmojiContentAnimationHint: EmojiPagerContentComponent.ContentAnimation?
         
         private let emojiSearchDisposable = MetaDisposable()
+        private var emojiSearchContext: EmojiSearchContext?
         private let emojiSearchState = Promise<EmojiSearchState>(EmojiSearchState(result: nil, isSearching: false))
         private var emojiSearchStateValue = EmojiSearchState(result: nil, isSearching: false) {
             didSet {
@@ -339,24 +378,24 @@ public final class EmojiStatusSelectionController: ViewController {
             
             self.componentHost = ComponentView<Empty>()
             self.componentShadowLayer = SimpleLayer()
-            self.componentShadowLayer.shadowOpacity = 0.12
+            self.componentShadowLayer.shadowOpacity = 0.35
             self.componentShadowLayer.shadowColor = UIColor(white: 0.0, alpha: 1.0).cgColor
-            self.componentShadowLayer.shadowOffset = CGSize(width: 0.0, height: 2.0)
-            self.componentShadowLayer.shadowRadius = 16.0
+            self.componentShadowLayer.shadowOffset = CGSize(width: 0.0, height: 10.0)
+            self.componentShadowLayer.shadowRadius = 30.0
             
             self.cloudLayer0 = SimpleLayer()
             self.cloudShadowLayer0 = SimpleLayer()
-            self.cloudShadowLayer0.shadowOpacity = 0.12
-            self.cloudShadowLayer0.shadowColor = UIColor(white: 0.0, alpha: 1.0).cgColor
-            self.cloudShadowLayer0.shadowOffset = CGSize(width: 0.0, height: 2.0)
-            self.cloudShadowLayer0.shadowRadius = 16.0
+            self.cloudShadowLayer0.shadowOpacity = self.componentShadowLayer.shadowOpacity
+            self.cloudShadowLayer0.shadowColor = self.componentShadowLayer.shadowColor
+            self.cloudShadowLayer0.shadowOffset = self.componentShadowLayer.shadowOffset
+            self.cloudShadowLayer0.shadowRadius = self.componentShadowLayer.shadowRadius
             
             self.cloudLayer1 = SimpleLayer()
             self.cloudShadowLayer1 = SimpleLayer()
-            self.cloudShadowLayer1.shadowOpacity = 0.12
-            self.cloudShadowLayer1.shadowColor = UIColor(white: 0.0, alpha: 1.0).cgColor
-            self.cloudShadowLayer1.shadowOffset = CGSize(width: 0.0, height: 2.0)
-            self.cloudShadowLayer1.shadowRadius = 16.0
+            self.cloudShadowLayer1.shadowOpacity = self.componentShadowLayer.shadowOpacity
+            self.cloudShadowLayer1.shadowColor = self.componentShadowLayer.shadowColor
+            self.cloudShadowLayer1.shadowOffset = self.componentShadowLayer.shadowOffset
+            self.cloudShadowLayer1.shadowRadius = self.componentShadowLayer.shadowRadius
             
             super.init()
             
@@ -412,7 +451,7 @@ public final class EmojiStatusSelectionController: ViewController {
                     } else {
                         strongSelf.stableEmptyResultEmoji = nil
                     }
-                    emojiContent = emojiContent.withUpdatedItemGroups(panelItemGroups: emojiContent.panelItemGroups, contentItemGroups: emojiSearchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: emojiSearchResult.id, version: emojiSearchResult.version), emptySearchResults: emptySearchResults, searchState: emojiSearchState.isSearching ? .searching : .active)
+                    emojiContent = emojiContent.withUpdatedItemGroups(panelItemGroups: emojiContent.panelItemGroups, contentItemGroups: emojiSearchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: emojiSearchResult.id, version: emojiSearchResult.version), emptySearchResults: emptySearchResults, searchState: emojiSearchState.isSearching ? .searching : .active, canLoadMore: emojiSearchResult.canLoadMore)
                 } else {
                     strongSelf.stableEmptyResultEmoji = nil
                 }
@@ -437,7 +476,7 @@ public final class EmojiStatusSelectionController: ViewController {
                     openSearch: {
                     },
                     addGroupAction: { groupId, isPremiumLocked, _ in
-                        guard let strongSelf = self, let collectionId = groupId.base as? ItemCollectionId else {
+                        guard let strongSelf = self, let collectionId = groupId.base as? EngineItemCollectionId else {
                             return
                         }
                         
@@ -478,20 +517,23 @@ public final class EmojiStatusSelectionController: ViewController {
                         guard let self = self else {
                             return
                         }
-                        
+
                         switch query {
                         case .none:
+                            self.emojiSearchContext = nil
                             self.emojiSearchDisposable.set(nil)
                             self.emojiSearchState.set(.single(EmojiSearchState(result: nil, isSearching: false)))
                         case let .text(rawQuery, languageCode):
                             let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                            
+
                             if query.isEmpty {
+                                self.emojiSearchContext = nil
                                 self.emojiSearchDisposable.set(nil)
                                 self.emojiSearchState.set(.single(EmojiSearchState(result: nil, isSearching: false)))
                             } else {
                                 let context = self.context
-                                
+                                self.emojiSearchContext = nil
+
                                 var signal = context.engine.stickers.searchEmojiKeywords(inputLanguageCode: languageCode, query: query, completeMatch: false)
                                 if !languageCode.lowercased().hasPrefix("en") {
                                     signal = signal
@@ -505,7 +547,7 @@ public final class EmojiStatusSelectionController: ViewController {
                                         )
                                     }
                                 }
-                            
+
                                 let hasPremium = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
                                 |> map { peer -> Bool in
                                     guard case let .user(user) = peer else {
@@ -514,62 +556,60 @@ public final class EmojiStatusSelectionController: ViewController {
                                     return user.isPremium
                                 }
                                 |> distinctUntilChanged
-                                
-                                let resultSignal = signal
-                                |> mapToSignal { keywords -> Signal<[EmojiPagerContentComponent.ItemGroup], NoError> in
-                                    return combineLatest(
-                                        context.account.postbox.itemCollectionsView(orderedItemListCollectionIds: [], namespaces: [Namespaces.ItemCollection.CloudEmojiPacks], aroundIndex: nil, count: 10000000),
-                                        context.engine.stickers.availableReactions(),
-                                        hasPremium
-                                    )
-                                    |> take(1)
-                                    |> map { view, availableReactions, hasPremium -> [EmojiPagerContentComponent.ItemGroup] in
-                                        var result: [(String, TelegramMediaFile.Accessor?, String)] = []
-                                        
-                                        var allEmoticons: [String: String] = [:]
-                                        for keyword in keywords {
-                                            for emoticon in keyword.emoticons {
-                                                allEmoticons[emoticon] = keyword.keyword
-                                            }
+
+                                let resultSignal = combineLatest(
+                                    signal,
+                                    hasPremium
+                                )
+                                |> mapToSignal { keywords, hasPremium -> Signal<(groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: EmojiSearchContext?), NoError> in
+                                    var allEmoticons: [String: String] = [:]
+                                    for keyword in keywords {
+                                        for emoticon in keyword.emoticons {
+                                            allEmoticons[emoticon] = keyword.keyword
                                         }
-                                        
-                                        for entry in view.entries {
-                                            guard let item = entry.item as? StickerPackItem else {
+                                    }
+
+                                    let currentEmojiSearchContext = context.engine.stickers.emojiSearchContext(query: query, emoticon: Array(allEmoticons.keys), inputLanguageCode: languageCode)
+                                    let emojiSearchContext: EmojiSearchContext? = currentEmojiSearchContext
+                                    let remoteSignal: Signal<EmojiSearchContext.State, NoError> = currentEmojiSearchContext.state
+                                    let remotePacksSignal: Signal<FoundStickerSets, NoError> = context.engine.stickers.searchEmojiSets(query: query)
+                                    |> mapToSignal { localResult in
+                                        return .single(localResult)
+                                        |> then(
+                                            context.engine.stickers.searchEmojiSetsRemotely(query: query)
+                                            |> map { remoteResult in
+                                                return localResult.merge(with: remoteResult)
+                                            }
+                                        )
+                                    }
+
+                                    return combineLatest(remoteSignal, remotePacksSignal)
+                                    |> map { foundEmoji, foundPacks -> (groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: EmojiSearchContext?) in
+                                        var items: [EmojiPagerContentComponent.Item] = []
+
+                                        var existingIds = Set<EngineMedia.Id>()
+                                        for itemFile in foundEmoji.items {
+                                            if existingIds.contains(itemFile.fileId) {
                                                 continue
                                             }
-                                            if let alt = item.file.customEmojiAlt {
-                                                if !item.file.isPremiumEmoji || hasPremium {
-                                                    if !alt.isEmpty, let keyword = allEmoticons[alt] {
-                                                        result.append((alt, item.file, keyword))
-                                                    } else if alt == query {
-                                                        result.append((alt, item.file, alt))
-                                                    }
-                                                }
+                                            existingIds.insert(itemFile.fileId)
+                                            if itemFile.isPremiumEmoji && !hasPremium {
+                                                continue
                                             }
+                                            let animationData = EntityKeyboardAnimationData(file: TelegramMediaFile.Accessor(itemFile))
+                                            let item = EmojiPagerContentComponent.Item(
+                                                animationData: animationData,
+                                                content: .animation(animationData),
+                                                itemFile: TelegramMediaFile.Accessor(itemFile),
+                                                subgroupId: nil,
+                                                icon: .none,
+                                                tintMode: animationData.isTemplate ? .primary : .none
+                                            )
+                                            items.append(item)
                                         }
-                                        
-                                        var items: [EmojiPagerContentComponent.Item] = []
-                                        
-                                        var existingIds = Set<MediaId>()
-                                        for item in result {
-                                            if let itemFile = item.1 {
-                                                if existingIds.contains(itemFile.fileId) {
-                                                    continue
-                                                }
-                                                existingIds.insert(itemFile.fileId)
-                                                let animationData = EntityKeyboardAnimationData(file: itemFile)
-                                                let item = EmojiPagerContentComponent.Item(
-                                                    animationData: animationData,
-                                                    content: .animation(animationData),
-                                                    itemFile: itemFile, subgroupId: nil,
-                                                    icon: .none,
-                                                    tintMode: animationData.isTemplate ? .primary : .none
-                                                )
-                                                items.append(item)
-                                            }
-                                        }
-                                        
-                                        return [EmojiPagerContentComponent.ItemGroup(
+
+                                        var resultGroups: [EmojiPagerContentComponent.ItemGroup] = []
+                                        resultGroups.append(EmojiPagerContentComponent.ItemGroup(
                                             supergroupId: "search",
                                             groupId: "search",
                                             title: nil,
@@ -586,10 +626,64 @@ public final class EmojiStatusSelectionController: ViewController {
                                             headerItem: nil,
                                             fillWithLoadingPlaceholders: false,
                                             items: items
-                                        )]
+                                        ))
+
+                                        for (collectionId, info, _, _) in foundPacks.infos {
+                                            if let info = info as? StickerPackCollectionInfo {
+                                                var topItems: [StickerPackItem] = []
+                                                for e in foundPacks.entries {
+                                                    if let item = e.item as? StickerPackItem {
+                                                        if e.index.collectionId == collectionId {
+                                                            topItems.append(item)
+                                                        }
+                                                    }
+                                                }
+
+                                                var groupItems: [EmojiPagerContentComponent.Item] = []
+                                                for item in topItems {
+                                                    var tintMode: EmojiPagerContentComponent.Item.TintMode = .none
+                                                    if item.file.isCustomTemplateEmoji {
+                                                        tintMode = .primary
+                                                    }
+
+                                                    let animationData = EntityKeyboardAnimationData(file: item.file)
+                                                    let resultItem = EmojiPagerContentComponent.Item(
+                                                        animationData: animationData,
+                                                        content: .animation(animationData),
+                                                        itemFile: item.file,
+                                                        subgroupId: nil,
+                                                        icon: .none,
+                                                        tintMode: tintMode
+                                                    )
+
+                                                    groupItems.append(resultItem)
+                                                }
+
+                                                resultGroups.append(EmojiPagerContentComponent.ItemGroup(
+                                                    supergroupId: AnyHashable(info.id),
+                                                    groupId: AnyHashable(info.id),
+                                                    title: info.title,
+                                                    subtitle: nil,
+                                                    badge: nil,
+                                                    actionButtonTitle: nil,
+                                                    isFeatured: false,
+                                                    isPremiumLocked: false,
+                                                    isEmbedded: false,
+                                                    hasClear: false,
+                                                    hasEdit: false,
+                                                    collapsedLineCount: 3,
+                                                    displayPremiumBadges: false,
+                                                    headerItem: nil,
+                                                    fillWithLoadingPlaceholders: false,
+                                                    items: groupItems
+                                                ))
+                                            }
+                                        }
+
+                                        return (resultGroups, foundEmoji.canLoadMore, foundEmoji.items.isEmpty && foundEmoji.isLoadingMore, emojiSearchContext)
                                     }
                                 }
-                                
+
                                 var version = 0
                                 self.emojiSearchStateValue.isSearching = true
                                 self.emojiSearchDisposable.set((resultSignal
@@ -598,12 +692,14 @@ public final class EmojiStatusSelectionController: ViewController {
                                     guard let self else {
                                         return
                                     }
-                                    
-                                    self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result, id: AnyHashable(query), version: version, isPreset: false), isSearching: false)
+
+                                    self.emojiSearchContext = result.searchContext
+                                    self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.groups, id: AnyHashable(query), version: version, isPreset: false, canLoadMore: result.canLoadMore), isSearching: result.isSearching)
                                     version += 1
                                 }))
                             }
                         case let .category(value):
+                            self.emojiSearchContext = nil
                             let resultSignal = self.context.engine.stickers.searchEmoji(category: value)
                             |> mapToSignal { files, isFinalResult -> Signal<(items: [EmojiPagerContentComponent.ItemGroup], isFinalResult: Bool), NoError> in
                                 var items: [EmojiPagerContentComponent.Item] = []
@@ -677,11 +773,11 @@ public final class EmojiStatusSelectionController: ViewController {
                                             fillWithLoadingPlaceholders: true,
                                             items: []
                                         )
-                                    ], id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                                    ], id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                                     return
                                 }
-                                
-                                self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+
+                                self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                                 version += 1
                             }))
                         }
@@ -689,6 +785,9 @@ public final class EmojiStatusSelectionController: ViewController {
                     updateScrollingToItemGroup: {
                     },
                     onScroll: {},
+                    loadMore: {
+                        self?.emojiSearchContext?.loadMore()
+                    },
                     chatPeerId: nil,
                     peekBehavior: nil,
                     customLayout: nil,
@@ -973,16 +1072,12 @@ public final class EmojiStatusSelectionController: ViewController {
             if self.presentationData.theme.overallDarkAppearance {
                 listBackgroundColor = self.presentationData.theme.list.itemBlocksBackgroundColor
                 separatorColor = self.presentationData.theme.list.itemBlocksSeparatorColor
-                self.componentShadowLayer.shadowOpacity = 0.32
-                self.cloudShadowLayer0.shadowOpacity = 0.32
-                self.cloudShadowLayer1.shadowOpacity = 0.32
             } else {
                 listBackgroundColor = self.presentationData.theme.list.plainBackgroundColor
                 separatorColor = self.presentationData.theme.list.itemPlainSeparatorColor.withMultipliedAlpha(0.5)
-                self.componentShadowLayer.shadowOpacity = 0.12
-                self.cloudShadowLayer0.shadowOpacity = 0.12
-                self.cloudShadowLayer1.shadowOpacity = 0.12
             }
+            self.cloudShadowLayer0.shadowOpacity = self.componentShadowLayer.shadowOpacity
+            self.cloudShadowLayer1.shadowOpacity = self.componentShadowLayer.shadowOpacity
             
             self.cloudLayer0.backgroundColor = listBackgroundColor.cgColor
             self.cloudLayer1.backgroundColor = listBackgroundColor.cgColor
@@ -995,7 +1090,11 @@ public final class EmojiStatusSelectionController: ViewController {
                 transition = ComponentTransition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(contentAnimation)
             }
             
-            var componentWidth = layout.size.width - sideInset * 2.0
+            // iPhone Duo: the panel fits the band beside the side strip, clear of the strip's status corner. With equal
+            // side insets the band is the whole width, as before.
+            let stripInsetLeft: CGFloat = layout.safeInsets.left != layout.safeInsets.right ? layout.safeInsets.left : 0.0
+            let stripInsetRight: CGFloat = layout.safeInsets.left != layout.safeInsets.right ? layout.safeInsets.right : 0.0
+            var componentWidth = layout.size.width - stripInsetLeft - stripInsetRight - sideInset * 2.0
             let nativeItemSize: CGFloat = 40.0
             let minSpacing: CGFloat = 9.0
             let itemsPerRow = Int((componentWidth + minSpacing) / (nativeItemSize + minSpacing))
@@ -1047,13 +1146,22 @@ public final class EmojiStatusSelectionController: ViewController {
                     sourceOrigin = CGPoint(x: layout.size.width / 2.0, y: floor(layout.size.height / 2.0 - componentSize.height))
                 }
                 
+                // Centred on the screen while that keeps it in the band (iPhone Duo: beside the side strip).
+                var componentX = floor((layout.size.width - componentSize.width) / 2.0)
+                if componentX + componentSize.width > layout.size.width - stripInsetRight - sideInset {
+                    componentX = layout.size.width - stripInsetRight - sideInset - componentSize.width
+                }
+                if componentX < stripInsetLeft + sideInset {
+                    componentX = stripInsetLeft + sideInset
+                }
+                
                 var componentFrame: CGRect
                 let pointsToTop: Bool
                 if sourceOrigin.y + 5.0 + componentSize.height > layout.size.height - layout.insets(options: []).bottom {
-                    componentFrame = CGRect(origin: CGPoint(x: floor((layout.size.width - componentSize.width) / 2.0), y: sourceOrigin.y - 25.0 - componentSize.height), size: componentSize)
+                    componentFrame = CGRect(origin: CGPoint(x: componentX, y: sourceOrigin.y - 25.0 - componentSize.height), size: componentSize)
                     pointsToTop = false
                 } else {
-                    componentFrame = CGRect(origin: CGPoint(x: floor((layout.size.width - componentSize.width) / 2.0), y: sourceOrigin.y + 5.0), size: componentSize)
+                    componentFrame = CGRect(origin: CGPoint(x: componentX, y: sourceOrigin.y + 5.0), size: componentSize)
                     pointsToTop = true
                 }
                 if componentFrame.minY < layout.insets(options: [.statusBar]).top {
@@ -1159,7 +1267,9 @@ public final class EmojiStatusSelectionController: ViewController {
                     component: AnyComponent(EmojiStatusPreviewScreenComponent(
                         theme: self.presentationData.theme,
                         strings: self.presentationData.strings,
+                        dateTimeFormat: self.presentationData.dateTimeFormat,
                         bottomInset: layout.insets(options: []).bottom,
+                        screenCornerRadii: layout.screenCornerRadii,
                         item: EmojiStatusComponent(
                             context: self.context,
                             animationCache: self.context.animationCache,
@@ -1207,10 +1317,10 @@ public final class EmojiStatusSelectionController: ViewController {
                                         for reaction in availableReactions.reactions {
                                             if case let .builtin(value) = reaction.value, value == emojiString {
                                                 if let aroundAnimation = reaction.aroundAnimation?._parse() {
-                                                    return context.account.postbox.mediaBox.resourceData(aroundAnimation.resource)
+                                                    return context.engine.resources.data(resource: EngineMediaResource(aroundAnimation.resource))
                                                     |> take(1)
                                                     |> map { data -> String? in
-                                                        if data.complete {
+                                                        if data.isComplete {
                                                             return data.path
                                                         } else {
                                                             return nil
@@ -1396,10 +1506,10 @@ public final class EmojiStatusSelectionController: ViewController {
                         for reaction in availableReactions.reactions {
                             if case let .builtin(value) = reaction.value, value == emojiString {
                                 if let aroundAnimation = reaction.aroundAnimation?._parse() {
-                                    return context.account.postbox.mediaBox.resourceData(aroundAnimation.resource)
+                                    return context.engine.resources.data(resource: EngineMediaResource(aroundAnimation.resource))
                                     |> take(1)
                                     |> map { data -> String? in
-                                        if data.complete {
+                                        if data.isComplete {
                                             return data.path
                                         } else {
                                             return nil
@@ -1430,12 +1540,7 @@ public final class EmojiStatusSelectionController: ViewController {
         }
     }
     
-    public enum Mode {
-        case statusSelection
-        case backgroundSelection(completion: (TelegramMediaFile?) -> Void)
-        case customStatusSelection(completion: (TelegramMediaFile?, Int32?) -> Void)
-        case quickReactionSelection(completion: () -> Void)
-    }
+    public typealias Mode = EmojiStatusSelectionControllerMode
     
     private let context: AccountContext
     private weak var sourceView: UIView?

@@ -45,8 +45,8 @@ public let telegramPostboxSeedConfiguration: SeedConfiguration = {
             return nil
         },
         existingMessageTags: MessageTags.all,
-        messageTagsWithSummary: [.unseenPersonalMessage, .pinned, .video, .photo, .gif, .music, .voiceOrInstantVideo, .webPage, .file, .unseenReaction],
-        messageTagsWithThreadSummary: [.unseenPersonalMessage, .unseenReaction],
+        messageTagsWithSummary: [.unseenPersonalMessage, .pinned, .video, .photo, .gif, .music, .voiceOrInstantVideo, .webPage, .file, .unseenReaction, .unseenPollVote],
+        messageTagsWithThreadSummary: [.unseenPersonalMessage, .unseenReaction, .unseenPollVote],
         existingGlobalMessageTags: GlobalMessageTags.all,
         peerNamespacesRequiringMessageTextIndex: [Namespaces.Peer.SecretChat],
         peerSummaryCounterTags: { peer, isContact in
@@ -61,7 +61,13 @@ public let telegramPostboxSeedConfiguration: SeedConfiguration = {
             } else if let _ = peer as? TelegramGroup {
                 return .group
             } else if let _ = peer as? TelegramSecretChat {
-                return .nonContact
+                // isContact is resolved through the associated cloud user, matching what
+                // ChatListFilterPredicate does, so a folder counts the chats it actually shows.
+                if isContact {
+                    return .contact
+                } else {
+                    return .nonContact
+                }
             } else if let channel = peer as? TelegramChannel {
                 switch channel.info {
                 case .broadcast:
@@ -69,6 +75,8 @@ public let telegramPostboxSeedConfiguration: SeedConfiguration = {
                 case .group:
                     return .group
                 }
+            } else if let _ = peer as? TelegramCommunity {
+                return .nonContact
             } else {
                 assertionFailure()
                 return .nonContact
@@ -129,8 +137,17 @@ public let telegramPostboxSeedConfiguration: SeedConfiguration = {
                     break
                 }
             }
+            var previousRichText: RichTextMessageAttribute?
+            var previousEphemeralReplacement: EphemeralReplacementMessageAttribute?
+            for attribute in previous {
+                if let attribute = attribute as? RichTextMessageAttribute {
+                    previousRichText = attribute
+                } else if let attribute = attribute as? EphemeralReplacementMessageAttribute {
+                    previousEphemeralReplacement = attribute
+                }
+            }
             
-            if let audioTranscription = audioTranscription {
+            if let audioTranscription {
                 var found = false
                 for i in 0 ..< updated.count {
                     if let attribute = updated[i] as? AudioTranscriptionMessageAttribute {
@@ -154,6 +171,21 @@ public let telegramPostboxSeedConfiguration: SeedConfiguration = {
                 if !found {
                     updated.append(previousDerivedData)
                 }
+            }
+            if let previousRichText, previousRichText.fullInstantPage != nil {
+                for i in 0 ..< updated.count {
+                    if let attribute = updated[i] as? RichTextMessageAttribute {
+                        if attribute.fullInstantPage == nil {
+                            if attribute.instantPage == previousRichText.instantPage {
+                                updated[i] = previousRichText
+                            }
+                        }
+                        break
+                    }
+                }
+            }
+            if let previousEphemeralReplacement, !updated.contains(where: { $0 is EphemeralReplacementMessageAttribute }) {
+                updated.append(previousEphemeralReplacement)
             }
         },
         decodeMessageThreadInfo: { entry in

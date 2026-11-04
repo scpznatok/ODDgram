@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -43,7 +43,6 @@ public final class GiftStoreContentComponent: Component {
     let statusBarHeight: CGFloat
     let navigationHeight: CGFloat
     let overNavigationContainer: UIView
-    let starsContext: StarsContext
     let peerId: EnginePeer.Id
     let gift: StarGift.Gift
     let isPlain: Bool
@@ -63,7 +62,6 @@ public final class GiftStoreContentComponent: Component {
         statusBarHeight: CGFloat,
         navigationHeight: CGFloat,
         overNavigationContainer: UIView,
-        starsContext: StarsContext,
         peerId: EnginePeer.Id,
         gift: StarGift.Gift,
         isPlain: Bool,
@@ -82,7 +80,6 @@ public final class GiftStoreContentComponent: Component {
         self.statusBarHeight = statusBarHeight
         self.navigationHeight = navigationHeight
         self.overNavigationContainer = overNavigationContainer
-        self.starsContext = starsContext
         self.peerId = peerId
         self.gift = gift
         self.isPlain = isPlain
@@ -187,9 +184,12 @@ public final class GiftStoreContentComponent: Component {
             let visibleBounds = bounds.insetBy(dx: 0.0, dy: -10.0)
             if let starGifts = self.effectiveGifts {
                 let sideInset: CGFloat = 16.0 + component.safeInsets.left
+                // iPhone Duo: the right margin is the right side's own (the side strip), so the third column stays out of
+                // the strip. With equal insets this is the old width.
+                let rightSideInset: CGFloat = 16.0 + component.safeInsets.right
                 
                 let optionSpacing: CGFloat = 10.0
-                let optionWidth = (availableWidth - sideInset * 2.0 - optionSpacing * 2.0) / 3.0
+                let optionWidth = (availableWidth - sideInset - rightSideInset - optionSpacing * 2.0) / 3.0
                 let starsOptionSize = CGSize(width: optionWidth, height: 154.0)
                 
                 var validIds: [AnyHashable] = []
@@ -269,8 +269,8 @@ public final class GiftStoreContentComponent: Component {
                                                 acceptedPrice: nil,
                                                 skipConfirmation: false,
                                                 starsTopUpOptions: starsTopUpOptions,
-                                                buyGift: { [weak self] slug, peerId, price in
-                                                    return self?.starGiftsContext?.buyStarGift(slug: slug, peerId: peerId, price: price) ?? .complete()
+                                                buyGift: { [weak self] slug, peerId, price, hideName, text, entities in
+                                                    return self?.starGiftsContext?.buyStarGift(slug: slug, peerId: peerId, price: price, hideName: hideName, text: text, entities: entities) ?? .complete()
                                                 },
                                                 getController: controller,
                                                 updateProgress: { _ in },
@@ -304,8 +304,8 @@ public final class GiftStoreContentComponent: Component {
                                                     subject: .uniqueGift(uniqueGift, component.peerId),
                                                     allSubjects: allSubjects,
                                                     index: index,
-                                                    buyGift: { slug, peerId, price in
-                                                        return self.starGiftsContext?.buyStarGift(slug: slug, peerId: peerId, price: price) ?? .complete()
+                                                    buyGift: { slug, peerId, price, hideName, text, entities in
+                                                        return self.starGiftsContext?.buyStarGift(slug: slug, peerId: peerId, price: price, hideName: hideName, text: text, entities: entities) ?? .complete()
                                                     },
                                                     updateResellStars: { _, price in
                                                         return self.starGiftsContext?.updateStarGiftResellPrice(slug: uniqueGift.slug, price: price) ?? .complete()
@@ -425,7 +425,8 @@ public final class GiftStoreContentComponent: Component {
                 let emptyResultsAnimationSize = self.emptyResultsAnimation.update(
                     transition: .immediate,
                     component: AnyComponent(LottieComponent(
-                        content: LottieComponent.AppBundleContent(name: "ChatListNoResults")
+                        content: LottieComponent.AppBundleContent(name: "ChatListNoResults"),
+                        lottieSettings: component.context.lottieRenderingSettings
                     )),
                     environment: {},
                     containerSize: CGSize(width: emptyAnimationHeight, height: emptyAnimationHeight)
@@ -498,6 +499,15 @@ public final class GiftStoreContentComponent: Component {
             }
         }
         
+        func updateStarsOnly(_ starsOnly: Bool) {
+            guard let component = self.component else {
+                return
+            }
+            self.showLoading = true
+            component.resaleGiftsContext.updateStarsOnly(starsOnly)
+            component.scrollToTop()
+        }
+        
         func openSortContextMenu(sourceView: UIView) {
             guard let component = self.component, let controller = component.controller(), !self.effectiveIsLoading else {
                 return
@@ -538,6 +548,20 @@ public final class GiftStoreContentComponent: Component {
                 self.showLoading = true
                 self.starGiftsContext?.updateSorting(.number)
                 component.scrollToTop()
+            })))
+            
+            items.append(.separator)
+            items.append(.action(ContextMenuActionItem(text: presentationData.strings.Gift_Store_AllListings, icon: { theme in
+                return component.resaleGiftsContext.currentState?.starsOnly == false ? generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Check"), color: theme.contextMenu.primaryColor) : UIImage()
+            }, action: { [weak self] _, f in
+                f(.default)
+                self?.updateStarsOnly(false)
+            })))
+            items.append(.action(ContextMenuActionItem(text: presentationData.strings.Gift_Store_StarsOnlyListings, icon: { theme in
+                return component.resaleGiftsContext.currentState?.starsOnly == true ? generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Check"), color: theme.contextMenu.primaryColor) : UIImage()
+            }, action: { [weak self] _, f in
+                f(.default)
+                self?.updateStarsOnly(true)
             })))
             
             let contextController = makeContextController(presentationData: presentationData, source: .reference(GiftStoreReferenceContentSource(controller: controller, sourceView: sourceView)), items: .single(ContextController.Items(content: .list(items))), gesture: nil)
@@ -898,6 +922,10 @@ public final class GiftStoreContentComponent: Component {
                     let previousItems = self.starGiftsState?.gifts
                     self.starGiftsState = state
                     
+                    if case .loading = state.dataState, case let .ready(_, nextOffset) = previousDataState, nextOffset != nil {
+                        self.showLoading = false
+                    }
+                    
                     var transition: ComponentTransition = .immediate
                     if let previousFilterAttributes, previousFilterAttributes != state.filterAttributes {
                         transition = .easeInOut(duration: 0.25)
@@ -935,6 +963,8 @@ public final class GiftStoreContentComponent: Component {
                                     
             let bottomContentInset: CGFloat = 56.0
             let sideInset: CGFloat = 16.0 + component.safeInsets.left
+            // iPhone Duo: the right side's own margin (the side strip), matching `updateScrolling`.
+            let rightSideInset: CGFloat = 16.0 + component.safeInsets.right
                         
             var contentHeight: CGFloat = 0.0
             contentHeight += component.navigationHeight
@@ -945,7 +975,7 @@ public final class GiftStoreContentComponent: Component {
             }
             
             let optionSpacing: CGFloat = 10.0
-            let optionWidth = (availableSize.width - sideInset * 2.0 - optionSpacing * 2.0) / 3.0
+            let optionWidth = (availableSize.width - sideInset - rightSideInset - optionSpacing * 2.0) / 3.0
                          
             var sortingTitle = strings.Gift_Store_Sort_Date
             var sortingIcon: String = "GiftFilterDate"
@@ -981,7 +1011,7 @@ public final class GiftStoreContentComponent: Component {
                 iconName: sortingIcon,
                 title: sortingTitle,
                 action: { [weak self] view in
-                    if let self {
+                    if let self, !self.effectiveIsLoading {
                         self.selectedFilterId = AnyHashable(FilterItemId.sort)
                         self.openSortContextMenu(sourceView: view)
                         self.state?.updated()
@@ -1023,7 +1053,7 @@ public final class GiftStoreContentComponent: Component {
                 index: Int(modelCount),
                 title: modelTitle,
                 action: { [weak self] view in
-                    if let self {
+                    if let self, !self.effectiveIsLoading {
                         self.selectedFilterId = AnyHashable(FilterItemId.model)
                         self.openModelContextMenu(sourceView: view)
                         self.state?.updated()
@@ -1035,7 +1065,7 @@ public final class GiftStoreContentComponent: Component {
                 index: Int(backdropCount),
                 title: backdropTitle,
                 action: { [weak self] view in
-                    if let self {
+                    if let self, !self.effectiveIsLoading {
                         self.selectedFilterId = AnyHashable(FilterItemId.backdrop)
                         self.openBackdropContextMenu(sourceView: view)
                         self.state?.updated()
@@ -1047,7 +1077,7 @@ public final class GiftStoreContentComponent: Component {
                 index: Int(symbolCount),
                 title: symbolTitle,
                 action: { [weak self] view in
-                    if let self {
+                    if let self, !self.effectiveIsLoading {
                         self.selectedFilterId = AnyHashable(FilterItemId.symbol)
                         self.openSymbolContextMenu(sourceView: view)
                         self.state?.updated()
@@ -1124,7 +1154,6 @@ final class GiftStoreScreenComponent: Component {
     let context: AccountContext
     let resaleGiftsContext: ResaleGiftsContext
     let overNavigationContainer: UIView
-    let starsContext: StarsContext
     let peerId: EnginePeer.Id
     let gift: StarGift.Gift
     
@@ -1132,14 +1161,12 @@ final class GiftStoreScreenComponent: Component {
         context: AccountContext,
         resaleGiftsContext: ResaleGiftsContext,
         overNavigationContainer: UIView,
-        starsContext: StarsContext,
         peerId: EnginePeer.Id,
         gift: StarGift.Gift
     ) {
         self.context = context
         self.resaleGiftsContext = resaleGiftsContext
         self.overNavigationContainer = overNavigationContainer
-        self.starsContext = starsContext
         self.peerId = peerId
         self.gift = gift
     }
@@ -1174,6 +1201,7 @@ final class GiftStoreScreenComponent: Component {
         private let title = ComponentView<Empty>()
         private let subtitle = ComponentView<Empty>()
         private let content = ComponentView<Empty>()
+        private let starsFilter = ComponentView<Empty>()
                 
         private var starsStateDisposable: Disposable?
         private var starsState: StarsContext.State?
@@ -1187,6 +1215,7 @@ final class GiftStoreScreenComponent: Component {
         
         override init(frame: CGRect) {
             self.balanceBackgroundView = GlassContextExtractableContainer()
+            self.balanceBackgroundView.morphsIntoContextMenu = true
             
             self.scrollView = ScrollView()
             self.scrollView.showsVerticalScrollIndicator = true
@@ -1222,6 +1251,8 @@ final class GiftStoreScreenComponent: Component {
             self.scrollView.setContentOffset(CGPoint(), animated: true)
         }
         
+        var starsFilterIsHidden = false
+        
         var nextScrollTransition: ComponentTransition?
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             self.updateScrolling(bounds: scrollView.bounds, interactive: true, transition: self.nextScrollTransition ?? .immediate)
@@ -1231,6 +1262,12 @@ final class GiftStoreScreenComponent: Component {
             if let contentView = self.content.view as? GiftStoreContentComponent.View {
                 contentView.updateScrolling(bounds: bounds, interactive: interactive, transition: transition)
             }
+            
+            let starsFilterIsHidden = bounds.origin.y > 100.0
+            if starsFilterIsHidden != self.starsFilterIsHidden {
+                self.starsFilterIsHidden = starsFilterIsHidden
+                self.state?.updated(transition: .spring(duration: 0.4))
+            }
         }
         
         func presentBalanceMenu() {
@@ -1239,8 +1276,8 @@ final class GiftStoreScreenComponent: Component {
             }
             let tonBalance = tonContext.currentState?.balance.value ?? 0
             if tonBalance == 0 {
-                let controller = component.context.sharedContext.makeStarsTransactionsScreen(context: component.context, starsContext: starsContext)
-                controller.push(controller)
+                let starsController = component.context.sharedContext.makeStarsTransactionsScreen(context: component.context, starsContext: starsContext)
+                controller.push(starsController)
                 return
             }
             
@@ -1254,7 +1291,7 @@ final class GiftStoreScreenComponent: Component {
                 tonContext.state
             )
             |> take(1)
-            |> map { starsState, tonState -> [ContextMenuItem] in
+            |> map { [weak self] starsState, tonState -> [ContextMenuItem] in
                 let starsBalance = starsState?.balance ?? .zero
                 let tonBalance = tonState?.balance.value ?? 0
                 
@@ -1310,8 +1347,8 @@ final class GiftStoreScreenComponent: Component {
             self.environment = environment
             self.state = state
             
-            if self.component == nil {
-                self.starsStateDisposable = (component.starsContext.state
+            if self.component == nil, let tonContext = component.context.tonContext {
+                self.starsStateDisposable = (tonContext.state
                 |> deliverOnMainQueue).start(next: { [weak self] state in
                     guard let self else {
                         return
@@ -1368,7 +1405,7 @@ final class GiftStoreScreenComponent: Component {
                 }
                 balanceView.frame = balanceFrame
 
-                let balanceBackgroundFrame = CGRect(origin: CGPoint(x: availableSize.width - environment.safeInsets.right - 16.0 - balanceSize.width, y: environment.navigationHeight - 60.0 + 2.0 + floor((60.0 - 44.0) * 0.5)), size: balanceSize)
+                let balanceBackgroundFrame = CGRect(origin: CGPoint(x: availableSize.width - environment.safeInsets.right - environment.navigationBarTrailingButtonsInset - 16.0 - balanceSize.width, y: environment.navigationHeight - 60.0 + 2.0 + floor((60.0 - 44.0) * 0.5)), size: balanceSize)
                 
                 transition.setFrame(view: self.balanceBackgroundView, frame: balanceBackgroundFrame)
                 self.balanceBackgroundView.update(size: balanceBackgroundFrame.size, cornerRadius: balanceBackgroundFrame.height * 0.5, isDark: environment.theme.overallDarkAppearance, tintColor: .init(kind: .panel), isInteractive: true, transition: transition)
@@ -1413,7 +1450,6 @@ final class GiftStoreScreenComponent: Component {
                         statusBarHeight: environment.statusBarHeight,
                         navigationHeight: environment.navigationHeight,
                         overNavigationContainer: component.overNavigationContainer,
-                        starsContext: component.starsContext,
                         peerId: component.peerId,
                         gift: component.gift,
                         isPlain: false,
@@ -1471,6 +1507,30 @@ final class GiftStoreScreenComponent: Component {
                 transition.setFrame(view: subtitleView, frame: subtitleFrame)
             }
             
+            if let tonState = self.starsState, tonState.balance.value == 0 {
+                let starsFilterSize = self.starsFilter.update(
+                    transition: transition,
+                    component: AnyComponent(
+                        StarsFilterComponent(theme: theme, text: environment.strings.Gift_Store_ShowStarsListings, isSelected: component.resaleGiftsContext.currentState?.starsOnly ?? false, selectionUpdated: { [weak self] starsOnly in
+                            guard let self else {
+                                return
+                            }
+                            if let contentView = self.content.view as? GiftStoreContentComponent.View {
+                                contentView.updateStarsOnly(starsOnly)
+                            }
+                        })
+                    ),
+                    environment: {},
+                    containerSize: CGSize(width: availableSize.width - headerSideInset * 2.0, height: 100.0)
+                )
+                let starsFilterFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - starsFilterSize.width) / 2.0), y: self.starsFilterIsHidden ? availableSize.height + 64.0 : availableSize.height - starsFilterSize.height - environment.safeInsets.bottom - 16.0), size: starsFilterSize)
+                if let starsFilterView = self.starsFilter.view {
+                    if starsFilterView.superview == nil {
+                        self.addSubview(starsFilterView)
+                    }
+                    transition.setFrame(view: starsFilterView, frame: starsFilterFrame)
+                }
+            }
             
             let previousBounds = self.scrollView.bounds
             
@@ -1523,7 +1583,6 @@ public class GiftStoreScreen: ViewControllerComponentContainer {
     
     public init(
         context: AccountContext,
-        starsContext: StarsContext,
         peerId: EnginePeer.Id,
         gift: StarGift.Gift
     ) {
@@ -1536,7 +1595,6 @@ public class GiftStoreScreen: ViewControllerComponentContainer {
             context: context,
             resaleGiftsContext: resaleGiftsContext,
             overNavigationContainer: self.overNavigationContainer,
-            starsContext: starsContext,
             peerId: peerId,
             gift: gift
         ), navigationBarAppearance: .transparent, theme: .default, updatedPresentationData: nil)
@@ -1590,6 +1648,6 @@ private final class GiftStoreReferenceContentSource: ContextReferenceContentSour
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }

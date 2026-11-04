@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import ItemListUI
@@ -37,7 +37,7 @@ public enum ItemListStickerPackItemControl: Equatable {
     case check(checked: Bool)
 }
 
-public final class ItemListStickerPackItem: ListViewItem, ItemListItem {
+public final class ItemListStickerPackItem: ListViewItem, ItemListItem, ItemListRevealOptionsStatefulItem {
     let presentationData: ItemListPresentationData
     let context: AccountContext
     let systemStyle: ItemListSystemStyle
@@ -52,12 +52,16 @@ public final class ItemListStickerPackItem: ListViewItem, ItemListItem {
     let style: ItemListStyle
     public let sectionId: ItemListSectionId
     let action: (() -> Void)?
-    let setPackIdWithRevealedOptions: (ItemCollectionId?, ItemCollectionId?) -> Void
+    let setPackIdWithRevealedOptions: (EngineItemCollectionId?, EngineItemCollectionId?) -> Void
     let addPack: () -> Void
     let removePack: () -> Void
     let toggleSelected: () -> Void
     
-    public init(presentationData: ItemListPresentationData, context: AccountContext, systemStyle: ItemListSystemStyle = .legacy, packInfo: StickerPackCollectionInfo.Accessor, itemCount: String, topItem: StickerPackItem?, unread: Bool, control: ItemListStickerPackItemControl, editing: ItemListStickerPackItemEditing, enabled: Bool, playAnimatedStickers: Bool, style: ItemListStyle = .blocks, sectionId: ItemListSectionId, action: (() -> Void)?, setPackIdWithRevealedOptions: @escaping (ItemCollectionId?, ItemCollectionId?) -> Void, addPack: @escaping () -> Void, removePack: @escaping () -> Void, toggleSelected: @escaping () -> Void) {
+    public var hasActiveRevealOptions: Bool {
+        return self.editing.revealed
+    }
+
+    public init(presentationData: ItemListPresentationData, context: AccountContext, systemStyle: ItemListSystemStyle = .legacy, packInfo: StickerPackCollectionInfo.Accessor, itemCount: String, topItem: StickerPackItem?, unread: Bool, control: ItemListStickerPackItemControl, editing: ItemListStickerPackItemEditing, enabled: Bool, playAnimatedStickers: Bool, style: ItemListStyle = .blocks, sectionId: ItemListSectionId, action: (() -> Void)?, setPackIdWithRevealedOptions: @escaping (EngineItemCollectionId?, EngineItemCollectionId?) -> Void, addPack: @escaping () -> Void, removePack: @escaping () -> Void, toggleSelected: @escaping () -> Void) {
         self.presentationData = presentationData
         self.context = context
         self.systemStyle = systemStyle
@@ -78,10 +82,10 @@ public final class ItemListStickerPackItem: ListViewItem, ItemListItem {
         self.toggleSelected = toggleSelected
     }
     
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         async {
             let node = ItemListStickerPackItemNode()
-            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
             
             node.contentSize = layout.contentSize
             node.insets = layout.insets
@@ -94,7 +98,7 @@ public final class ItemListStickerPackItem: ListViewItem, ItemListItem {
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? ItemListStickerPackItemNode {
                 let makeLayout = nodeValue.asyncLayout()
@@ -105,7 +109,7 @@ public final class ItemListStickerPackItem: ListViewItem, ItemListItem {
                 }
                 
                 async {
-                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
                     Queue.mainQueue().async {
                         completion(layout, { _ in
                             apply(animated)
@@ -126,8 +130,8 @@ public final class ItemListStickerPackItem: ListViewItem, ItemListItem {
 
 public enum StickerPackThumbnailItem: Equatable {
     case still(TelegramMediaImageRepresentation)
-    case animated(MediaResource, PixelDimensions, Bool, Bool)
-    
+    case animated(EngineMediaResource, PixelDimensions, Bool, Bool)
+
     public static func ==(lhs: StickerPackThumbnailItem, rhs: StickerPackThumbnailItem) -> Bool {
         switch lhs {
         case let .still(representation):
@@ -137,7 +141,7 @@ public enum StickerPackThumbnailItem: Equatable {
                 return false
             }
         case let .animated(lhsResource, lhsDimensions, lhsIsVideo, lhsTinted):
-            if case let .animated(rhsResource, rhsDimensions, rhsIsVideo, rhsTinted) = rhs, lhsResource.isEqual(to: rhsResource), lhsDimensions == rhsDimensions, lhsIsVideo == rhsIsVideo, lhsTinted == rhsTinted {
+            if case let .animated(rhsResource, rhsDimensions, rhsIsVideo, rhsTinted) = rhs, lhsResource == rhsResource, lhsDimensions == rhsDimensions, lhsIsVideo == rhsIsVideo, lhsTinted == rhsTinted {
                 return true
             } else {
                 return false
@@ -181,6 +185,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
     private let activateArea: AccessibilityAreaNode
     
     private let fetchDisposable = MetaDisposable()
+    private var isHighlighted: Bool = false
     
     override var canBeSelected: Bool {
         if self.selectableControlNode != nil || self.editableControlNode != nil || self.disabledOverlayNode != nil {
@@ -358,7 +363,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
         
         let currentItem = self.layoutParams?.0
         
-        return { item, params, neighbors in
+        return { [weak self] item, params, neighbors in
             let titleFont = Font.bold(floor(item.presentationData.fontSize.itemListBaseFontSize * 15.0 / 17.0))
             let statusFont = Font.regular(floor(item.presentationData.fontSize.itemListBaseFontSize * 14.0 / 17.0))
             
@@ -373,7 +378,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
             
             let packRevealOptions: [ItemListRevealOption]
             if item.editing.editable && item.enabled && !item.editing.editing {
-                packRevealOptions = [ItemListRevealOption(key: 0, title: item.presentationData.strings.Common_Delete, icon: .none, color: item.presentationData.theme.list.itemDisclosureActions.destructive.fillColor, textColor: item.presentationData.theme.list.itemDisclosureActions.destructive.foregroundColor)]
+                packRevealOptions = [ItemListRevealOption(key: 0, title: item.presentationData.strings.Common_Delete, icon: .none, color: item.presentationData.theme.list.itemDisclosureActions.destructive.fillColor, iconColor: item.presentationData.theme.list.itemDisclosureActions.destructive.foregroundColor, textColor: item.presentationData.theme.list.itemSecondaryTextColor, isDestructive: true)]
             } else {
                 packRevealOptions = []
             }
@@ -411,14 +416,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
             
             let leftInset: CGFloat = 65.0 + params.leftInset
             
-            let verticalInset: CGFloat
-            switch item.systemStyle {
-            case .glass:
-                verticalInset = 13.0
-            case .legacy:
-                verticalInset = 11.0
-            }
-            
+            let verticalInset: CGFloat = 11.0
             let titleSpacing: CGFloat = 2.0
             
             let separatorHeight = UIScreenPixel
@@ -451,7 +449,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
                     if case let .check(checked) = item.control {
                         selected = checked
                     }
-                    let sizeAndApply = selectableControlLayout(item.presentationData.theme.list.itemCheckColors.strokeColor, item.presentationData.theme.list.itemCheckColors.fillColor, item.presentationData.theme.list.itemCheckColors.foregroundColor, selected, .compact)
+                    let sizeAndApply = selectableControlLayout(item.presentationData.theme.list.itemCheckColors.strokeColor, item.presentationData.theme.list.itemCheckColors.fillColor, item.presentationData.theme.list.itemCheckColors.foregroundColor, selected, .compact, nil)
                     selectableControlSizeAndApply = sizeAndApply
                     editingOffset = sizeAndApply.0
                 } else {
@@ -500,7 +498,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
             var resourceReference: MediaResourceReference?
             if item.packInfo.hasThumbnail, let thumbnail = item.packInfo._parse().thumbnail {
                 if thumbnail.typeHint != .generic {
-                    thumbnailItem = .animated(thumbnail.resource, thumbnail.dimensions, thumbnail.typeHint == .video, item.packInfo.flags.contains(.isCustomTemplateEmoji))
+                    thumbnailItem = .animated(EngineMediaResource(thumbnail.resource), thumbnail.dimensions, thumbnail.typeHint == .video, item.packInfo.flags.contains(.isCustomTemplateEmoji))
                 } else {
                     thumbnailItem = .still(thumbnail)
                 }
@@ -508,7 +506,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
             } else if let item = item.topItem {
                 let itemFile = item.file._parse()
                 if itemFile.isAnimatedSticker || itemFile.isVideoSticker {
-                    thumbnailItem = .animated(itemFile.resource, itemFile.dimensions ?? PixelDimensions(width: 100, height: 100), itemFile.isVideoSticker, itemFile.isCustomTemplateEmoji)
+                    thumbnailItem = .animated(EngineMediaResource(itemFile.resource), itemFile.dimensions ?? PixelDimensions(width: 100, height: 100), itemFile.isVideoSticker, itemFile.isCustomTemplateEmoji)
                     resourceReference = MediaResourceReference.media(media: .standalone(media: itemFile), resource: itemFile.resource)
                 } else if let dimensions = itemFile.dimensions, let resource = chatMessageStickerResource(file: itemFile, small: true) as? TelegramMediaResource {
                     thumbnailItem = .still(TelegramMediaImageRepresentation(dimensions: dimensions, resource: resource, progressiveSizes: [], immediateThumbnailData: nil, hasVideo: false, isPersonal: false))
@@ -517,7 +515,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
             }
             
             var updatedImageSignal: Signal<(TransformImageArguments) -> DrawingContext?, NoError>?
-            var updatedFetchSignal: Signal<FetchResourceSourceType, FetchResourceError>?
+            var updatedFetchSignal: Signal<EngineFetchResourceSourceType, EngineFetchResourceError>?
             
             let imageBoundingSize = CGSize(width: 34.0, height: 34.0)
             var imageApply: (() -> Void)?
@@ -537,14 +535,14 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
                         }
                     case let .animated(resource, dimensions, _, _):
                         imageSize = dimensions.cgSize.aspectFitted(imageBoundingSize)
-                    
+
                         if fileUpdated {
                             imageApply = makeImageLayout(TransformImageArguments(corners: ImageCorners(), imageSize: imageBoundingSize, boundingSize: imageBoundingSize, intrinsicInsets: UIEdgeInsets()))
-                            updatedImageSignal = chatMessageStickerPackThumbnail(postbox: item.context.account.postbox, resource: resource, animated: true, nilIfEmpty: true)
+                            updatedImageSignal = chatMessageStickerPackThumbnail(postbox: item.context.account.postbox, resource: resource._asResource(), animated: true, nilIfEmpty: true)
                         }
                 }
                 if fileUpdated, let resourceReference = resourceReference {
-                    updatedFetchSignal = fetchedMediaResource(mediaBox: item.context.account.postbox.mediaBox, userLocation: .other, userContentType: .sticker, reference: resourceReference)
+                    updatedFetchSignal = item.context.engine.resources.fetch(reference: resourceReference, userLocation: .other, userContentType: .sticker)
                 }
             } else {
                 updatedImageSignal = .single({ _ in return nil })
@@ -765,32 +763,35 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
                     let hasCorners = itemListHasRoundedBlockLayout(params)
                     var hasTopCorners = false
                     var hasBottomCorners = false
+                    let topStripeIsHidden: Bool
                     switch neighbors.top {
                         case .sameSection(false):
-                            strongSelf.topStripeNode.isHidden = true
+                            topStripeIsHidden = true
                         default:
                             hasTopCorners = true
-                            strongSelf.topStripeNode.isHidden = hasCorners
+                            topStripeIsHidden = hasCorners
                     }
                     let bottomStripeInset: CGFloat
                     let bottomStripeOffset: CGFloat
+                    let bottomStripeIsHidden: Bool
                     switch neighbors.bottom {
                         case .sameSection(false):
                             bottomStripeInset = leftInset + editingOffset
                             bottomStripeOffset = -separatorHeight
-                            strongSelf.bottomStripeNode.isHidden = false
+                            bottomStripeIsHidden = false
                         default:
                             bottomStripeInset = 0.0
                             bottomStripeOffset = 0.0
                             hasBottomCorners = true
-                            strongSelf.bottomStripeNode.isHidden = hasCorners
+                            bottomStripeIsHidden = hasCorners
                     }
+                    strongSelf.updateRevealOptionsSeparatorNodes(top: strongSelf.topStripeNode, bottom: strongSelf.bottomStripeNode, topIsHidden: topStripeIsHidden, bottomIsHidden: bottomStripeIsHidden, topHiddenByPreviousRevealOptions: neighbors.topHasActiveRevealOptions, bottomHiddenByNextRevealOptions: neighbors.bottomHasActiveRevealOptions)
                     
                     strongSelf.maskNode.image = hasCorners ? PresentationResourcesItemList.cornersImage(item.presentationData.theme, top: hasTopCorners, bottom: hasBottomCorners, glass: item.systemStyle == .glass) : nil
                     
                     strongSelf.backgroundNode.frame = CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: contentSize.height + min(insets.top, separatorHeight) + min(insets.bottom, separatorHeight)))
                     strongSelf.containerNode.frame = CGRect(origin: CGPoint(), size: strongSelf.backgroundNode.frame.size)
-                    strongSelf.maskNode.frame = strongSelf.backgroundNode.frame.insetBy(dx: params.leftInset, dy: 0.0)
+                    strongSelf.maskNode.frame = strongSelf.backgroundNode.frame.inset(by: UIEdgeInsets(top: 0.0, left: params.leftInset, bottom: 0.0, right: params.rightInset))
                     transition.updateFrame(node: strongSelf.topStripeNode, frame: CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: layoutSize.width, height: separatorHeight)))
                     transition.updateFrame(node: strongSelf.bottomStripeNode, frame: CGRect(origin: CGPoint(x: bottomStripeInset, y: contentSize.height + bottomStripeOffset), size: CGSize(width: layoutSize.width - bottomStripeInset - params.rightInset - separatorRightInset, height: separatorHeight)))
                     
@@ -823,15 +824,15 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
                                 if let current = strongSelf.animationNode {
                                     animationNode = current
                                 } else {
-                                    animationNode = DefaultAnimatedStickerNodeImpl()
+                                    animationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: item.context.lottieRenderingSettings)
                                     animationNode.started = { [weak self] in
                                         self?.removePlaceholder(animated: false)
                                     }
                                     strongSelf.animationNode = animationNode
                                     strongSelf.addSubnode(animationNode)
-                                    
-                                    let pathPrefix = item.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(resource.id)
-                                    animationNode.setup(source: AnimatedStickerResourceSource(account: item.context.account, resource: resource, isVideo: isVideo), width: 80, height: 80, playbackMode: .loop, mode: .direct(cachePathPrefix: pathPrefix))
+
+                                    let pathPrefix = item.context.engine.resources.shortLivedResourceCachePathPrefix(id: resource.id)
+                                    animationNode.setup(source: AnimatedStickerResourceSource(account: item.context.account, resource: resource._asResource(), isVideo: isVideo), width: 80, height: 80, playbackMode: .loop, mode: .direct(cachePathPrefix: pathPrefix))
                                 }
                                 animationNode.visibility = strongSelf.visibility != .none && item.playAnimatedStickers
                                 animationNode.isHidden = !item.playAnimatedStickers
@@ -878,7 +879,7 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
                         strongSelf.imageNode.setSignal(updatedImageSignal)
                     }
                     
-                    strongSelf.highlightedBackgroundNode.frame = CGRect(origin: CGPoint(x: 0.0, y: -UIScreenPixel), size: CGSize(width: params.width, height: strongSelf.backgroundNode.frame.height + UIScreenPixel + UIScreenPixel))
+                    strongSelf.updateRevealOptionsHighlightedBackgroundFrame(strongSelf.highlightedBackgroundNode, frame: CGRect(origin: CGPoint(x: 0.0, y: -UIScreenPixel), size: CGSize(width: params.width, height: strongSelf.backgroundNode.frame.height + UIScreenPixel + UIScreenPixel)), transition: transition, aboveNodes: [strongSelf.bottomStripeNode, strongSelf.topStripeNode, strongSelf.backgroundNode])
                     
                     strongSelf.updateLayout(size: layout.contentSize, leftInset: params.leftInset, rightInset: params.rightInset)
                     
@@ -896,39 +897,8 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
     override func setHighlighted(_ highlighted: Bool, at point: CGPoint, animated: Bool) {
         super.setHighlighted(highlighted, at: point, animated: animated)
         
-        if highlighted {
-            self.highlightedBackgroundNode.alpha = 1.0
-            if self.highlightedBackgroundNode.supernode == nil {
-                var anchorNode: ASDisplayNode?
-                if self.bottomStripeNode.supernode != nil {
-                    anchorNode = self.bottomStripeNode
-                } else if self.topStripeNode.supernode != nil {
-                    anchorNode = self.topStripeNode
-                } else if self.backgroundNode.supernode != nil {
-                    anchorNode = self.backgroundNode
-                }
-                if let anchorNode = anchorNode {
-                    self.insertSubnode(self.highlightedBackgroundNode, aboveSubnode: anchorNode)
-                } else {
-                    self.addSubnode(self.highlightedBackgroundNode)
-                }
-            }
-        } else {
-            if self.highlightedBackgroundNode.supernode != nil {
-                if animated {
-                    self.highlightedBackgroundNode.layer.animateAlpha(from: self.highlightedBackgroundNode.alpha, to: 0.0, duration: 0.4, completion: { [weak self] completed in
-                        if let strongSelf = self {
-                            if completed {
-                                strongSelf.highlightedBackgroundNode.removeFromSupernode()
-                            }
-                        }
-                    })
-                    self.highlightedBackgroundNode.alpha = 0.0
-                } else {
-                    self.highlightedBackgroundNode.removeFromSupernode()
-                }
-            }
-        }
+        self.isHighlighted = highlighted
+        self.updateRevealOptionsHighlightedBackgroundNode(self.highlightedBackgroundNode, isHighlighted: self.isHighlighted, transition: (animated && !highlighted) ? .animated(duration: 0.3, curve: .easeInOut) : .immediate, aboveNodes: [self.bottomStripeNode, self.topStripeNode, self.backgroundNode])
     }
     
     override func animateInsertion(_ currentTimestamp: Double, duration: Double, options: ListViewItemAnimationOptions) {
@@ -967,6 +937,12 @@ class ItemListStickerPackItemNode: ItemListRevealOptionsItemNode {
         if let animationNode = self.animationNode {
             transition.updateFrame(node: animationNode, frame: CGRect(origin: CGPoint(x: params.leftInset + self.revealOffset + editingOffset + 15.0 + floor((boundingSize.width - animationNode.frame.size.width) / 2.0), y: animationNode.frame.minY), size: animationNode.frame.size))
         }
+    }
+
+    override func revealOptionsActiveStateUpdated(isActive: Bool, transition: ContainedViewLayoutTransition) {
+        super.revealOptionsActiveStateUpdated(isActive: isActive, transition: transition)
+
+        self.updateRevealOptionsHighlightedBackgroundNode(self.highlightedBackgroundNode, isHighlighted: self.isHighlighted, transition: transition, aboveNodes: [self.bottomStripeNode, self.topStripeNode, self.backgroundNode])
     }
     
     override func revealOptionsInteractivelyOpened() {

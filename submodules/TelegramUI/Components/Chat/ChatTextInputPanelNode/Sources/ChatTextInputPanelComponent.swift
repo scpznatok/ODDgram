@@ -335,10 +335,10 @@ public final class ChatTextInputPanelComponent: Component {
         }
         
         public func deleteBackward() {
-            guard let panelNode = self.panelNode, let textView = panelNode.textInputNode?.textView else {
+            guard let panelNode = self.panelNode, let richTextInputNode = panelNode.richTextInputNode else {
                 return
             }
-            textView.deleteBackward()
+            richTextInputNode.deleteBackward()
         }
         
         public func activateInput() {
@@ -407,7 +407,7 @@ public final class ChatTextInputPanelComponent: Component {
                     },
                     cancelMessageSelection: { _ in
                     },
-                    deleteSelectedMessages: {
+                    deleteSelectedMessages: { _ in
                     },
                     reportSelectedMessages: {
                     },
@@ -487,7 +487,6 @@ public final class ChatTextInputPanelComponent: Component {
                             mode: .standard(.default),
                             chatLocation: .peer(id: component.chatPeerId),
                             subject: nil,
-                            peerNearbyData: nil,
                             greetingData: nil,
                             pendingUnpinnedAllMessages: false,
                             activeGroupCallInfo: nil,
@@ -517,8 +516,8 @@ public final class ChatTextInputPanelComponent: Component {
                             }*/
                         }
                         
-                        if let panelNode = self.panelNode, let textView = panelNode.textInputNode?.textView {
-                            component.externalState.isEditing = textView.isFirstResponder
+                        if let panelNode = self.panelNode, let richTextInputNode = panelNode.richTextInputNode {
+                            component.externalState.isEditing = richTextInputNode.isInputFirstResponder
                         } else {
                             component.externalState.isEditing = false
                         }
@@ -581,6 +580,8 @@ public final class ChatTextInputPanelComponent: Component {
                     finishMediaRecording: { _ in
                     },
                     stopMediaRecording: {
+                    },
+                    stopIncomingStreamingMessage: {
                     },
                     lockMediaRecording: {
                     },
@@ -664,8 +665,6 @@ public final class ChatTextInputPanelComponent: Component {
                         component.sendContextAction?(node.view, gesture)
                     },
                     openScheduledMessages: {
-                    },
-                    openPeersNearby: {
                     },
                     displaySearchResultsTooltip: { _, _ in
                     },
@@ -756,7 +755,15 @@ public final class ChatTextInputPanelComponent: Component {
                     },
                     displayUndo: { _ in
                     },
+                    presentInputTextTranslation: { _, _ in
+                    },
                     sendEmoji: { _, _, _ in
+                    },
+                    openAICompose: {
+                    },
+                    openExpandedInput: {
+                    },
+                    openSetPeerAvatar: {
                     },
                     updateHistoryFilter: { _ in
                     },
@@ -793,7 +800,6 @@ public final class ChatTextInputPanelComponent: Component {
                 mode: .standard(.default),
                 chatLocation: .peer(id: component.chatPeerId),
                 subject: nil,
-                peerNearbyData: nil,
                 greetingData: nil,
                 pendingUnpinnedAllMessages: false,
                 activeGroupCallInfo: nil,
@@ -839,7 +845,7 @@ public final class ChatTextInputPanelComponent: Component {
             
             if let sendAsConfiguration = component.sendAsConfiguration {
                 presentationInterfaceState = presentationInterfaceState.updatedSendAsPeers([SendAsPeer(
-                    peer: sendAsConfiguration.currentPeer._asPeer(),
+                    peer: sendAsConfiguration.currentPeer,
                     subscribers: sendAsConfiguration.subscriberCount.flatMap(Int32.init(clamping:)),
                     isPremiumRequired: sendAsConfiguration.isPremiumLocked
                 )]).updatedShowSendAsPeers(sendAsConfiguration.isSelecting).updatedCurrentSendAsPeerId(sendAsConfiguration.currentPeer.id)
@@ -889,15 +895,15 @@ public final class ChatTextInputPanelComponent: Component {
                 }
             }
             
-            if let textView = panelNode.textInputNode?.textView {
+            if let richTextInputNode = panelNode.richTextInputNode {
                 if component.hideKeyboard {
-                    if textView.inputView == nil {
-                        textView.inputView = EmptyInputView()
-                        textView.reloadInputViews()
+                    if richTextInputNode.keyboardInputView == nil {
+                        richTextInputNode.keyboardInputView = EmptyInputView()
+                        richTextInputNode.reloadInputViews()
                     }
-                } else if textView.inputView != nil {
-                    textView.inputView = nil
-                    textView.reloadInputViews()
+                } else if richTextInputNode.keyboardInputView != nil {
+                    richTextInputNode.keyboardInputView = nil
+                    richTextInputNode.reloadInputViews()
                 }
             }
             
@@ -1046,6 +1052,7 @@ public final class ChatTextInputPanelComponent: Component {
                 transition: transition.containedViewLayoutTransition,
                 interfaceState: presentationInterfaceState,
                 metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact, orientation: nil),
+                deviceMetrics: DeviceMetrics.iPhone16Pro,
                 isMediaInputExpanded: false
             )
             

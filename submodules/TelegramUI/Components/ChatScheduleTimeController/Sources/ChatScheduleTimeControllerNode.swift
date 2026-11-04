@@ -1,8 +1,8 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramStringFormatting
@@ -62,6 +62,7 @@ class ChatScheduleTimeControllerNode: ViewControllerTracingNode, ASScrollViewDel
         self.wrappingScrollNode.view.alwaysBounceVertical = true
         self.wrappingScrollNode.view.delaysContentTouches = false
         self.wrappingScrollNode.view.canCancelContentTouches = true
+        self.wrappingScrollNode.view.scrollsToTop = false
         
         self.dimNode = ASDisplayNode()
         self.dimNode.backgroundColor = UIColor(white: 0.0, alpha: 0.5)
@@ -512,7 +513,12 @@ class ChatScheduleTimeControllerNode: ViewControllerTracingNode, ASScrollViewDel
         } else {
             contentHeight = titleHeight + bottomInset + 52.0 + 17.0 + pickerHeight + buttonOffset
         }
-        let width = horizontalContainerFillingSizeForLayout(layout: layout, sideInset: 0.0)
+        var width = horizontalContainerFillingSizeForLayout(layout: layout, sideInset: 0.0)
+        if case .iPhoneDuo = layout.deviceMetrics, case .compact = layout.metrics.widthClass {
+            // iPhone Duo's screens are wider than the 440pt cap for compact layouts (466pt folded, 669pt unfolded),
+            // which left the sheet short of both edges. It spans the screen like the other sheets.
+            width = layout.size.width
+        }
         
         let textControlSpacing: CGFloat = -8.0
         let textDoneSpacing: CGFloat = 21.0
@@ -594,7 +600,8 @@ class ChatScheduleTimeControllerNode: ViewControllerTracingNode, ASScrollViewDel
                         content: LottieComponent.AppBundleContent(name: "anim_infotip"),
                         startingPosition: .begin,
                         size: CGSize(width: 32.0, height: 32.0),
-                        playOnce: playOnce
+                        playOnce: playOnce,
+                        lottieSettings: self.context.lottieRenderingSettings
                     )),
                     content: AnyComponent(VStack([
                         AnyComponentWithIdentity(id: 0, component: AnyComponent(MultilineTextComponent(

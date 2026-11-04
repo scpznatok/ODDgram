@@ -3,7 +3,6 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -56,6 +55,10 @@ private var fadeImage: UIImage? = {
 }()
 
 final class VoiceChatFullscreenParticipantItem: ListViewItem {
+    var neighborDescriptor: AnyEquatable {
+        return AnyEquatable.noNeighborInfluence
+    }
+
     enum Icon {
         case none
         case microphone(Bool, UIColor)
@@ -73,7 +76,7 @@ final class VoiceChatFullscreenParticipantItem: ListViewItem {
     let presentationData: ItemListPresentationData
     let nameDisplayOrder: PresentationPersonNameOrder
     let context: AccountContext
-    let peer: Peer
+    let peer: EnginePeer
     let videoEndpointId: String?
     let isPaused: Bool
     let icon: Icon
@@ -91,7 +94,7 @@ final class VoiceChatFullscreenParticipantItem: ListViewItem {
     
     public let selectable: Bool = true
     
-    public init(presentationData: ItemListPresentationData, nameDisplayOrder: PresentationPersonNameOrder, context: AccountContext, peer: Peer, videoEndpointId: String?, isPaused: Bool, icon: Icon, text: VoiceChatParticipantItem.ParticipantText, textColor: Color, color: Color, isLandscape: Bool, active: Bool, showVideoWhenActive: Bool, getAudioLevel: (() -> Signal<Float, NoError>)?, getVideo: @escaping () -> GroupVideoNode?, action: ((ASDisplayNode?) -> Void)?, contextAction: ((ASDisplayNode, ContextGesture?) -> Void)? = nil, getUpdatingAvatar: @escaping () -> Signal<(TelegramMediaImageRepresentation, Float)?, NoError>) {
+    public init(presentationData: ItemListPresentationData, nameDisplayOrder: PresentationPersonNameOrder, context: AccountContext, peer: EnginePeer, videoEndpointId: String?, isPaused: Bool, icon: Icon, text: VoiceChatParticipantItem.ParticipantText, textColor: Color, color: Color, isLandscape: Bool, active: Bool, showVideoWhenActive: Bool, getAudioLevel: (() -> Signal<Float, NoError>)?, getVideo: @escaping () -> GroupVideoNode?, action: ((ASDisplayNode?) -> Void)?, contextAction: ((ASDisplayNode, ContextGesture?) -> Void)? = nil, getUpdatingAvatar: @escaping () -> Signal<(TelegramMediaImageRepresentation, Float)?, NoError>) {
         self.presentationData = presentationData
         self.nameDisplayOrder = nameDisplayOrder
         self.context = context
@@ -112,10 +115,10 @@ final class VoiceChatFullscreenParticipantItem: ListViewItem {
         self.getUpdatingAvatar = getUpdatingAvatar
     }
         
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         async {
             let node = VoiceChatFullscreenParticipantItemNode()
-            let (layout, apply) = node.asyncLayout()(self, params, previousItem == nil, nextItem == nil)
+            let (layout, apply) = node.asyncLayout()(self, params, neighbors.previous == nil, neighbors.next == nil)
             
             node.contentSize = layout.contentSize
             node.insets = layout.insets
@@ -128,7 +131,7 @@ final class VoiceChatFullscreenParticipantItem: ListViewItem {
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? VoiceChatFullscreenParticipantItemNode {
                 let makeLayout = nodeValue.asyncLayout()
@@ -139,7 +142,7 @@ final class VoiceChatFullscreenParticipantItem: ListViewItem {
                 }
                 
                 async {
-                    let (layout, apply) = makeLayout(self, params, previousItem == nil, nextItem == nil)
+                    let (layout, apply) = makeLayout(self, params, neighbors.previous == nil, neighbors.next == nil)
                     Queue.mainQueue().async {
                         completion(layout, { _ in
                             apply(false, animated)
@@ -384,7 +387,7 @@ class VoiceChatFullscreenParticipantItemNode: ItemListRevealOptionsItemNode {
                 if let videoNode = self.videoNode, videoNode.supernode == self.videoContainerNode, !videoNode.alpha.isZero {
                     hasVideo = true
                 }
-                let profileNode = VoiceChatPeerProfileNode(context: item.context, size: extractedRect.size, sourceSize: nonExtractedRect.size, peer: EnginePeer(item.peer), text: item.text, customNode: hasVideo ? self.videoContainerNode : nil, additionalEntry: .single(nil), requestDismiss: { [weak self] in
+                let profileNode = VoiceChatPeerProfileNode(context: item.context, size: extractedRect.size, sourceSize: nonExtractedRect.size, peer: item.peer, text: item.text, customNode: hasVideo ? self.videoContainerNode : nil, additionalEntry: .single(nil), requestDismiss: { [weak self] in
                     self?.contextSourceNode.requestDismiss?()
                 })
                 profileNode.frame = CGRect(origin: CGPoint(), size: extractedRect.size)
@@ -433,7 +436,7 @@ class VoiceChatFullscreenParticipantItemNode: ItemListRevealOptionsItemNode {
         let currentItem = self.layoutParams?.0
         var hasVideo = self.videoNode != nil
         
-        return { item, params, first, last in
+        return { [weak self] item, params, first, last in
             let titleFont = Font.semibold(13.0)
             var titleAttributedString: NSAttributedString?
             
@@ -457,7 +460,7 @@ class VoiceChatFullscreenParticipantItemNode: ItemListRevealOptionsItemNode {
             }
             let currentBoldFont: UIFont = titleFont
             
-            if let user = item.peer as? TelegramUser {
+            if case let .user(user) = item.peer {
                 if let firstName = user.firstName, let lastName = user.lastName, !firstName.isEmpty, !lastName.isEmpty {
                     titleAttributedString = NSAttributedString(string: firstName, font: titleFont, textColor: titleColor)
                 } else if let firstName = user.firstName, !firstName.isEmpty {
@@ -467,9 +470,9 @@ class VoiceChatFullscreenParticipantItemNode: ItemListRevealOptionsItemNode {
                 } else {
                     titleAttributedString = NSAttributedString(string: item.presentationData.strings.User_DeletedAccount, font: currentBoldFont, textColor: titleColor)
                 }
-            } else if let group = item.peer as? TelegramGroup {
+            } else if case let .legacyGroup(group) = item.peer {
                 titleAttributedString = NSAttributedString(string: group.title, font: currentBoldFont, textColor: titleColor)
-            } else if let channel = item.peer as? TelegramChannel {
+            } else if case let .channel(channel) = item.peer {
                 titleAttributedString = NSAttributedString(string: channel.title, font: currentBoldFont, textColor: titleColor)
             }
         
@@ -763,7 +766,7 @@ class VoiceChatFullscreenParticipantItemNode: ItemListRevealOptionsItemNode {
                     if item.peer.isDeleted {
                         overrideImage = .deletedIcon
                     }
-                    strongSelf.avatarNode.setPeer(context: item.context, theme: item.presentationData.theme, peer: EnginePeer(item.peer), overrideImage: overrideImage, emptyColor: item.presentationData.theme.list.mediaPlaceholderColor, synchronousLoad: synchronousLoad, storeUnrounded: true)
+                    strongSelf.avatarNode.setPeer(context: item.context, theme: item.presentationData.theme, peer: item.peer, overrideImage: overrideImage, emptyColor: item.presentationData.theme.list.mediaPlaceholderColor, synchronousLoad: synchronousLoad, storeUnrounded: true)
                 
                     var hadMicrophoneNode = false
                     var hadRaiseHandNode = false

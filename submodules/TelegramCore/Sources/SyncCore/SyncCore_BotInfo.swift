@@ -4,20 +4,24 @@ import Postbox
 public struct BotCommand: PostboxCoding, Hashable {
     public let text: String
     public let description: String
+    public let isEphemeral: Bool
     
-    public init(text: String, description: String) {
+    public init(text: String, description: String, isEphemeral: Bool = false) {
         self.text = text
         self.description = description
+        self.isEphemeral = isEphemeral
     }
     
     public init(decoder: PostboxDecoder) {
         self.text = decoder.decodeStringForKey("t", orElse: "")
         self.description = decoder.decodeStringForKey("d", orElse: "")
+        self.isEphemeral = decoder.decodeInt32ForKey("e", orElse: 0) != 0
     }
     
     public func encode(_ encoder: PostboxEncoder) {
         encoder.encodeString(self.text, forKey: "t")
         encoder.encodeString(self.description, forKey: "d")
+        encoder.encodeInt32(self.isEphemeral ? 1 : 0, forKey: "e")
     }
 }
 
@@ -102,12 +106,14 @@ public struct BotVerifierSettings: PostboxCoding, Equatable {
     public let iconFileId: Int64
     public let companyName: String
     public let customDescription: String?
+    public let customDescriptionEntities: [MessageTextEntity]?
     public let canModifyDescription: Bool
     
-    public init(iconFileId: Int64, companyName: String, customDescription: String?, canModifyDescription: Bool) {
+    public init(iconFileId: Int64, companyName: String, customDescription: String?, customDescriptionEntities: [MessageTextEntity]?, canModifyDescription: Bool) {
         self.iconFileId = iconFileId
         self.companyName = companyName
         self.customDescription = customDescription
+        self.customDescriptionEntities = customDescriptionEntities
         self.canModifyDescription = canModifyDescription
     }
     
@@ -115,6 +121,7 @@ public struct BotVerifierSettings: PostboxCoding, Equatable {
         self.iconFileId = decoder.decodeInt64ForKey("i", orElse: 0)
         self.companyName = decoder.decodeStringForKey("cn", orElse: "")
         self.customDescription = decoder.decodeOptionalStringForKey("d")
+        self.customDescriptionEntities = decoder.decodeOptionalObjectArrayWithDecoderForKey("de")
         self.canModifyDescription = decoder.decodeBoolForKey("md", orElse: false)
     }
     
@@ -125,6 +132,11 @@ public struct BotVerifierSettings: PostboxCoding, Equatable {
             encoder.encodeString(customDescription, forKey: "d")
         } else {
             encoder.encodeNil(forKey: "d")
+        }
+        if let customDescriptionEntities = self.customDescriptionEntities {
+            encoder.encodeObjectArray(customDescriptionEntities, forKey: "de")
+        } else {
+            encoder.encodeNil(forKey: "de")
         }
         encoder.encodeBool(self.canModifyDescription, forKey: "md")
     }

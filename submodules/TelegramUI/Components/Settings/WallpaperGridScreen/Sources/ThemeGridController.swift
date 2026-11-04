@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import SwiftSignalKit
 import LegacyComponents
@@ -10,7 +9,6 @@ import TelegramPresentationData
 import TelegramUIPreferences
 import OverlayStatusController
 import AccountContext
-import ShareController
 import SearchUI
 import HexColor
 import PresentationDataUtils
@@ -67,7 +65,7 @@ public final class ThemeGridController: ViewController {
         self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
         self.presentationDataPromise.set(.single(self.presentationData))
         
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData, style: .glass))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData))
         
         switch mode {
         case .generic:
@@ -117,7 +115,9 @@ public final class ThemeGridController: ViewController {
             if let isEmpty = self.isEmpty, isEmpty {
             } else {
                 if self.editingMode {
-                    self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed))
+                    let doneItem = UIBarButtonItem(title: "___done", style: .done, target: self, action: #selector(self.donePressed))
+                    doneItem.staysInRow = true
+                    self.navigationItem.rightBarButtonItem = doneItem
                 } else {
                     self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed))
                 }
@@ -125,7 +125,7 @@ public final class ThemeGridController: ViewController {
         }
         
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
-        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationData: self.presentationData, style: .glass), transition: .immediate)
+        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationData: self.presentationData), transition: .immediate)
         
         if self.isNodeLoaded {
             self.controllerNode.updatePresentationData(self.presentationData)
@@ -267,7 +267,9 @@ public final class ThemeGridController: ViewController {
                             strongSelf.navigationItem.setRightBarButton(nil, animated: true)
                         } else {
                             if strongSelf.editingMode {
-                                strongSelf.navigationItem.rightBarButtonItem = UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Done, style: .done, target: strongSelf, action: #selector(strongSelf.donePressed))
+                                let doneItem = UIBarButtonItem(title: "___done", style: .done, target: strongSelf, action: #selector(strongSelf.donePressed))
+                                doneItem.staysInRow = true
+                                strongSelf.navigationItem.rightBarButtonItem = doneItem
                             } else {
                                 strongSelf.navigationItem.rightBarButtonItem = UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Edit, style: .plain, target: strongSelf, action: #selector(strongSelf.editPressed))
                             }
@@ -361,7 +363,7 @@ public final class ThemeGridController: ViewController {
                                     })
                                 }).start()
                                 
-                                let _ = (telegramWallpapers(postbox: strongSelf.context.account.postbox, network: strongSelf.context.account.network)
+                                let _ = (strongSelf.context.engine.themes.wallpapers()
                                 |> deliverOnMainQueue).start(completed: { [weak self, weak controller] in
                                     controller?.dismiss()
                                     if let strongSelf = self {
@@ -395,30 +397,12 @@ public final class ThemeGridController: ViewController {
         }
         self.controllerNode.gridNode.visibleContentOffsetChanged = { [weak self] offset in
             if let strongSelf = self {
-                var previousContentOffsetValue: CGFloat?
-                if let previousContentOffset = strongSelf.previousContentOffset, case let .known(value) = previousContentOffset {
-                    previousContentOffsetValue = value
-                }
-                switch offset {
-                    case let .known(value):
-                        let transition: ContainedViewLayoutTransition
-                        if let previousContentOffsetValue = previousContentOffsetValue, value <= 0.0, previousContentOffsetValue > 30.0 {
-                            transition = .animated(duration: 0.2, curve: .easeInOut)
-                        } else {
-                            transition = .immediate
-                        }
-                        strongSelf.navigationBar?.updateBackgroundAlpha(min(30.0, max(0.0, value - 54.0)) / 30.0, transition: transition)
-                    case .unknown, .none:
-                        strongSelf.navigationBar?.updateBackgroundAlpha(1.0, transition: .immediate)
-                }
-                
                 strongSelf.previousContentOffset = offset
             }
         }
         
         self._ready.set(self.controllerNode.ready.get())
         
-        self.navigationBar?.updateBackgroundAlpha(0.0, transition: .immediate)
         
         self.displayNodeDidLoad()
         
@@ -466,7 +450,7 @@ public final class ThemeGridController: ViewController {
         } else {
             subject = .text(string)
         }
-        let shareController = ShareController(context: context, subject: subject)
+        let shareController = context.sharedContext.makeShareScreen(context: context, params: ShareControllerParams(subject: subject))
         self.present(shareController, in: .window(.root), blockInteraction: true)
         
         self.donePressed()
@@ -480,7 +464,9 @@ public final class ThemeGridController: ViewController {
     
     @objc func editPressed() {
         self.editingMode = true
-        self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed))
+        let doneItem = UIBarButtonItem(title: "___done", style: .done, target: self, action: #selector(self.donePressed))
+        doneItem.staysInRow = true
+        self.navigationItem.setRightBarButton(doneItem, animated: true)
         self.controllerNode.updateState { state in
             var state = state
             state.editing = true
@@ -490,7 +476,7 @@ public final class ThemeGridController: ViewController {
     
     @objc func donePressed() {
         self.editingMode = false
-        self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed))
+        self.navigationItem.setRightBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed)), animated: true)
         self.controllerNode.updateState { state in
             var state = state
             state.editing = false

@@ -8,6 +8,57 @@ import TelegramPresentationData
 import SegmentedControlNode
 
 public final class SegmentControlComponent: Component {
+    public final class Theme: Equatable {
+        public let backgroundColor: UIColor
+        public let legacyBackgroundColor: UIColor
+        public let foregroundColor: UIColor
+        public let textColor: UIColor
+        public let dividerColor: UIColor
+
+        public init(
+            backgroundColor: UIColor,
+            legacyBackgroundColor: UIColor,
+            foregroundColor: UIColor,
+            textColor: UIColor,
+            dividerColor: UIColor
+        ) {
+            self.backgroundColor = backgroundColor
+            self.legacyBackgroundColor = legacyBackgroundColor
+            self.foregroundColor = foregroundColor
+            self.textColor = textColor
+            self.dividerColor = dividerColor
+        }
+
+        public convenience init(theme: PresentationTheme) {
+            self.init(
+                backgroundColor: theme.rootController.navigationBar.segmentedBackgroundColor,
+                legacyBackgroundColor: theme.overallDarkAppearance ? theme.list.itemBlocksBackgroundColor : theme.rootController.navigationBar.segmentedBackgroundColor,
+                foregroundColor: theme.rootController.navigationBar.segmentedForegroundColor,
+                textColor: theme.rootController.navigationBar.segmentedTextColor,
+                dividerColor: theme.rootController.navigationBar.segmentedDividerColor
+            )
+        }
+
+        public static func ==(lhs: Theme, rhs: Theme) -> Bool {
+            if lhs.backgroundColor != rhs.backgroundColor {
+                return false
+            }
+            if lhs.legacyBackgroundColor != rhs.legacyBackgroundColor {
+                return false
+            }
+            if lhs.foregroundColor != rhs.foregroundColor {
+                return false
+            }
+            if lhs.textColor != rhs.textColor {
+                return false
+            }
+            if lhs.dividerColor != rhs.dividerColor {
+                return false
+            }
+            return true
+        }
+    }
+
     public struct Item: Equatable {
         var id: AnyHashable
         var title: String
@@ -18,31 +69,53 @@ public final class SegmentControlComponent: Component {
         }
     }
     
-    let theme: PresentationTheme
+    let theme: Theme
     let items: [Item]
     let selectedId: AnyHashable?
+    let fillWidth: Bool
     let action: (AnyHashable) -> Void
-    
+
     public init(
-        theme: PresentationTheme,
+        theme: Theme,
         items: [Item],
         selectedId: AnyHashable?,
+        fillWidth: Bool = false,
         action: @escaping (AnyHashable) -> Void
     ) {
         self.theme = theme
         self.items = items
         self.selectedId = selectedId
+        self.fillWidth = fillWidth
         self.action = action
+    }
+
+    public convenience init(
+        theme: PresentationTheme,
+        items: [Item],
+        selectedId: AnyHashable?,
+        fillWidth: Bool = false,
+        action: @escaping (AnyHashable) -> Void
+    ) {
+        self.init(
+            theme: Theme(theme: theme),
+            items: items,
+            selectedId: selectedId,
+            fillWidth: fillWidth,
+            action: action
+        )
     }
     
     public static func ==(lhs: SegmentControlComponent, rhs: SegmentControlComponent) -> Bool {
-        if lhs.theme !== rhs.theme {
+        if lhs.theme != rhs.theme {
             return false
         }
         if lhs.items != rhs.items {
             return false
         }
         if lhs.selectedId != rhs.selectedId {
+            return false
+        }
+        if lhs.fillWidth != rhs.fillWidth {
             return false
         }
         return true
@@ -102,7 +175,7 @@ public final class SegmentControlComponent: Component {
         }
         
         func update(component: SegmentControlComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
-            let themeUpdated = self.component?.theme !== component.theme
+            let themeUpdated = self.component?.theme != component.theme
             
             self.component = component
             
@@ -125,19 +198,24 @@ public final class SegmentControlComponent: Component {
                     self.nativeSegmentedView = segmentedView
                     self.addSubview(segmentedView)
                 }
+
+                segmentedView.selectedSegmentIndex = component.items.firstIndex(where: { $0.id == component.selectedId }) ?? 0
                 
                 if themeUpdated {
-                    let backgroundColor = component.theme.rootController.navigationBar.segmentedBackgroundColor
                     segmentedView.setTitleTextAttributes([
                         .font: Font.semibold(14.0),
-                        .foregroundColor: component.theme.rootController.navigationBar.segmentedTextColor
+                        .foregroundColor: component.theme.textColor
                     ], for: .normal)
-                    segmentedView.foregroundColor = component.theme.rootController.navigationBar.segmentedForegroundColor
-                    segmentedView.backgroundColor = backgroundColor
+                    segmentedView.foregroundColor = component.theme.foregroundColor
+                    segmentedView.backgroundColor = component.theme.backgroundColor
                 }
                 
                 controlSize = segmentedView.sizeThatFits(availableSize)
-                controlSize.width = min(availableSize.width - 32.0, max(300.0, controlSize.width))
+                if component.fillWidth {
+                    controlSize.width = availableSize.width
+                } else {
+                    controlSize.width = min(availableSize.width - 32.0, max(300.0, controlSize.width))
+                }
                 controlSize.height = 36.0
                 segmentedView.frame = CGRect(origin: .zero, size: controlSize)
             } else {
@@ -146,16 +224,14 @@ public final class SegmentControlComponent: Component {
                     segmentedNode = current
                     
                     if themeUpdated {
-                        let backgroundColor = component.theme.overallDarkAppearance ? component.theme.list.itemBlocksBackgroundColor : component.theme.rootController.navigationBar.segmentedBackgroundColor
-                        let controlTheme = SegmentedControlTheme(backgroundColor: backgroundColor, foregroundColor: component.theme.rootController.navigationBar.segmentedForegroundColor, shadowColor: .clear, textColor: component.theme.rootController.navigationBar.segmentedTextColor, dividerColor: component.theme.rootController.navigationBar.segmentedDividerColor)
+                        let controlTheme = SegmentedControlTheme(backgroundColor: component.theme.legacyBackgroundColor, foregroundColor: component.theme.foregroundColor, shadowColor: .clear, textColor: component.theme.textColor, dividerColor: component.theme.dividerColor)
                         segmentedNode.updateTheme(controlTheme)
                     }
                 } else {
                     let mappedItems: [SegmentedControlItem] = component.items.map { item -> SegmentedControlItem in
                         return SegmentedControlItem(title: item.title)
                     }
-                    let backgroundColor = component.theme.overallDarkAppearance ? component.theme.list.itemBlocksBackgroundColor : component.theme.rootController.navigationBar.segmentedBackgroundColor
-                    let controlTheme = SegmentedControlTheme(backgroundColor: backgroundColor, foregroundColor: component.theme.rootController.navigationBar.segmentedForegroundColor, shadowColor: .clear, textColor: component.theme.rootController.navigationBar.segmentedTextColor, dividerColor: component.theme.rootController.navigationBar.segmentedDividerColor)
+                    let controlTheme = SegmentedControlTheme(backgroundColor: component.theme.legacyBackgroundColor, foregroundColor: component.theme.foregroundColor, shadowColor: .clear, textColor: component.theme.textColor, dividerColor: component.theme.dividerColor)
                     segmentedNode = SegmentedControlNode(theme: controlTheme, items: mappedItems, selectedIndex: component.items.firstIndex(where: { $0.id == component.selectedId }) ?? 0, cornerRadius: 18.0)
                     self.legacySegmentedNode = segmentedNode
                     self.addSubnode(segmentedNode)
@@ -167,8 +243,14 @@ public final class SegmentControlComponent: Component {
                         component.action(component.items[index].id)
                     }
                 }
+
+                segmentedNode.selectedIndex = component.items.firstIndex(where: { $0.id == component.selectedId }) ?? 0
                 
-                controlSize = segmentedNode.updateLayout(SegmentedControlLayout.sizeToFit(maximumWidth: availableSize.width, minimumWidth: min(availableSize.width, 300.0), height: 36.0), transition: transition.containedViewLayoutTransition)
+                controlSize = segmentedNode.updateLayout(SegmentedControlLayout.sizeToFit(
+                    maximumWidth: availableSize.width,
+                    minimumWidth: component.fillWidth ? availableSize.width : min(availableSize.width, 300.0),
+                    height: 36.0
+                ), transition: transition.containedViewLayoutTransition)
                 transition.containedViewLayoutTransition.updateFrame(node: segmentedNode, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: controlSize))
             }
             

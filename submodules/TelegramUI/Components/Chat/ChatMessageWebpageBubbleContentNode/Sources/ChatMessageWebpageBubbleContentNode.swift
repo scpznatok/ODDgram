@@ -1,6 +1,6 @@
 import Foundation
+import LottieSettings
 import UIKit
-import Postbox
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
@@ -33,10 +33,10 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
         }
     }
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.contentNode = ChatMessageAttachedContentNode()
         
-        super.init()
+        super.init(lottieSettings: lottieSettings)
         
         self.addSubnode(self.contentNode)
         self.contentNode.openMedia = { [weak self] mode in
@@ -67,7 +67,7 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
                                 }
                             }
                             
-                            if shouldOpenUrl {
+                            if shouldOpenUrl && !strongSelf.isFromSuspiciousSender(item) {
                                 var isConcealed = true
                                 if item.message.text.contains(content.url) {
                                     isConcealed = false
@@ -96,7 +96,7 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
                     openChatMessageMode = .automaticPlayback
                 }
                 if !item.controllerInteraction.openMessage(item.message, OpenMessageParams(mode: openChatMessageMode)) {
-                    if let webPage = strongSelf.webPage, case let .Loaded(content) = webPage.content {
+                    if !strongSelf.isFromSuspiciousSender(item), let webPage = strongSelf.webPage, case let .Loaded(content) = webPage.content {
                         var isConcealed = true
                         if item.message.text.contains(content.url) {
                             isConcealed = false
@@ -118,6 +118,9 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
         }
         self.contentNode.activateAction = { [weak self] in
             if let strongSelf = self, let item = strongSelf.item {
+                if strongSelf.isFromSuspiciousSender(item) {
+                    return
+                }
                 if let _ = item.message.adAttribute {
                     item.controllerInteraction.activateAdAction(item.message.id, strongSelf.contentNode.makeProgress(), false, false)
                 } else {
@@ -153,11 +156,15 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
         }
         self.contentNode.requestUpdateLayout = { [weak self] in
             if let strongSelf = self, let item = strongSelf.item {
-                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false)
+                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false, nil)
             }
         }
         self.contentNode.defaultContentAction = { [weak self] in
             guard let self, let item = self.item, let webPage = self.webPage, case let .Loaded(content) = webPage.content else {
+                return ChatMessageBubbleContentTapAction(content: .none)
+            }
+            
+            if self.isFromSuspiciousSender(item) {
                 return ChatMessageBubbleContentTapAction(content: .none)
             }
             
@@ -189,11 +196,17 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
         fatalError("init(coder:) has not been implemented")
     }
     
+    /// A suspicious sender's link preview opens nothing, as their links do not
+    /// (`ChatMessageItemAssociatedData.isSuspiciousPeer`).
+    private func isFromSuspiciousSender(_ item: ChatMessageBubbleContentItem) -> Bool {
+        return item.associatedData.isSuspiciousPeer && item.message.effectivelyIncoming(item.context.account.peerId)
+    }
+    
     override public func asyncLayoutContent() -> (_ item: ChatMessageBubbleContentItem, _ layoutConstants: ChatMessageItemLayoutConstants, _ preparePosition: ChatMessageBubblePreparePosition, _ messageSelection: Bool?, _ constrainedSize: CGSize, _ avatarInset: CGFloat) -> (ChatMessageBubbleContentProperties, CGSize?, CGFloat, (CGSize, ChatMessageBubbleContentPosition) -> (CGFloat, (CGFloat) -> (CGSize, (ListViewItemUpdateAnimation, Bool, ListViewItemApply?) -> Void))) {
         let currentWebpage = self.webPage
-        let currentContentNodeLayout = self.contentNode.asyncLayout()
+        let currentContentNodeLayout = self.contentNode.asyncLayout(displayGiftIcon: true)
         
-        return { item, layoutConstants, preparePosition, _, constrainedSize, _ in
+        return { [weak self] item, layoutConstants, preparePosition, _, constrainedSize, _ in
             var webPage: TelegramMediaWebpage?
             var webPageContent: TelegramMediaWebpageLoadedContent?
             for media in item.message.media {
@@ -213,7 +226,7 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
             } else {
                 let updatedContentNodeValue = ChatMessageAttachedContentNode()
                 updatedContentNode = updatedContentNodeValue
-                contentNodeLayout = updatedContentNodeValue.asyncLayout()
+                contentNodeLayout = updatedContentNodeValue.asyncLayout(displayGiftIcon: true)
             }
             
             var title: String?
@@ -221,7 +234,7 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
             var text: String?
             var entities: [MessageTextEntity]?
             var titleBadge: String?
-            var mediaAndFlags: ([Media], ChatMessageAttachedContentNodeMediaFlags)?
+            var mediaAndFlags: ([EngineRawMedia], ChatMessageAttachedContentNodeMediaFlags)?
             var badge: String?
             
             var actionIcon: ChatMessageAttachedContentActionIcon?
@@ -254,31 +267,31 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
                     entities = generateTextEntities(textValue, enabledTypes: entityTypes)
                 }
                 
-                var mainMedia: Media?
+                var mainMedia: EngineRawMedia?
 
                 var automaticPlayback = false
                 
                 if let file = webpage.file, (file.isAnimated && item.context.sharedContext.energyUsageSettings.autoplayGif) || (!file.isAnimated && item.context.sharedContext.energyUsageSettings.autoplayVideo) {
                     var automaticDownload: InteractiveMediaNodeAutodownloadMode = .none
-                    if shouldDownloadMediaAutomatically(settings: item.controllerInteraction.automaticMediaDownloadSettings, peerType: item.associatedData.automaticDownloadPeerType, networkType: item.associatedData.automaticDownloadNetworkType, authorPeerId: item.message.author?.id, contactsPeerIds: item.associatedData.contactsPeerIds, media: file) {
+                    if shouldDownloadMediaAutomatically(settings: item.controllerInteraction.automaticMediaDownloadSettings, peerType: item.associatedData.automaticDownloadPeerType, networkType: item.associatedData.automaticDownloadNetworkType, authorPeerId: item.message.author?.id, contactsPeerIds: item.associatedData.contactsPeerIds, media: .file(file)) {
                         automaticDownload = .full
                     }
                     if case .full = automaticDownload {
                         automaticPlayback = true
                     } else {
-                        automaticPlayback = item.context.account.postbox.mediaBox.completedResourcePath(file.resource) != nil
+                        automaticPlayback = item.context.engine.resources.completedResourcePath(id: EngineMediaResource.Id(file.resource.id)) != nil
                     }
                 }
                 
                 switch type {
-                    case .instagram, .twitter:
-                        if automaticPlayback {
-                            mainMedia = webpage.story ?? webpage.file ?? webpage.image
-                        } else {
-                            mainMedia = webpage.story ?? webpage.image ?? webpage.file
-                        }
-                    default:
+                case .instagram, .twitter:
+                    if automaticPlayback {
                         mainMedia = webpage.story ?? webpage.file ?? webpage.image
+                    } else {
+                        mainMedia = webpage.story ?? webpage.image ?? webpage.file
+                    }
+                default:
+                    mainMedia = webpage.story ?? webpage.file ?? webpage.image
                 }
                 
                 let themeMimeType = "application/x-tgtheme-ios"
@@ -514,6 +527,20 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
                                 actionTitle = hasEnded ? item.presentationData.strings.Chat_Auction_ViewResults : item.presentationData.strings.Chat_Auction_Join
                                 actionIcon = !hasEnded ? .bid : nil
                             }
+                        case "telegram_channel_direct":
+                            actionTitle = item.presentationData.strings.Chat_ContactChannel
+                        case "telegram_newbot":
+                            actionTitle = item.presentationData.strings.Chat_CreateBotLink
+                        case "telegram_aicomposetone":
+                            actionTitle = item.presentationData.strings.Chat_ViewStyle
+                        
+                            for attribute in webpage.attributes {
+                                if case let .aiTextStyle(aiTextStyle) = attribute {
+                                    if let file = item.message.associatedMedia[EngineMedia.Id(namespace: Namespaces.Media.CloudFile, id: aiTextStyle.emojiFileId)] {
+                                        mediaAndFlags = ([file], [.preferMediaInline])
+                                    }
+                                }
+                            }
                         default:
                             break
                     }
@@ -579,6 +606,14 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
                 displayLine = true
             }
             
+            // A suspicious sender's link preview opens nothing, so it offers no button either, and its
+            // text shows links as plain text, as their message does.
+            if item.associatedData.isSuspiciousPeer && item.message.effectivelyIncoming(item.context.account.peerId) {
+                actionTitle = nil
+                actionIcon = nil
+                entities = entities?.filter(\.isShownFromSuspiciousPeer)
+            }
+            
             let (initialWidth, continueLayout) = contentNodeLayout(item.presentationData, item.controllerInteraction.automaticMediaDownloadSettings, item.associatedData, item.attributes, item.context, item.controllerInteraction, item.message, item.read, item.chatLocation, title, titleBadge, subtitle, text, entities, mediaAndFlags, badge, actionIcon, actionTitle, displayLine, layoutConstants, preparePosition, constrainedSize, item.controllerInteraction.presentationContext.animationCache, item.controllerInteraction.presentationContext.animationRenderer)
             
             let contentProperties = ChatMessageBubbleContentProperties(hidesSimpleAuthorHeader: false, headerSpacing: 8.0, hidesBackground: .never, forceFullCorners: false, forceAlignment: .none)
@@ -601,9 +636,12 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
                             let updatedPosition = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
                             
                             do {
-                                //animation.animator.updateScale(layer: self.contentNode.layer, scale: 0.9, completion: nil)
-                                animation.animator.updatePosition(layer: self.contentNode.layer, position: updatedPosition, completion: nil)
-                                animation.animator.updateAlpha(layer: self.contentNode.layer, alpha: 0.0, completion: { [weak contentNode] _ in
+                                // Bind the node locally so the completion closure captures it explicitly
+                                // rather than implicitly capturing `self` to reach the property.
+                                let contentNode = self.contentNode
+                                //animation.animator.updateScale(layer: contentNode.layer, scale: 0.9, completion: nil)
+                                animation.animator.updatePosition(layer: contentNode.layer, position: updatedPosition, completion: nil)
+                                animation.animator.updateAlpha(layer: contentNode.layer, alpha: 0.0, completion: { [weak contentNode] _ in
                                     contentNode?.removeFromSupernode()
                                 })
                             }
@@ -726,13 +764,13 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
         return ChatMessageBubbleContentTapAction(content: .none)
     }
     
-    override public func updateHiddenMedia(_ media: [Media]?) -> Bool {
+    override public func updateHiddenMedia(_ media: [EngineRawMedia]?) -> Bool {
         if let media = media {
             var updatedMedia = media
             if let current = self.webPage, case let .Loaded(content) = current.content {
                 for item in media {
                     if let webpage = item as? TelegramMediaWebpage, webpage.id == current.id {
-                        var mediaList: [Media] = [webpage]
+                        var mediaList: [EngineRawMedia] = [webpage]
                         if let image = content.image {
                             mediaList.append(image)
                         }
@@ -744,7 +782,7 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
                         }
                         updatedMedia = mediaList
                     } else if let id = item.id, content.file?.id == id || content.image?.id == id {
-                        var mediaList: [Media] = [current]
+                        var mediaList: [EngineRawMedia] = [current]
                         if let image = content.image {
                             mediaList.append(image)
                         }
@@ -764,7 +802,7 @@ public final class ChatMessageWebpageBubbleContentNode: ChatMessageBubbleContent
         }
     }
     
-    override public func transitionNode(messageId: MessageId, media: Media, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    override public func transitionNode(messageId: EngineMessage.Id, media: EngineRawMedia, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         if self.item?.message.id != messageId {
             return nil
         }

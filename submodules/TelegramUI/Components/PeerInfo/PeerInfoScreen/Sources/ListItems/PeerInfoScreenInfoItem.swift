@@ -6,7 +6,6 @@ import TelegramPresentationData
 import ItemListPeerItem
 import SwiftSignalKit
 import AccountContext
-import Postbox
 import TelegramCore
 import ItemListUI
 
@@ -15,6 +14,7 @@ final class PeerInfoScreenInfoItem: PeerInfoScreenItem {
     let title: String
     let text: InfoListItemText
     let isWarning: Bool
+    let style: InfoListItem.InfoStyle
     let linkAction: ((InfoListItemLinkAction) -> Void)?
  
     init(
@@ -22,12 +22,14 @@ final class PeerInfoScreenInfoItem: PeerInfoScreenItem {
         title: String,
         text: InfoListItemText,
         isWarning: Bool = false,
+        style: InfoListItem.InfoStyle = .default,
         linkAction: ((InfoListItemLinkAction) -> Void)?
     ) {
         self.id = id
         self.title = title
         self.text = text
         self.isWarning = isWarning
+        self.style = style
         self.linkAction = linkAction
     }
     
@@ -67,7 +69,7 @@ private final class PeerInfoScreenInfoItemNode: PeerInfoScreenItemNode {
         
         self.bottomSeparatorNode.backgroundColor = presentationData.theme.list.itemBlocksSeparatorColor
                 
-        let infoItem = InfoListItem(presentationData: ItemListPresentationData(presentationData), systemStyle: .glass, title: item.title, text: item.text, style: .blocks, hasDecorations: false, isWarning: item.isWarning, linkAction: { link in
+        let infoItem = InfoListItem(presentationData: ItemListPresentationData(presentationData), systemStyle: .glass, title: item.title, text: item.text, style: .blocks, hasDecorations: false, isWarning: item.isWarning, infoStyle: item.style, linkAction: { link in
             item.linkAction?(link)
         }, closeAction: nil)
         let params = ListViewItemLayoutParams(width: width, leftInset: safeInsets.left, rightInset: safeInsets.right, availableHeight: 1000.0)
@@ -77,20 +79,20 @@ private final class PeerInfoScreenInfoItemNode: PeerInfoScreenItemNode {
             itemNode = current
             infoItem.updateNode(async: { $0() }, node: {
                 return itemNode
-            }, params: params, previousItem: nil, nextItem: nil, animation: .None, completion: { (layout, apply) in
+            }, params: params, neighbors: .none, animation: .None, completion: { (layout, apply) in
                 let nodeFrame = CGRect(origin: CGPoint(), size: CGSize(width: width, height: layout.size.height))
                 
                 itemNode.contentSize = layout.contentSize
                 itemNode.insets = layout.insets
                 itemNode.frame = nodeFrame
                 
-                apply(ListViewItemApply(isOnScreen: true))
+                apply(ListViewItemApply())
             })
         } else {
             var itemNodeValue: ListViewItemNode?
-            infoItem.nodeConfiguredForParams(async: { $0() }, params: params, synchronousLoads: false, previousItem: nil, nextItem: nil, completion: { node, apply in
+            infoItem.nodeConfiguredForParams(async: { $0() }, params: params, synchronousLoads: false, neighbors: .none, completion: { node, apply in
                 itemNodeValue = node
-                apply().1(ListViewItemApply(isOnScreen: true))
+                apply().1(ListViewItemApply())
             })
             itemNode = itemNodeValue as! InfoItemNode
             self.itemNode = itemNode

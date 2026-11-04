@@ -3,7 +3,6 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -56,6 +55,7 @@ final class BusinessIntroSetupScreenComponent: Component {
         var id: AnyHashable
         var version: Int
         var isPreset: Bool
+        var canLoadMore: Bool
     }
     
     private struct EmojiSearchState {
@@ -100,6 +100,7 @@ final class BusinessIntroSetupScreenComponent: Component {
         private var stickerContent: EmojiPagerContentComponent?
         private var stickerContentDisposable: Disposable?
         private let stickerSearchDisposable = MetaDisposable()
+        private var stickerSearchContext: StickerSearchContext?
         private var stickerSearchState = EmojiSearchState(result: nil, isSearching: false)
         
         private var displayStickerInput: Bool = false
@@ -173,7 +174,7 @@ final class BusinessIntroSetupScreenComponent: Component {
             let mainController = context.sharedContext.makeStickerMediaPickerScreen(
                 context: context,
                 getSourceRect: { return .zero },
-                completion: { result, transitionView, transitionRect, transitionImage, fromCamera, completion, cancelled in
+                completion: { [weak self] result, transitionView, transitionRect, transitionImage, fromCamera, completion, cancelled in
                     let editorController = context.sharedContext.makeStickerEditorScreen(
                         context: context,
                         source: result,
@@ -223,10 +224,6 @@ final class BusinessIntroSetupScreenComponent: Component {
             
             let navigationAlphaDistance: CGFloat = 16.0
             let navigationAlpha: CGFloat = max(0.0, min(1.0, (self.scrollView.contentOffset.y - navigationRevealOffsetY) / navigationAlphaDistance))
-            if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
-                transition.setAlpha(layer: navigationBar.backgroundNode.layer, alpha: navigationAlpha)
-                transition.setAlpha(layer: navigationBar.stripeNode.layer, alpha: navigationAlpha)
-            }
             
             var scrolledUp = false
             if navigationAlpha < 0.5 {
@@ -309,6 +306,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                             self.stickerFile = itemFile._parse()
                             self.displayStickerInput = false
                             
+                            self.stickerSearchContext = nil
                             self.stickerSearchDisposable.set(nil)
                             self.stickerSearchState = EmojiSearchState(result: nil, isSearching: false)
                             
@@ -351,6 +349,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                             
                             switch query {
                             case .none:
+                                self.stickerSearchContext = nil
                                 self.stickerSearchDisposable.set(nil)
                                 self.stickerSearchState = EmojiSearchState(result: nil, isSearching: false)
                                 if !self.isUpdating {
@@ -360,54 +359,49 @@ final class BusinessIntroSetupScreenComponent: Component {
                                 let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
                                 
                                 if query.isEmpty {
+                                    self.stickerSearchContext = nil
                                     self.stickerSearchDisposable.set(nil)
                                     self.stickerSearchState = EmojiSearchState(result: nil, isSearching: false)
                                     self.state?.updated(transition: .immediate)
                                 } else {
                                     let context = component.context
+                                    self.stickerSearchContext = nil
                                     
-                                    let stickers: Signal<[(String?, FoundStickerItem)], NoError> = Signal { subscriber in
-                                        var signals: Signal<[Signal<(String?, [FoundStickerItem]), NoError>], NoError> = .single([])
-                                        
-                                        if query.isSingleEmoji {
-                                            signals = .single([context.engine.stickers.searchStickers(query: nil, emoticon: [query.basicEmoji.0])
-                                            |> map { (nil, $0.items) }])
-                                        } else if query.count > 1, !languageCode.isEmpty && languageCode != "emoji" {
-                                            var signal = context.engine.stickers.searchEmojiKeywords(inputLanguageCode: languageCode, query: query.lowercased(), completeMatch: query.count < 3)
-                                            if !languageCode.lowercased().hasPrefix("en") {
-                                                signal = signal
-                                                |> mapToSignal { keywords in
-                                                    return .single(keywords)
-                                                    |> then(
-                                                        context.engine.stickers.searchEmojiKeywords(inputLanguageCode: "en-US", query: query.lowercased(), completeMatch: query.count < 3)
-                                                        |> map { englishKeywords in
-                                                            return keywords + englishKeywords
-                                                        }
-                                                    )
-                                                }
-                                            } 
-                                            signals = signal
-                                            |> map { keywords -> [Signal<(String?, [FoundStickerItem]), NoError>] in
-                                                let emoticon = keywords.flatMap { $0.emoticons }.map { $0.basicEmoji.0 }
-                                                return [context.engine.stickers.searchStickers(query: query, emoticon: emoticon, inputLanguageCode: languageCode)
-                                                |> map { (nil, $0.items) }]
+                                    let stickers: Signal<(items: [(String?, FoundStickerItem)], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?), NoError>
+                                    if query.isSingleEmoji {
+                                        let searchContext = context.engine.stickers.stickerSearchContext(query: nil, emoticon: [query.basicEmoji.0])
+                                        stickers = searchContext.state
+                                        |> map { state -> (items: [(String?, FoundStickerItem)], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?) in
+                                            return (state.items.map { (nil, $0) }, state.canLoadMore, state.items.isEmpty && state.isLoadingMore, searchContext)
+                                        }
+                                    } else if query.count > 1, !languageCode.isEmpty && languageCode != "emoji" {
+                                        var keywordsSignal = context.engine.stickers.searchEmojiKeywords(inputLanguageCode: languageCode, query: query.lowercased(), completeMatch: query.count < 3)
+                                        if !languageCode.lowercased().hasPrefix("en") {
+                                            keywordsSignal = keywordsSignal
+                                            |> mapToSignal { keywords in
+                                                return .single(keywords)
+                                                |> then(
+                                                    context.engine.stickers.searchEmojiKeywords(inputLanguageCode: "en-US", query: query.lowercased(), completeMatch: query.count < 3)
+                                                    |> map { englishKeywords in
+                                                        return keywords + englishKeywords
+                                                    }
+                                                )
                                             }
                                         }
-                                        
-                                        return (signals
-                                        |> mapToSignal { signals in
-                                            return combineLatest(signals)
-                                        }).start(next: { results in
-                                            var result: [(String?, FoundStickerItem)] = []
-                                            for (emoji, stickers) in results {
-                                                for sticker in stickers {
-                                                    result.append((emoji, sticker))
-                                                }
+                                        stickers = keywordsSignal
+                                        |> mapToSignal { keywords -> Signal<(items: [(String?, FoundStickerItem)], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?), NoError> in
+                                            let emoticon = Array(Set(keywords.flatMap { $0.emoticons }.map { $0.basicEmoji.0 }))
+                                            guard !emoticon.isEmpty else {
+                                                return .single(([], false, false, nil))
                                             }
-                                            subscriber.putNext(result)
-                                        }, completed: {
-                                            subscriber.putCompletion()
-                                        })
+                                            let searchContext = context.engine.stickers.stickerSearchContext(query: query, emoticon: emoticon, inputLanguageCode: languageCode)
+                                            return searchContext.state
+                                            |> map { state -> (items: [(String?, FoundStickerItem)], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?) in
+                                                return (state.items.map { (nil, $0) }, state.canLoadMore, state.items.isEmpty && state.isLoadingMore, searchContext)
+                                            }
+                                        }
+                                    } else {
+                                        stickers = .single(([], false, false, nil))
                                     }
                                     
                                     let currentRemotePacks = Atomic<FoundStickerSets?>(value: nil)
@@ -430,15 +424,11 @@ final class BusinessIntroSetupScreenComponent: Component {
                                         )
                                     }
                                     
-                                    let installedPackIds = context.account.postbox.combinedView(keys: [.itemCollectionInfos(namespaces: [Namespaces.ItemCollection.CloudStickerPacks])])
-                                    |> map { view -> Set<ItemCollectionId> in
-                                        var installedPacks = Set<ItemCollectionId>()
-                                        if let stickerPacksView = view.views[.itemCollectionInfos(namespaces: [Namespaces.ItemCollection.CloudStickerPacks])] as? ItemCollectionInfosView {
-                                            if let packsEntries = stickerPacksView.entriesByNamespace[Namespaces.ItemCollection.CloudStickerPacks] {
-                                                for entry in packsEntries {
-                                                    installedPacks.insert(entry.id)
-                                                }
-                                            }
+                                    let installedPackIds = context.engine.data.subscribe(TelegramEngine.EngineData.Item.ItemCollections.InstalledPackInfos(namespace: Namespaces.ItemCollection.CloudStickerPacks))
+                                    |> map { entries -> Set<EngineItemCollectionId> in
+                                        var installedPacks = Set<EngineItemCollectionId>()
+                                        for entry in entries {
+                                            installedPacks.insert(entry.id)
                                         }
                                         return installedPacks
                                     }
@@ -467,21 +457,14 @@ final class BusinessIntroSetupScreenComponent: Component {
                                     }
                                     
                                     let signal = combineLatest(stickers, packs)
-                                    |> map { stickers, packs -> ([(String?, FoundStickerItem)], FoundStickerSets, Bool, FoundStickerSets?)? in
-                                        return (stickers, packs.0, packs.1, packs.2)
-                                    }
-                                    
-                                    let resultSignal: Signal<[EmojiPagerContentComponent.ItemGroup], NoError> = signal
-                                    |> mapToSignal { result in
-                                        guard let result else {
-                                            return .complete()
-                                        }
-                                        
-                                        let (foundItems, localSets, complete, remoteSets) = result
+                                    |> map { stickers, packs -> (groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?) in
+                                        let foundItems = stickers.items
+                                        let localSets = packs.0
+                                        let remoteSets = packs.2
                                         
                                         var items: [EmojiPagerContentComponent.Item] = []
                                         
-                                        var existingIds = Set<MediaId>()
+                                        var existingIds = Set<EngineMedia.Id>()
                                         for (_, entry) in foundItems {
                                             let itemFile = entry.file
                                             
@@ -529,11 +512,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                                             items.append(item)
                                         }
                                         
-                                        if items.isEmpty && !complete {
-                                            return .complete()
-                                        }
-                                    
-                                        return .single([EmojiPagerContentComponent.ItemGroup(
+                                        let groups = [EmojiPagerContentComponent.ItemGroup(
                                             supergroupId: "search",
                                             groupId: "search",
                                             title: nil,
@@ -550,31 +529,34 @@ final class BusinessIntroSetupScreenComponent: Component {
                                             headerItem: nil,
                                             fillWithLoadingPlaceholders: false,
                                             items: items
-                                        )])
+                                        )]
+                                        return (groups, stickers.canLoadMore, stickers.isSearching, stickers.searchContext)
                                     }
                                     
                                     var version = 0
                                     self.stickerSearchState.isSearching = true
                                     self.state?.updated(transition: .immediate)
                                     
-                                    self.stickerSearchDisposable.set((resultSignal
+                                    self.stickerSearchDisposable.set((signal
                                     |> delay(0.15, queue: .mainQueue())
                                     |> deliverOnMainQueue).start(next: { [weak self] result in
                                         guard let self else {
                                             return
                                         }
                                         
-                                        self.stickerSearchState = EmojiSearchState(result: EmojiSearchResult(groups: result, id: AnyHashable(query), version: version, isPreset: false), isSearching: false)
+                                        self.stickerSearchContext = result.searchContext
+                                        self.stickerSearchState = EmojiSearchState(result: EmojiSearchResult(groups: result.groups, id: AnyHashable(query), version: version, isPreset: false, canLoadMore: result.canLoadMore), isSearching: result.isSearching)
                                         version += 1
                                         self.state?.updated(transition: .immediate)
                                     }))
                                 }
                             case let .category(value):
+                                self.stickerSearchContext = nil
                                 let resultSignal = component.context.engine.stickers.searchStickers(category: value, scope: [.installed, .remote])
                                 |> mapToSignal { files -> Signal<(items: [EmojiPagerContentComponent.ItemGroup], isFinalResult: Bool), NoError> in
                                     var items: [EmojiPagerContentComponent.Item] = []
                                     
-                                    var existingIds = Set<MediaId>()
+                                    var existingIds = Set<EngineMedia.Id>()
                                     for item in files.items {
                                         let itemFile = item.file
                                         if existingIds.contains(itemFile.fileId) {
@@ -642,13 +624,13 @@ final class BusinessIntroSetupScreenComponent: Component {
                                                 fillWithLoadingPlaceholders: true,
                                                 items: []
                                             )
-                                        ], id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                                        ], id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                                         if !self.isUpdating {
                                             self.state?.updated(transition: .immediate)
                                         }
                                         return
                                     }
-                                    self.stickerSearchState = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                                    self.stickerSearchState = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                                     version += 1
                                     if !self.isUpdating {
                                         self.state?.updated(transition: .immediate)
@@ -659,6 +641,9 @@ final class BusinessIntroSetupScreenComponent: Component {
                         updateScrollingToItemGroup: {
                         },
                         onScroll: {},
+                        loadMore: { [weak self] in
+                            self?.stickerSearchContext?.loadMore()
+                        },
                         chatPeerId: nil,
                         peekBehavior: nil,
                         customLayout: nil,
@@ -709,7 +694,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                 environment: {},
                 containerSize: CGSize(width: availableSize.width, height: 100.0)
             )
-            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - navigationTitleSize.width) / 2.0), y: environment.statusBarHeight + floor((environment.navigationHeight - environment.statusBarHeight - navigationTitleSize.height) / 2.0)), size: navigationTitleSize)
+            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor(environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right - navigationTitleSize.width) / 2.0), y: environment.statusBarHeight + floor((environment.navigationHeight - environment.statusBarHeight - navigationTitleSize.height) / 2.0)), size: navigationTitleSize)
             if let navigationTitleView = self.navigationTitle.view {
                 if navigationTitleView.superview == nil {
                     if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
@@ -720,7 +705,10 @@ final class BusinessIntroSetupScreenComponent: Component {
             }
             
             let bottomContentInset: CGFloat = 24.0
+            // iPhone Duo: one side's safe inset is the side strip; the right margin is its own and centered
+            // content is centered in the band between the insets. With equal insets these are the old values.
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
+            let rightSideInset: CGFloat = 16.0 + environment.safeInsets.right
             let sectionSpacing: CGFloat = 24.0
             
             var contentHeight: CGFloat = 0.0
@@ -882,7 +870,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                     items: introSectionItems
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let introSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: introSectionSize)
             if let introSectionView = self.introSection.view {
@@ -922,7 +910,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                     text: textText
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             if let introContentView = self.introContent.view {
                 if introContentView.superview == nil {
@@ -983,7 +971,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                     displaySeparators: false
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let deleteSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight + deleteSectionHeight), size: deleteSectionSize)
             if let deleteSectionView = self.deleteSection.view {
@@ -1026,7 +1014,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                     stickerSelectionControl = ComponentView()
                     self.stickerSelectionControl = stickerSelectionControl
                 }
-                var selectedItems = Set<MediaId>()
+                var selectedItems = Set<EngineMedia.Id>()
                 if let stickerFile = self.stickerFile {
                     selectedItems.insert(stickerFile.fileId)
                 }
@@ -1036,14 +1024,14 @@ final class BusinessIntroSetupScreenComponent: Component {
                 
                 if let stickerSearchResult = self.stickerSearchState.result {
                     var stickerSearchResults: EmojiPagerContentComponent.EmptySearchResults?
-                    if !stickerSearchResult.groups.contains(where: { !$0.items.isEmpty || $0.fillWithLoadingPlaceholders }) {
+                    if !self.stickerSearchState.isSearching && !stickerSearchResult.groups.contains(where: { !$0.items.isEmpty || $0.fillWithLoadingPlaceholders }) {
                         stickerSearchResults = EmojiPagerContentComponent.EmptySearchResults(
                             text: environment.strings.Stickers_NoStickersFound,
                             iconFile: nil
                         )
                     }
                     let defaultSearchState: EmojiPagerContentComponent.SearchState = stickerSearchResult.isPreset ? .active : .empty(hasResults: true)
-                    stickerContent = stickerContent.withUpdatedItemGroups(panelItemGroups: stickerContent.panelItemGroups, contentItemGroups: stickerSearchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: stickerSearchResult.id, version: stickerSearchResult.version), emptySearchResults: stickerSearchResults, searchState: self.stickerSearchState.isSearching ? .searching : defaultSearchState)
+                    stickerContent = stickerContent.withUpdatedItemGroups(panelItemGroups: stickerContent.panelItemGroups, contentItemGroups: stickerSearchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: stickerSearchResult.id, version: stickerSearchResult.version), emptySearchResults: stickerSearchResults, searchState: self.stickerSearchState.isSearching ? .searching : defaultSearchState, canLoadMore: stickerSearchResult.canLoadMore)
                 } else if self.stickerSearchState.isSearching {
                     stickerContent = stickerContent.withUpdatedItemGroups(panelItemGroups: stickerContent.panelItemGroups, contentItemGroups: stickerContent.contentItemGroups, itemContentUniqueId: stickerContent.itemContentUniqueId, emptySearchResults: stickerContent.emptySearchResults, searchState: .searching)
                 }
@@ -1058,6 +1046,7 @@ final class BusinessIntroSetupScreenComponent: Component {
                         theme: environment.theme,
                         strings: environment.strings,
                         sideInset: environment.safeInsets.left,
+                        rightSideInset: environment.safeInsets.right,
                         bottomInset: environment.safeInsets.bottom,
                         deviceMetrics: environment.deviceMetrics,
                         emojiContent: nil,
@@ -1214,6 +1203,16 @@ public final class BusinessIntroSetupScreen: ViewControllerComponentContainer {
         self.dismiss()
     }
     
+    override public func preferredContentSizeForLayout(_ layout: ContainerViewLayout) -> CGSize? {
+        guard layout.metrics.widthClass == .regular else {
+            return nil
+        }
+        return CGSize(
+            width: min(480.0, layout.size.width - 20.0),
+            height: min(layout.size.width, layout.size.height) - 88.0
+        )
+    }
+
     override public func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
     }

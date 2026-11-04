@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
@@ -11,7 +12,6 @@ import AccountContext
 import TelegramCore
 import MultilineTextComponent
 import EmojiStatusComponent
-import Postbox
 import TelegramStringFormatting
 import TelegramNotices
 import EntityKeyboard
@@ -165,6 +165,7 @@ final class AvatarEditorScreenComponent: Component {
         var id: AnyHashable
         var version: Int
         var isPreset: Bool
+        var canLoadMore: Bool
     }
     
     private struct EmojiSearchState {
@@ -211,6 +212,7 @@ final class AvatarEditorScreenComponent: Component {
         private var data: AvatarKeyboardInputData?
 
         private let emojiSearchDisposable = MetaDisposable()
+        private var stickerSearchContext: StickerSearchContext?
         private let emojiSearchState = Promise<EmojiSearchState>(EmojiSearchState(result: nil, isSearching: false))
         private var emojiSearchStateValue = EmojiSearchState(result: nil, isSearching: false) {
             didSet {
@@ -273,156 +275,173 @@ final class AvatarEditorScreenComponent: Component {
                 
                 switch query {
                 case .none:
+                    self.stickerSearchContext = nil
                     self.emojiSearchDisposable.set(nil)
-                    self.emojiSearchState.set(.single(EmojiSearchState(result: nil, isSearching: false)))
+                    self.emojiSearchStateValue = EmojiSearchState(result: nil, isSearching: false)
                 case let .text(rawQuery, languageCode):
                     let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
                     
                     if query.isEmpty {
+                        self.stickerSearchContext = nil
                         self.emojiSearchDisposable.set(nil)
-                        self.emojiSearchState.set(.single(EmojiSearchState(result: nil, isSearching: false)))
+                        self.emojiSearchStateValue = EmojiSearchState(result: nil, isSearching: false)
                     } else {
-                        var signal = context.engine.stickers.searchEmojiKeywords(inputLanguageCode: languageCode, query: query, completeMatch: false)
-                        if !languageCode.lowercased().hasPrefix("en") {
-                            signal = signal
-                            |> mapToSignal { keywords in
-                                return .single(keywords)
-                                |> then(
-                                    context.engine.stickers.searchEmojiKeywords(inputLanguageCode: "en-US", query: query, completeMatch: query.count < 3)
-                                    |> map { englishKeywords in
-                                        return keywords + englishKeywords
+                        self.stickerSearchContext = nil
+                        
+                        let emojiItemsSignal = context.engine.itemCollections.allItems(namespace: Namespaces.ItemCollection.CloudEmojiPacks)
+                        |> take(1)
+
+                        let buildGroups: ([EngineRawItemCollectionItem], [String: String], StickerSearchContext.State, StickerSearchContext?) -> (groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?) = { items, allEmoticons, stickerState, searchContext in
+                            let hasPremium = true
+
+                            var emoji: [(String, TelegramMediaFile.Accessor?, String)] = []
+                            for rawItem in items {
+                                guard let item = rawItem as? StickerPackItem else {
+                                    continue
+                                }
+                                if let alt = item.file.customEmojiAlt {
+                                    if !item.file.isPremiumEmoji || hasPremium {
+                                        if !alt.isEmpty, let keyword = allEmoticons[alt] {
+                                            emoji.append((alt, item.file, keyword))
+                                        } else if alt == query {
+                                            emoji.append((alt, item.file, alt))
+                                        }
                                     }
+                                }
+                            }
+                            
+                            var emojiItems: [EmojiPagerContentComponent.Item] = []
+                            var existingIds = Set<EngineMedia.Id>()
+                            for item in emoji {
+                                if let itemFile = item.1 {
+                                    if existingIds.contains(itemFile.fileId) {
+                                        continue
+                                    }
+                                    existingIds.insert(itemFile.fileId)
+                                    let animationData = EntityKeyboardAnimationData(file: itemFile)
+                                    let item = EmojiPagerContentComponent.Item(
+                                        animationData: animationData,
+                                        content: .animation(animationData),
+                                        itemFile: itemFile,
+                                        subgroupId: nil,
+                                        icon: .none,
+                                        tintMode: animationData.isTemplate ? .primary : .none
+                                    )
+                                    emojiItems.append(item)
+                                }
+                            }
+                            
+                            var stickerItems: [EmojiPagerContentComponent.Item] = []
+                            for sticker in stickerState.items {
+                                if existingIds.contains(sticker.file.fileId) {
+                                    continue
+                                }
+                                existingIds.insert(sticker.file.fileId)
+                                let animationData = EntityKeyboardAnimationData(file: TelegramMediaFile.Accessor(sticker.file))
+                                let item = EmojiPagerContentComponent.Item(
+                                    animationData: animationData,
+                                    content: .animation(animationData),
+                                    itemFile: TelegramMediaFile.Accessor(sticker.file),
+                                    subgroupId: nil,
+                                    icon: .none,
+                                    tintMode: .none
+                                )
+                                stickerItems.append(item)
+                            }
+                            
+                            var result: [EmojiPagerContentComponent.ItemGroup] = []
+                            if !emojiItems.isEmpty {
+                                result.append(
+                                    EmojiPagerContentComponent.ItemGroup(
+                                        supergroupId: "search",
+                                        groupId: "emoji",
+                                        title: "Emoji",
+                                        subtitle: nil,
+                                        badge: nil,
+                                        actionButtonTitle: nil,
+                                        isFeatured: false,
+                                        isPremiumLocked: false,
+                                        isEmbedded: false,
+                                        hasClear: false,
+                                        hasEdit: false,
+                                        collapsedLineCount: nil,
+                                        displayPremiumBadges: false,
+                                        headerItem: nil,
+                                        fillWithLoadingPlaceholders: false,
+                                        items: emojiItems
+                                    )
                                 )
                             }
+                            if !stickerItems.isEmpty {
+                                result.append(
+                                    EmojiPagerContentComponent.ItemGroup(
+                                        supergroupId: "search",
+                                        groupId: "stickers",
+                                        title: "Stickers",
+                                        subtitle: nil,
+                                        badge: nil,
+                                        actionButtonTitle: nil,
+                                        isFeatured: false,
+                                        isPremiumLocked: false,
+                                        isEmbedded: false,
+                                        hasClear: false,
+                                        hasEdit: false,
+                                        collapsedLineCount: nil,
+                                        displayPremiumBadges: false,
+                                        headerItem: nil,
+                                        fillWithLoadingPlaceholders: false,
+                                        items: stickerItems
+                                    )
+                                )
+                            }
+                            return (result, stickerState.canLoadMore, stickerState.items.isEmpty && stickerState.isLoadingMore, searchContext)
                         }
-                                            
-                        let resultSignal = signal
-                        |> mapToSignal { keywords -> Signal<[EmojiPagerContentComponent.ItemGroup], NoError> in
-                            return combineLatest(
-                                context.account.postbox.itemCollectionsView(orderedItemListCollectionIds: [], namespaces: [Namespaces.ItemCollection.CloudEmojiPacks], aroundIndex: nil, count: 10000000) |> take(1),
-                                combineLatest(keywords.map { context.engine.stickers.searchStickers(query: query, emoticon: $0.emoticons, inputLanguageCode: languageCode)
-                                |> map { items -> [FoundStickerItem] in
-                                    return items.items
+                        
+                        let resultSignal: Signal<(groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?), NoError>
+                        if query.isSingleEmoji {
+                            let allEmoticons = [query.basicEmoji.0: query.basicEmoji.0]
+                            let searchContext = context.engine.stickers.stickerSearchContext(query: nil, emoticon: [query.basicEmoji.0], inputLanguageCode: languageCode)
+                            resultSignal = combineLatest(emojiItemsSignal, searchContext.state)
+                            |> map { items, stickerState in
+                                return buildGroups(items, allEmoticons, stickerState, searchContext)
+                            }
+                        } else {
+                            var keywordsSignal = context.engine.stickers.searchEmojiKeywords(inputLanguageCode: languageCode, query: query, completeMatch: false)
+                            if !languageCode.lowercased().hasPrefix("en") {
+                                keywordsSignal = keywordsSignal
+                                |> mapToSignal { keywords in
+                                    return .single(keywords)
+                                    |> then(
+                                        context.engine.stickers.searchEmojiKeywords(inputLanguageCode: "en-US", query: query, completeMatch: query.count < 3)
+                                        |> map { englishKeywords in
+                                            return keywords + englishKeywords
+                                        }
+                                    )
                                 }
-                                })
-                            )
-                            |> map { view, stickers -> [EmojiPagerContentComponent.ItemGroup] in
-                                let hasPremium = true
-                                
-                                var emoji: [(String, TelegramMediaFile.Accessor?, String)] = []
-                                
-                                var existingEmoticons = Set<String>()
+                            }
+                            
+                            resultSignal = keywordsSignal
+                            |> mapToSignal { keywords -> Signal<(groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: StickerSearchContext?), NoError> in
                                 var allEmoticons: [String: String] = [:]
                                 for keyword in keywords {
                                     for emoticon in keyword.emoticons {
                                         allEmoticons[emoticon] = keyword.keyword
-                                        existingEmoticons.insert(emoticon)
                                     }
                                 }
                                 
-                                for entry in view.entries {
-                                    guard let item = entry.item as? StickerPackItem else {
-                                        continue
-                                    }
-                                    if let alt = item.file.customEmojiAlt {
-                                        if !item.file.isPremiumEmoji || hasPremium {
-                                            if !alt.isEmpty, let keyword = allEmoticons[alt] {
-                                                emoji.append((alt, item.file, keyword))
-                                            } else if alt == query {
-                                                emoji.append((alt, item.file, alt))
-                                            }
-                                        }
+                                let emoticon = Array(allEmoticons.keys)
+                                guard !emoticon.isEmpty else {
+                                    return combineLatest(emojiItemsSignal, .single(StickerSearchContext.State(items: [], canLoadMore: false, isLoadingMore: false)))
+                                    |> map { items, stickerState in
+                                        return buildGroups(items, allEmoticons, stickerState, nil)
                                     }
                                 }
-                                
-                                var emojiItems: [EmojiPagerContentComponent.Item] = []
-                                
-                                var existingIds = Set<MediaId>()
-                                for item in emoji {
-                                    if let itemFile = item.1 {
-                                        if existingIds.contains(itemFile.fileId) {
-                                            continue
-                                        }
-                                        existingIds.insert(itemFile.fileId)
-                                        let animationData = EntityKeyboardAnimationData(file: itemFile)
-                                        let item = EmojiPagerContentComponent.Item(
-                                            animationData: animationData,
-                                            content: .animation(animationData),
-                                            itemFile: itemFile, subgroupId: nil,
-                                            icon: .none,
-                                            tintMode: animationData.isTemplate ? .primary : .none
-                                        )
-                                        emojiItems.append(item)
-                                    }
+
+                                let searchContext = context.engine.stickers.stickerSearchContext(query: query, emoticon: emoticon, inputLanguageCode: languageCode)
+                                return combineLatest(emojiItemsSignal, searchContext.state)
+                                |> map { items, stickerState in
+                                    return buildGroups(items, allEmoticons, stickerState, searchContext)
                                 }
-                                
-                                var stickerItems: [EmojiPagerContentComponent.Item] = []
-                                for stickerResult in stickers {
-                                    for sticker in stickerResult {
-                                        if existingIds.contains(sticker.file.fileId) {
-                                            continue
-                                        }
-                                        
-                                        existingIds.insert(sticker.file.fileId)
-                                        let animationData = EntityKeyboardAnimationData(file: TelegramMediaFile.Accessor(sticker.file))
-                                        let item = EmojiPagerContentComponent.Item(
-                                            animationData: animationData,
-                                            content: .animation(animationData),
-                                            itemFile: TelegramMediaFile.Accessor(sticker.file),
-                                            subgroupId: nil,
-                                            icon: .none,
-                                            tintMode: .none
-                                        )
-                                        stickerItems.append(item)
-                                    }
-                                }
-                                
-                                var result: [EmojiPagerContentComponent.ItemGroup] = []
-                                if !emojiItems.isEmpty {
-                                    result.append(
-                                        EmojiPagerContentComponent.ItemGroup(
-                                            supergroupId: "search",
-                                            groupId: "emoji",
-                                            title: "Emoji",
-                                            subtitle: nil,
-                                            badge: nil,
-                                            actionButtonTitle: nil,
-                                            isFeatured: false,
-                                            isPremiumLocked: false,
-                                            isEmbedded: false,
-                                            hasClear: false,
-                                            hasEdit: false,
-                                            collapsedLineCount: nil,
-                                            displayPremiumBadges: false,
-                                            headerItem: nil,
-                                            fillWithLoadingPlaceholders: false,
-                                            items: emojiItems
-                                        )
-                                    )
-                                }
-                                if !stickerItems.isEmpty {
-                                    result.append(
-                                        EmojiPagerContentComponent.ItemGroup(
-                                            supergroupId: "search",
-                                            groupId: "stickers",
-                                            title: "Stickers",
-                                            subtitle: nil,
-                                            badge: nil,
-                                            actionButtonTitle: nil,
-                                            isFeatured: false,
-                                            isPremiumLocked: false,
-                                            isEmbedded: false,
-                                            hasClear: false,
-                                            hasEdit: false,
-                                            collapsedLineCount: nil,
-                                            displayPremiumBadges: false,
-                                            headerItem: nil,
-                                            fillWithLoadingPlaceholders: false,
-                                            items: stickerItems
-                                        )
-                                    )
-                                }
-                                return result
                             }
                         }
                         
@@ -435,16 +454,18 @@ final class AvatarEditorScreenComponent: Component {
                                 return
                             }
                             
-                            self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result, id: AnyHashable(query), version: version, isPreset: false), isSearching: false)
+                            self.stickerSearchContext = result.searchContext
+                            self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.groups, id: AnyHashable(query), version: version, isPreset: false, canLoadMore: result.canLoadMore), isSearching: result.isSearching)
                             version += 1
                         }))
                     }
                 case let .category(value):
+                    self.stickerSearchContext = nil
                     let resultSignal = context.engine.stickers.searchEmoji(category: value)
                     |> mapToSignal { files, isFinalResult -> Signal<(items: [EmojiPagerContentComponent.ItemGroup], isFinalResult: Bool), NoError> in
                         var items: [EmojiPagerContentComponent.Item] = []
                         
-                        var existingIds = Set<MediaId>()
+                        var existingIds = Set<EngineMedia.Id>()
                         for itemFile in files {
                             if existingIds.contains(itemFile.fileId) {
                                 continue
@@ -515,11 +536,11 @@ final class AvatarEditorScreenComponent: Component {
                                     fillWithLoadingPlaceholders: true,
                                     items: []
                                 )
-                            ], id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                            ], id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                             return
                         }
                         
-                        self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                        self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                         version += 1
                     }))
                 }
@@ -539,18 +560,14 @@ final class AvatarEditorScreenComponent: Component {
                 openSearch: {
                 },
                 addGroupAction: { [weak self] groupId, isPremiumLocked, _ in
-                    guard let strongSelf = self, let controller = strongSelf.controller?(), let collectionId = groupId.base as? ItemCollectionId else {
+                    guard let strongSelf = self, let controller = strongSelf.controller?(), let collectionId = groupId.base as? EngineItemCollectionId else {
                         return
                     }
                     let context = controller.context
-                    let viewKey = PostboxViewKey.orderedItemList(id: Namespaces.OrderedItemList.CloudFeaturedEmojiPacks)
-                    let _ = (context.account.postbox.combinedView(keys: [viewKey])
+                    let _ = (context.engine.data.subscribe(TelegramEngine.EngineData.Item.OrderedLists.ListItems(collectionId: Namespaces.OrderedItemList.CloudFeaturedEmojiPacks))
                     |> take(1)
-                    |> deliverOnMainQueue).start(next: { views in
-                        guard let view = views.views[viewKey] as? OrderedItemListView else {
-                            return
-                        }
-                        for featuredStickerPack in view.items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
+                    |> deliverOnMainQueue).start(next: { items in
+                        for featuredStickerPack in items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
                             if featuredStickerPack.info.id == collectionId {
                                 let _ = (context.engine.stickers.loadedStickerPack(reference: .id(id: featuredStickerPack.info.id.id, accessHash: featuredStickerPack.info.accessHash), forceActualized: false)
                                 |> mapToSignal { result -> Signal<Void, NoError> in
@@ -559,7 +576,7 @@ final class AvatarEditorScreenComponent: Component {
                                         if installed {
                                             return .complete()
                                         } else {
-                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items)
+                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items) |> map { _ in return Void() }
                                         }
                                     case .fetching:
                                         break
@@ -570,7 +587,7 @@ final class AvatarEditorScreenComponent: Component {
                                 }
                                 |> deliverOnMainQueue).start(completed: {
                                 })
-                                
+
                                 break
                             }
                         }
@@ -648,6 +665,9 @@ final class AvatarEditorScreenComponent: Component {
                         }
                     }
                 },
+                loadMore: { [weak self] in
+                    self?.stickerSearchContext?.loadMore()
+                },
                 chatPeerId: nil,
                 peekBehavior: nil,
                 customLayout: nil,
@@ -674,18 +694,14 @@ final class AvatarEditorScreenComponent: Component {
                 openSearch: {
                 },
                 addGroupAction: { [weak self] groupId, isPremiumLocked, _ in
-                    guard let strongSelf = self, let controller = strongSelf.controller?(), let collectionId = groupId.base as? ItemCollectionId else {
+                    guard let strongSelf = self, let controller = strongSelf.controller?(), let collectionId = groupId.base as? EngineItemCollectionId else {
                         return
                     }
                     let context = controller.context
-                    let viewKey = PostboxViewKey.orderedItemList(id: Namespaces.OrderedItemList.CloudFeaturedStickerPacks)
-                    let _ = (context.account.postbox.combinedView(keys: [viewKey])
+                    let _ = (context.engine.data.subscribe(TelegramEngine.EngineData.Item.OrderedLists.ListItems(collectionId: Namespaces.OrderedItemList.CloudFeaturedStickerPacks))
                     |> take(1)
-                    |> deliverOnMainQueue).start(next: { views in
-                        guard let view = views.views[viewKey] as? OrderedItemListView else {
-                            return
-                        }
-                        for featuredStickerPack in view.items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
+                    |> deliverOnMainQueue).start(next: { items in
+                        for featuredStickerPack in items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
                             if featuredStickerPack.info.id == collectionId {
                                 let _ = (context.engine.stickers.loadedStickerPack(reference: .id(id: featuredStickerPack.info.id.id, accessHash: featuredStickerPack.info.accessHash), forceActualized: false)
                                 |> mapToSignal { result -> Signal<Void, NoError> in
@@ -694,7 +710,7 @@ final class AvatarEditorScreenComponent: Component {
                                         if installed {
                                             return .complete()
                                         } else {
-                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items)
+                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items) |> map { _ in return Void() }
                                         }
                                     case .fetching:
                                         break
@@ -731,15 +747,11 @@ final class AvatarEditorScreenComponent: Component {
                         ])])
                         context.sharedContext.mainWindow?.presentInGlobalOverlay(actionSheet)
                     } else if groupId == AnyHashable("featuredTop") {
-                        let viewKey = PostboxViewKey.orderedItemList(id: Namespaces.OrderedItemList.CloudFeaturedStickerPacks)
-                        let _ = (context.account.postbox.combinedView(keys: [viewKey])
+                        let _ = (context.engine.data.subscribe(TelegramEngine.EngineData.Item.OrderedLists.ListItems(collectionId: Namespaces.OrderedItemList.CloudFeaturedStickerPacks))
                         |> take(1)
-                        |> deliverOnMainQueue).start(next: { views in
-                            guard let view = views.views[viewKey] as? OrderedItemListView else {
-                                return
-                            }
+                        |> deliverOnMainQueue).start(next: { items in
                             var stickerPackIds: [Int64] = []
-                            for featuredStickerPack in view.items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
+                            for featuredStickerPack in items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
                                 stickerPackIds.append(featuredStickerPack.info.id.id)
                             }
                             let _ = ApplicationSpecificNotice.setDismissedTrendingStickerPacks(accountManager: context.sharedContext.accountManager, values: stickerPackIds).start()
@@ -779,6 +791,9 @@ final class AvatarEditorScreenComponent: Component {
                         }
                     }
                 },
+                loadMore: { [weak self] in
+                    self?.stickerSearchContext?.loadMore()
+                },
                 chatPeerId: nil,
                 peekBehavior: nil,
                 customLayout: nil,
@@ -813,7 +828,10 @@ final class AvatarEditorScreenComponent: Component {
             }
             self.navigationMetrics = (environment.navigationHeight, environment.statusBarHeight)
             
+            // iPhone Duo: one side's safe inset is the side strip; the right margin is its own and centered
+            // content is centered in the band between the insets. With equal insets these are the old values.
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
+            let rightSideInset: CGFloat = 16.0 + environment.safeInsets.right
             
             if state.expanded && environment.inputHeight > 0.0 {
                 state.expanded = false
@@ -919,17 +937,24 @@ final class AvatarEditorScreenComponent: Component {
                         if let searchResult = emojiSearchState.result {
                             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
                             var emptySearchResults: EmojiPagerContentComponent.EmptySearchResults?
-                            if !searchResult.groups.contains(where: { !$0.items.isEmpty || $0.fillWithLoadingPlaceholders }) {
+                            if !emojiSearchState.isSearching && !searchResult.groups.contains(where: { !$0.items.isEmpty || $0.fillWithLoadingPlaceholders }) {
                                 emptySearchResults = EmojiPagerContentComponent.EmptySearchResults(
                                     text: presentationData.strings.EmojiSearch_SearchEmojiEmptyResult,
                                     iconFile: nil
                                 )
                             }
                             
+                            let searchState: EmojiPagerContentComponent.SearchState = emojiSearchState.isSearching ? .searching : .active
                             if state?.keyboardContentId == AnyHashable("emoji") {
-                                data.emoji = data.emoji.withUpdatedItemGroups(panelItemGroups: data.emoji.panelItemGroups, contentItemGroups: searchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: searchResult.id, version: searchResult.version), emptySearchResults: emptySearchResults, searchState: .active)
+                                data.emoji = data.emoji.withUpdatedItemGroups(panelItemGroups: data.emoji.panelItemGroups, contentItemGroups: searchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: searchResult.id, version: searchResult.version), emptySearchResults: emptySearchResults, searchState: searchState, canLoadMore: searchResult.canLoadMore)
                             } else {
-                                data.stickers = data.stickers?.withUpdatedItemGroups(panelItemGroups: data.stickers?.panelItemGroups ?? searchResult.groups, contentItemGroups: searchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: searchResult.id, version: searchResult.version), emptySearchResults: emptySearchResults, searchState: .active)
+                                data.stickers = data.stickers?.withUpdatedItemGroups(panelItemGroups: data.stickers?.panelItemGroups ?? searchResult.groups, contentItemGroups: searchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: searchResult.id, version: searchResult.version), emptySearchResults: emptySearchResults, searchState: searchState, canLoadMore: searchResult.canLoadMore)
+                            }
+                        } else if emojiSearchState.isSearching {
+                            if state?.keyboardContentId == AnyHashable("emoji") {
+                                data.emoji = data.emoji.withUpdatedItemGroups(panelItemGroups: data.emoji.panelItemGroups, contentItemGroups: data.emoji.contentItemGroups, itemContentUniqueId: data.emoji.itemContentUniqueId, emptySearchResults: data.emoji.emptySearchResults, searchState: .searching)
+                            } else {
+                                data.stickers = data.stickers?.withUpdatedItemGroups(panelItemGroups: data.stickers?.panelItemGroups ?? [], contentItemGroups: data.stickers?.contentItemGroups ?? [], itemContentUniqueId: data.stickers?.itemContentUniqueId, emptySearchResults: data.stickers?.emptySearchResults, searchState: .searching)
                             }
                         }
                         
@@ -971,14 +996,17 @@ final class AvatarEditorScreenComponent: Component {
                 }
                 
                 let previewScale = effectiveIsExpanded ? 1.0 : collapsedAvatarSize.width / avatarPreviewSize.width
-                let cornerRadius = effectiveIsExpanded ? 0.0 : availableSize.width / (component.peerType == .forum ? 4.0 : 2.0)
+                let cornerRadius = effectiveIsExpanded ? 0.0 : availableSize.width / ([.forum, .community].contains(component.peerType) ? 4.0 : 2.0)
                 let position = effectiveIsExpanded ? avatarPreviewSize.height / 2.0 : environment.navigationHeight + 10.0
+                // Collapsed, the avatar is centered in the band between the side safe insets (iPhone Duo's side strip);
+                // expanded it fills the width. With equal insets both are the full width's center.
+                let bandCenterX: CGFloat = effectiveIsExpanded ? availableSize.width / 2.0 : environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right) / 2.0
                                 
                 transition.setBounds(view: previewView, bounds: CGRect(origin: .zero, size: avatarPreviewSize))
                 transition.setPosition(view: previewView, position: CGPoint(x: avatarPreviewSize.width / 2.0, y: avatarPreviewSize.height / 2.0))
                 
                 transition.setBounds(view: self.previewContainerView, bounds: CGRect(origin: .zero, size: avatarPreviewSize))
-                transition.setPosition(view: self.previewContainerView, position: CGPoint(x: availableSize.width / 2.0, y: position))
+                transition.setPosition(view: self.previewContainerView, position: CGPoint(x: bandCenterX, y: position))
                 transition.setTransform(view: self.previewContainerView, transform: CATransform3DMakeScale(previewScale, previewScale, 1.0))
                 transition.setCornerRadius(layer: self.previewContainerView.layer, cornerRadius: cornerRadius)
                 
@@ -1004,7 +1032,7 @@ final class AvatarEditorScreenComponent: Component {
                     maximumNumberOfLines: 0
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0 - 15.0 * 2.0, height: .greatestFiniteMagnitude)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset - 15.0 * 2.0, height: .greatestFiniteMagnitude)
             )
             let backgroundTitleFrame = CGRect(origin: CGPoint(x: sideInset + 15.0, y: contentHeight), size: backgroundTitleSize)
             if let backgroundTitleView = self.backgroundTitleView.view {
@@ -1041,7 +1069,7 @@ final class AvatarEditorScreenComponent: Component {
                     }
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: .greatestFiniteMagnitude)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: .greatestFiniteMagnitude)
             )
             let backgroundFrame = CGRect(origin: .zero, size: backgroundSize)
             if let backgroundView = self.backgroundView.view {
@@ -1091,7 +1119,7 @@ final class AvatarEditorScreenComponent: Component {
                     )
                 ),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: availableSize.height)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: availableSize.height)
             )
             let colorPickerFrame = CGRect(origin: .zero, size: colorPickerSize)
             if let colorPickerView = self.colorPickerView.view {
@@ -1139,7 +1167,7 @@ final class AvatarEditorScreenComponent: Component {
                     maximumNumberOfLines: 1
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0 - 15.0 * 2.0, height: .greatestFiniteMagnitude)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset - 15.0 * 2.0, height: .greatestFiniteMagnitude)
             )
             let keyboardTitleFrame = CGRect(origin: CGPoint(x: sideInset + 15.0, y: contentHeight), size: keyboardTitleSize)
             if let keyboardTitleView = self.keyboardTitleView.view {
@@ -1187,9 +1215,9 @@ final class AvatarEditorScreenComponent: Component {
                     )
                 ),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0 - 15.0 * 2.0, height: .greatestFiniteMagnitude)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset - 15.0 * 2.0, height: .greatestFiniteMagnitude)
             )
-            let keyboardSwitchFrame = CGRect(origin: CGPoint(x: availableSize.width - sideInset - 15.0 - keyboardSwitchSize.width, y: contentHeight), size: keyboardSwitchSize)
+            let keyboardSwitchFrame = CGRect(origin: CGPoint(x: availableSize.width - rightSideInset - 15.0 - keyboardSwitchSize.width, y: contentHeight), size: keyboardSwitchSize)
             if let keyboardSwitchView = self.keyboardSwitchView.view {
                 if keyboardSwitchView.superview == nil {
                     self.addSubview(keyboardSwitchView)
@@ -1211,7 +1239,7 @@ final class AvatarEditorScreenComponent: Component {
                 bottomInset += 52.0 + buttonInsets.bottom - 14.0
             }
             
-            let keyboardContainerFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: CGSize(width: availableSize.width - sideInset * 2.0, height: availableSize.height - contentHeight - bottomInset))
+            let keyboardContainerFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: CGSize(width: availableSize.width - sideInset - rightSideInset, height: availableSize.height - contentHeight - bottomInset))
             transition.setFrame(view: self.keyboardContainerView, frame: keyboardContainerFrame)
             transition.setAlpha(view: self.keyboardContainerView, alpha: state.editingColor ? 0.0 : 1.0)
             
@@ -1306,6 +1334,8 @@ final class AvatarEditorScreenComponent: Component {
                 buttonText = strings.AvatarEditor_SetGroupPhoto
             case .channel:
                 buttonText = strings.AvatarEditor_SetChannelPhoto
+            case .community:
+                buttonText = strings.AvatarEditor_SetCommunityPhoto
             }
             
             var isLocked = false
@@ -1330,10 +1360,13 @@ final class AvatarEditorScreenComponent: Component {
                     color: theme.list.itemCheckColors.foregroundColor,
                     startingPosition: .begin,
                     size: CGSize(width: 30.0, height: 30.0),
-                    loop: true
+                    loop: true,
+                    lottieSettings: component.context.lottieRenderingSettings
                 ))))
             }
             
+            // The bottom button spans iPhone Duo's side strip; it keeps clear only of a corner block at the bottom.
+            let buttonSideInsets = environment.bottomEdgeSideInsets()
             let buttonSize = self.buttonView.update(
                 transition: transition,
                 component: AnyComponent(
@@ -1355,13 +1388,13 @@ final class AvatarEditorScreenComponent: Component {
                     )
                 ),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - buttonInsets.left - buttonInsets.right, height: 52.0)
+                containerSize: CGSize(width: availableSize.width - buttonInsets.left - buttonInsets.right - buttonSideInsets.left - buttonSideInsets.right, height: 52.0)
             )
             if let buttonView = self.buttonView.view {
                 if buttonView.superview == nil {
                     self.addSubview(buttonView)
                 }
-                transition.setFrame(view: buttonView, frame: CGRect(origin: CGPoint(x: buttonInsets.left, y: contentHeight), size: buttonSize))
+                transition.setFrame(view: buttonView, frame: CGRect(origin: CGPoint(x: buttonSideInsets.left + buttonInsets.left, y: contentHeight), size: buttonSize))
             }
             
             let bottomPanelFrame = CGRect(origin: CGPoint(x: 0.0, y: contentHeight - 4.0), size: CGSize(width: availableSize.width, height: availableSize.height - contentHeight + 4.0))
@@ -1372,11 +1405,14 @@ final class AvatarEditorScreenComponent: Component {
                     deviceMetrics: environment.deviceMetrics,
                     intrinsicInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: bottomPanelFrame.height, right: 0.0),
                     safeInsets: UIEdgeInsets(top: 0.0, left: environment.safeInsets.left, bottom: 0.0, right: environment.safeInsets.right),
+                    reservedCorners: environment.reservedCorners,
+                    division: nil,
                     additionalInsets: .zero,
-                    statusBarHeight: environment.statusBarHeight,
+                    statusBarHeight: environment.fullStatusBarHeight,
                     inputHeight: nil,
                     inputHeightIsInteractivellyChanging: false,
-                    inVoiceOver: false
+                    inVoiceOver: false,
+                    presentedInFormSheet: false
                 )
                 controller.presentationContext.containerLayoutUpdated(layout, transition: transition.containedViewLayoutTransition)
             }
@@ -1458,7 +1494,7 @@ final class AvatarEditorScreenComponent: Component {
                     }
                 }
                 
-                Queue.mainQueue().async {
+                Queue.mainQueue().async { [controller] in
                     guard let image else {
                         return
                     }
@@ -1501,7 +1537,7 @@ final class AvatarEditorScreenComponent: Component {
                     }
                     
                     let values = MediaEditorValues(
-                        peerId: EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(0)),
+                        peerId: EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(0)),
                         originalDimensions: PixelDimensions(size),
                         cropOffset: .zero,
                         cropRect: CGRect(origin: .zero, size: size),
@@ -1518,6 +1554,7 @@ final class AvatarEditorScreenComponent: Component {
                         videoVolume: nil,
                         additionalVideoPath: nil,
                         additionalVideoIsDual: false,
+                        additionalVideoMirroringChanges: [],
                         additionalVideoPosition: nil,
                         additionalVideoScale: nil,
                         additionalVideoRotation: nil,
@@ -1600,6 +1637,7 @@ public final class AvatarEditorScreen: ViewControllerComponentContainer {
         case group
         case channel
         case forum
+        case community
     }
     fileprivate let context: AccountContext
     fileprivate let inputData: Signal<AvatarKeyboardInputData, NoError>

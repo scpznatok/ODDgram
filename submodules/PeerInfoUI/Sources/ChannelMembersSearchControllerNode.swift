@@ -128,7 +128,9 @@ private enum ChannelMembersSearchEntry: Comparable, Identifiable {
             })
         case let .peer(_, participant, editing, label, enabled, isChannel, isContact):
             let status: ContactsPeerItemStatus
-            if let label = label {
+            if let username = participant.peer.addressName, !username.isEmpty {
+                status = .custom(string: NSAttributedString(string: "@\(username)"), multiline: false, isActive: false, icon: nil)
+            } else if let label = label {
                 status = .custom(string: NSAttributedString(string: label), multiline: false, isActive: false, icon: nil)
             } else if participant.peer.id != context.account.peerId {
                 let presence = participant.presences[participant.peer.id] ?? TelegramUserPresence(status: .none, lastActivity: 0)
@@ -144,12 +146,14 @@ private enum ChannelMembersSearchEntry: Comparable, Identifiable {
                 headerType = isChannel ? .subscribers : .groupMembers
             }
             
-            return ContactsPeerItem(presentationData: ItemListPresentationData(presentationData), sortOrder: nameSortOrder, displayOrder: nameDisplayOrder, context: context, peerMode: .peer, peer: .peer(peer: EnginePeer(participant.peer), chatPeer: nil), status: status, enabled: enabled, selection: .none, editing: editing, index: nil, header: ChatListSearchItemHeader(type: headerType, theme: presentationData.theme, strings: presentationData.strings), action: { _ in
-                interaction.openPeer(EnginePeer(participant.peer), participant)
+            return ContactsPeerItem(presentationData: ItemListPresentationData(presentationData), sortOrder: nameSortOrder, displayOrder: nameDisplayOrder, context: context, peerMode: .peer, peer: .peer(peer: participant.peer, chatPeer: nil), status: status, enabled: enabled, selection: .none, editing: editing, index: nil, header: ChatListSearchItemHeader(type: headerType, theme: presentationData.theme, strings: presentationData.strings), action: { _ in
+                interaction.openPeer(participant.peer, participant)
             })
         case let .contact(_, peer, presence):
             let status: ContactsPeerItemStatus
-            if peer.id != context.account.peerId, let presence = presence {
+            if let username = peer.addressName, !username.isEmpty {
+                status = .custom(string: NSAttributedString(string: "@\(username)"), multiline: false, isActive: false, icon: nil)
+            } else if peer.id != context.account.peerId, let presence = presence {
                 status = .presence(EnginePeer.Presence(presence), presentationData.dateTimeFormat)
             } else {
                 status = .none
@@ -207,7 +211,7 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
     
     init(context: AccountContext, presentationData: PresentationData, forceTheme: PresentationTheme?, peerId: EnginePeer.Id, mode: ChannelMembersSearchControllerMode, filters: [ChannelMembersSearchFilter]) {
         self.context = context
-        self.listNode = ListView()
+        self.listNode = ListViewImpl()
         self.peerId = peerId
         self.mode = mode
         self.filters = filters
@@ -401,16 +405,16 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
                     let renderedParticipant: RenderedChannelParticipant
                     switch participant {
                         case .creator:
-                            renderedParticipant = RenderedChannelParticipant(participant: .creator(id: peer.id, adminInfo: nil, rank: nil), peer: peer, presences: peerView.peerPresences)
+                            renderedParticipant = RenderedChannelParticipant(participant: .creator(id: peer.id, adminInfo: nil, rank: nil), peer: EnginePeer(peer), presences: peerView.peerPresences)
                         case .admin:
                             var peers: [EnginePeer.Id: EnginePeer] = [:]
                             peers[creator.id] = creator
                             peers[peer.id] = EnginePeer(peer)
-                        renderedParticipant = RenderedChannelParticipant(participant: .member(id: peer.id, invitedAt: 0, adminInfo: ChannelParticipantAdminInfo(rights: TelegramChatAdminRights(rights: TelegramChatAdminRightsFlags.peerSpecific(peer: EnginePeer(mainPeer))), promotedBy: creator.id, canBeEditedByAccountPeer: creator.id == context.account.peerId), banInfo: nil, rank: nil, subscriptionUntilDate: nil), peer: peer, peers: peers.mapValues({ $0._asPeer() }), presences: peerView.peerPresences)
+                        renderedParticipant = RenderedChannelParticipant(participant: .member(id: peer.id, invitedAt: 0, adminInfo: ChannelParticipantAdminInfo(rights: TelegramChatAdminRights(rights: TelegramChatAdminRightsFlags.peerSpecific(peer: EnginePeer(mainPeer))), promotedBy: creator.id, canBeEditedByAccountPeer: creator.id == context.account.peerId), banInfo: nil, rank: nil, subscriptionUntilDate: nil), peer: EnginePeer(peer), peers: peers, presences: peerView.peerPresences)
                         case .member:
                             var peers: [EnginePeer.Id: EnginePeer] = [:]
                             peers[peer.id] = EnginePeer(peer)
-                            renderedParticipant = RenderedChannelParticipant(participant: .member(id: peer.id, invitedAt: 0, adminInfo: nil, banInfo: nil, rank: nil, subscriptionUntilDate: nil), peer: peer, peers: peers.mapValues({ $0._asPeer() }), presences: peerView.peerPresences)
+                            renderedParticipant = RenderedChannelParticipant(participant: .member(id: peer.id, invitedAt: 0, adminInfo: nil, banInfo: nil, rank: nil, subscriptionUntilDate: nil), peer: EnginePeer(peer), peers: peers, presences: peerView.peerPresences)
                     }
                     
                     entries.append(.peer(index, renderedParticipant, ContactsPeerItemEditing(editable: false, editing: false, revealed: false), label, enabled, false, false))
@@ -439,12 +443,12 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
         } else {
             let membersState = Promise<ChannelMemberListState>()
             
-            disposableAndLoadMoreControl = context.peerChannelMemberCategoriesContextsManager.recent(engine: context.engine, postbox: context.account.postbox, network: context.account.network, accountPeerId: context.account.peerId, peerId: peerId, updated: { state in
+            disposableAndLoadMoreControl = context.peerChannelMemberCategoriesContextsManager.recent(engine: context.engine, accountPeerId: context.account.peerId, peerId: peerId, updated: { state in
                 membersState.set(.single(state))
             })
             
             let contactsState = Promise<ChannelMemberListState>()
-            contactsDisposableAndLoadMoreControl = context.peerChannelMemberCategoriesContextsManager.contacts(engine: context.engine, postbox: context.account.postbox, network: context.account.network, accountPeerId: context.account.peerId, peerId: peerId, searchQuery: nil, updated: { state in
+            contactsDisposableAndLoadMoreControl = context.peerChannelMemberCategoriesContextsManager.contacts(engine: context.engine, accountPeerId: context.account.peerId, peerId: peerId, searchQuery: nil, updated: { state in
                 contactsState.set(.single(state))
             })
             
@@ -513,7 +517,7 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
                             case .excludeNonMembers:
                                 break
                             case .excludeBots:
-                                if let user = participant.peer as? TelegramUser, user.botInfo != nil {
+                                if case let .user(user) = participant.peer, user.botInfo != nil {
                                     continue contactsLoop
                                 }
                             }
@@ -555,7 +559,7 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
                                 case .excludeNonMembers:
                                     break
                                 case .excludeBots:
-                                    if let user = participant.peer as? TelegramUser, user.botInfo != nil {
+                                    if case let .user(user) = participant.peer, user.botInfo != nil {
                                         continue participantsLoop
                                     }
                                 }
@@ -568,7 +572,7 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
                             if participant.peer.id == context.account.peerId {
                                 continue
                             }
-                            if let user = participant.peer as? TelegramUser, user.botInfo != nil || user.flags.contains(.isSupport) {
+                            if case let .user(user) = participant.peer, user.botInfo != nil || user.flags.contains(.isSupport) {
                                 continue
                             }
                             for filter in filters {
@@ -584,7 +588,7 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
                                 case .excludeNonMembers:
                                     break
                                 case .excludeBots:
-                                    if let user = participant.peer as? TelegramUser, user.botInfo != nil {
+                                    if case let .user(user) = participant.peer, user.botInfo != nil {
                                         continue participantsLoop
                                     }
                                 }
@@ -654,7 +658,13 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
         
         var insets = layout.insets(options: [.input])
         insets.top += navigationBarHeight
-        
+        // Beside a side strip (iPhone Duo) the member rows keep clear of it, as the search results already do; equal
+        // insets keep the rows as they were.
+        if layout.safeInsets.left != layout.safeInsets.right {
+            insets.left += layout.safeInsets.left
+            insets.right += layout.safeInsets.right
+        }
+
         var headerInsets = layout.insets(options: [.input])
         headerInsets.top += actualNavigationBarHeight
         
@@ -682,7 +692,7 @@ class ChannelMembersSearchControllerNode: ASDisplayNode {
             return
         }
         
-        self.searchDisplayController = SearchDisplayController(presentationData: self.presentationData, contentNode: ChannelMembersSearchContainerNode(context: self.context, forceTheme: self.forceTheme, peerId: self.peerId, mode: .banAndPromoteActions, filters: self.filters, searchContext: nil, openPeer: { [weak self] peer, participant in
+        self.searchDisplayController = SearchDisplayController(presentationData: self.presentationData, contentNode: ChannelMembersSearchContainerNode(context: self.context, forceTheme: self.forceTheme, peerId: self.peerId, mode: .banAndPromoteActions, filters: self.filters, searchContext: nil, displayUsername: true, prioritizeExactUsernameMatches: true, openPeer: { [weak self] peer, participant in
             self?.requestOpenPeerFromSearch?(peer, participant)
         }, updateActivity: { value in
             

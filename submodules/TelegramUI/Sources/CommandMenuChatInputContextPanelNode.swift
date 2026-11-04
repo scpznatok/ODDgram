@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import AsyncDisplayKit
-import Postbox
 import SwiftSignalKit
 import TelegramCore
 import Display
@@ -75,11 +74,11 @@ final class CommandMenuChatInputContextPanelNode: ChatInputContextPanelNode {
     
     private let disposable = MetaDisposable()
     
-    init(context: AccountContext, theme: PresentationTheme, strings: PresentationStrings, fontSize: PresentationFontSize, peerId: PeerId, chatPresentationContext: ChatPresentationContext) {
+    init(context: AccountContext, theme: PresentationTheme, strings: PresentationStrings, fontSize: PresentationFontSize, peerId: EnginePeer.Id, chatPresentationContext: ChatPresentationContext) {
         self.backgroundView = GlassBackgroundView()
         self.backgroundView.layer.anchorPoint = CGPoint()
         
-        self.listView = ListView()
+        self.listView = ListViewImpl()
         self.listView.clipsToBounds = false
         self.listView.isOpaque = false
         self.listView.stackFromBottom = true
@@ -152,7 +151,7 @@ final class CommandMenuChatInputContextPanelNode: ChatInputContextPanelNode {
         let transition = preparedTransition(from: from ?? [], to: to, context: self.context, fontSize: self.fontSize, commandSelected: { [weak self] command, sendImmediately in
             if let strongSelf = self, let interfaceInteraction = strongSelf.interfaceInteraction {
                 if sendImmediately {
-                    interfaceInteraction.sendBotCommand(command.peer, "/" + command.command.text)
+                    interfaceInteraction.sendBotCommand(command.peer._asPeer(), "/" + command.command.text)
                 } else {
                     interfaceInteraction.updateShowCommands { _ in return false }
                     interfaceInteraction.updateTextInputStateAndMode { textInputState, inputMode in
@@ -164,14 +163,7 @@ final class CommandMenuChatInputContextPanelNode: ChatInputContextPanelNode {
                             }
                         }
                         if let range = commandQueryRange {
-                            let inputText = NSMutableAttributedString(attributedString: textInputState.inputText)
-                            
-                            let replacementText = command.command.text + " "
-                            inputText.replaceCharacters(in: range, with: replacementText)
-                            
-                            let selectionPosition = range.lowerBound + (replacementText as NSString).length
-                            
-                            return (ChatTextInputState(inputText: inputText, selectionRange: selectionPosition ..< selectionPosition), inputMode)
+                            return (textInputState.replacingFlatRange(range, with: command.command.text + " "), inputMode)
                         } else {
                             let inputText = NSMutableAttributedString(string: "/" + command.command.text + " ")
                             let selectionPosition = (inputText.string as NSString).length + 1

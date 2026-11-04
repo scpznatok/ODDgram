@@ -1,9 +1,9 @@
+import LottieSettings
 import UIKit
 import ComponentFlow
 import Display
 import AsyncDisplayKit
 import TelegramCore
-import Postbox
 import AccountContext
 import ChatListUI
 import MergeLists
@@ -69,9 +69,19 @@ public final class ChatInlineSearchResultsListComponent: Component {
     
     public enum Contents: Equatable {
         case empty
-        case tag(MemoryBuffer)
+        case tag(EngineMemoryBuffer)
         case search(query: String, includeSavedPeers: Bool)
         case monoforumChats(query: String)
+    }
+    
+    public final class ScrollingState {
+        fileprivate let entryId: Entry.Id
+        fileprivate let entryOffset: CGFloat
+        
+        fileprivate init(entryId: Entry.Id, entryOffset: CGFloat) {
+            self.entryId = entryId
+            self.entryOffset = entryOffset
+        }
     }
     
     public let context: AccountContext
@@ -81,11 +91,12 @@ public final class ChatInlineSearchResultsListComponent: Component {
     public let insets: UIEdgeInsets
     public let inputHeight: CGFloat
     public let showEmptyResults: Bool
+    public let initialScrollingState: ScrollingState?
     public let messageSelected: (EngineMessage) -> Void
     public let peerSelected: (EnginePeer) -> Void
-    public let loadTagMessages: (MemoryBuffer, MessageIndex?) -> Signal<MessageHistoryView, NoError>?
+    public let loadTagMessages: (EngineMemoryBuffer, EngineMessage.Index?) -> Signal<EngineRawMessageHistoryView, NoError>?
     public let getSearchResult: () -> Signal<SearchMessagesResult?, NoError>?
-    public let getSavedPeers: (String) -> Signal<[(EnginePeer, MessageIndex?)], NoError>?
+    public let getSavedPeers: (String) -> Signal<[(EnginePeer, EngineMessage.Index?)], NoError>?
     public let getChats: (String) -> Signal<EngineChatList?, NoError>?
     public let loadMoreSearchResults: () -> Void
     
@@ -97,11 +108,12 @@ public final class ChatInlineSearchResultsListComponent: Component {
         insets: UIEdgeInsets,
         inputHeight: CGFloat,
         showEmptyResults: Bool,
+        initialScrollingState: ScrollingState?,
         messageSelected: @escaping (EngineMessage) -> Void,
         peerSelected: @escaping (EnginePeer) -> Void,
-        loadTagMessages: @escaping (MemoryBuffer, MessageIndex?) -> Signal<MessageHistoryView, NoError>?,
+        loadTagMessages: @escaping (EngineMemoryBuffer, EngineMessage.Index?) -> Signal<EngineRawMessageHistoryView, NoError>?,
         getSearchResult: @escaping () -> Signal<SearchMessagesResult?, NoError>?,
-        getSavedPeers: @escaping (String) -> Signal<[(EnginePeer, MessageIndex?)], NoError>?,
+        getSavedPeers: @escaping (String) -> Signal<[(EnginePeer, EngineMessage.Index?)], NoError>?,
         getChats: @escaping (String) -> Signal<EngineChatList?, NoError>?,
         loadMoreSearchResults: @escaping () -> Void
     ) {
@@ -112,6 +124,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
         self.insets = insets
         self.inputHeight = inputHeight
         self.showEmptyResults = showEmptyResults
+        self.initialScrollingState = initialScrollingState
         self.messageSelected = messageSelected
         self.peerSelected = peerSelected
         self.loadTagMessages = loadTagMessages
@@ -146,7 +159,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
         return true
     }
     
-    private enum Entry: Equatable, Comparable {
+    fileprivate enum Entry: Equatable, Comparable {
         enum Id: Hashable {
             case peer(EnginePeer.Id)
             case message(EngineMessage.Id)
@@ -230,7 +243,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
     private struct ContentsState: Equatable {
         enum ContentId: Equatable {
             case empty
-            case tag(MemoryBuffer)
+            case tag(EngineMemoryBuffer)
             case search(String)
         }
         
@@ -261,8 +274,8 @@ public final class ChatInlineSearchResultsListComponent: Component {
         private let emptyResultsText = ComponentView<Empty>()
         private let emptyResultsAnimation = ComponentView<Empty>()
         
-        private var tagContents: (index: MessageIndex?, disposable: Disposable?)?
-        private var searchContents: (index: MessageIndex?, disposable: Disposable?)?
+        private var tagContents: (index: EngineMessage.Index?, disposable: Disposable?)?
+        private var searchContents: (index: EngineMessage.Index?, disposable: Disposable?)?
         
         private var nextContentsId: Int = 0
         private var contentsState: ContentsState?
@@ -281,7 +294,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
         private var hintAnimateListTransition: Bool = false
         
         override public init(frame: CGRect) {
-            self.listNode = ListView()
+            self.listNode = ListViewImpl()
             
             super.init(frame: frame)
             
@@ -373,6 +386,26 @@ public final class ChatInlineSearchResultsListComponent: Component {
             return result
         }
         
+        public func scrollingState() -> ScrollingState? {
+            var scrollingState: ScrollingState?
+            self.listNode.forEachVisibleItemNode { itemNode in
+                if scrollingState != nil {
+                    return
+                }
+                if let itemNode = itemNode as? ChatListItemNode, let item = itemNode.item {
+                    switch item.content {
+                    case let .peer(peerData):
+                        if let message = peerData.messages.first {
+                            scrollingState = ScrollingState(entryId: .message(message.id), entryOffset: itemNode.frame.minY - self.listNode.insets.top)
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
+            return scrollingState
+        }
+        
         func update(component: ChatInlineSearchResultsListComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
             self.isUpdating = true
             defer {
@@ -420,7 +453,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
                 guard let visibleRange = displayedRange.visibleRange else {
                     return
                 }
-                var loadAroundIndex: MessageIndex?
+                var loadAroundIndex: EngineMessage.Index?
                 if visibleRange.firstIndex <= 5 {
                     if contentsState.hasLater {
                         loadAroundIndex = contentsState.messages.first?.index
@@ -582,7 +615,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
                     let disposable = MetaDisposable()
                     self.searchContents = (nil, disposable)
                     
-                    let savedPeers: Signal<[(EnginePeer, MessageIndex?)], NoError>
+                    let savedPeers: Signal<[(EnginePeer, EngineMessage.Index?)], NoError>
                     if includeSavedPeers, !query.isEmpty, let savedPeersSignal = component.getSavedPeers(query) {
                         savedPeers = savedPeersSignal
                     } else {
@@ -591,7 +624,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
                     
                     if let historySignal = component.getSearchResult() {
                         disposable.set((savedPeers
-                        |> mapToSignal { savedPeers -> Signal<([(EnginePeer, MessageIndex?)], SearchMessagesResult?), NoError> in
+                        |> mapToSignal { savedPeers -> Signal<([(EnginePeer, EngineMessage.Index?)], SearchMessagesResult?), NoError> in
                             if savedPeers.isEmpty {
                                 return historySignal
                                 |> map { result in
@@ -736,7 +769,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
                     
                     /*if let historySignal = component.getSearchResult() {
                         disposable.set((savedPeers
-                        |> mapToSignal { savedPeers -> Signal<([(EnginePeer, MessageIndex?)], SearchMessagesResult?), NoError> in
+                        |> mapToSignal { savedPeers -> Signal<([(EnginePeer, EngineMessage.Index?)], SearchMessagesResult?), NoError> in
                             if savedPeers.isEmpty {
                                 return historySignal
                                 |> map { result in
@@ -893,6 +926,8 @@ public final class ChatInlineSearchResultsListComponent: Component {
                         },
                         performActiveSessionAction: { _, _ in
                         },
+                        performBotConnectionReviewAction: { _, _ in
+                        },
                         openChatFolderUpdates: {
                         },
                         hideChatFolderUpdates: {
@@ -963,7 +998,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
                 let listPresentationData = ItemListPresentationData(component.context.sharedContext.currentPresentationData.with({ $0 }))
                 let peerSelected = component.peerSelected
                 
-                let entryToItem: (Entry) -> ListViewItem = { entry -> ListViewItem in
+                let entryToItem: (Entry) -> ListViewItem = { [weak self] entry -> ListViewItem in
                     switch entry {
                     case let .peer(peer):
                         return ContactsPeerItem(
@@ -997,14 +1032,14 @@ public final class ChatInlineSearchResultsListComponent: Component {
                         if let forwardInfo = message.forwardInfo {
                             effectiveAuthor = forwardInfo.author.flatMap(EnginePeer.init)
                             if effectiveAuthor == nil, let authorSignature = forwardInfo.authorSignature  {
-                                effectiveAuthor = EnginePeer(TelegramUser(id: PeerId(namespace: Namespaces.Peer.Empty, id: PeerId.Id._internalFromInt64Value(Int64(authorSignature.persistentHashValue % 32))), accessHash: nil, firstName: authorSignature, lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil))
+                                effectiveAuthor = EnginePeer(TelegramUser(id: EnginePeer.Id(namespace: Namespaces.Peer.Empty, id: EnginePeer.Id.Id._internalFromInt64Value(Int64(authorSignature.persistentHashValue % 32))), accessHash: nil, firstName: authorSignature, lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil))
                             }
                         }
                         if let sourceAuthorInfo = message._asMessage().sourceAuthorInfo {
                             if let originalAuthor = sourceAuthorInfo.originalAuthor, let peer = message.peers[originalAuthor] {
                                 effectiveAuthor = EnginePeer(peer)
                             } else if let authorSignature = sourceAuthorInfo.originalAuthorName {
-                                effectiveAuthor = EnginePeer(TelegramUser(id: PeerId(namespace: Namespaces.Peer.Empty, id: PeerId.Id._internalFromInt64Value(Int64(authorSignature.persistentHashValue % 32))), accessHash: nil, firstName: authorSignature, lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil))
+                                effectiveAuthor = EnginePeer(TelegramUser(id: EnginePeer.Id(namespace: Namespaces.Peer.Empty, id: EnginePeer.Id.Id._internalFromInt64Value(Int64(authorSignature.persistentHashValue % 32))), accessHash: nil, firstName: authorSignature, lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil))
                             }
                         }
                         if effectiveAuthor == nil {
@@ -1043,6 +1078,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
                                 presence: nil,
                                 hasUnseenMentions: false,
                                 hasUnseenReactions: false,
+                                hasUnseenPollVotes: false,
                                 draftState: nil,
                                 mediaDraftContentType: nil,
                                 inputActivities: nil,
@@ -1082,6 +1118,7 @@ public final class ChatInlineSearchResultsListComponent: Component {
                                 presence: nil,
                                 hasUnseenMentions: false,
                                 hasUnseenReactions: false,
+                                hasUnseenPollVotes: false,
                                 draftState: item.draft.flatMap(ChatListItemContent.DraftState.init(draft:)),
                                 mediaDraftContentType: nil,
                                 inputActivities: nil,
@@ -1124,6 +1161,22 @@ public final class ChatInlineSearchResultsListComponent: Component {
                     listTransactionOptions.insert(.AnimateInsertion)
                 }
                 self.hintAnimateListTransition = false
+                
+                if previousComponent == nil, let initialScrollingState = component.initialScrollingState {
+                    var index = 0
+                    for entry in contentsState.entries {
+                        if entry.id == initialScrollingState.entryId {
+                            scrollToItem = ListViewScrollToItem(
+                                index: index,
+                                position: .top(initialScrollingState.entryOffset),
+                                animated: false,
+                                curve: .Default(duration: nil),
+                                directionHint: .Up
+                            )
+                        }
+                        index += 1
+                    }
+                }
                 
                 self.listNode.transaction(
                     deleteIndices: deleteIndices.map { index in
@@ -1204,7 +1257,8 @@ public final class ChatInlineSearchResultsListComponent: Component {
                 let emptyResultsAnimationSize = self.emptyResultsAnimation.update(
                     transition: .immediate,
                     component: AnyComponent(LottieComponent(
-                        content: LottieComponent.AppBundleContent(name: "ChatListNoResults")
+                        content: LottieComponent.AppBundleContent(name: "ChatListNoResults"),
+                        lottieSettings: component.context.lottieRenderingSettings
                     )),
                     environment: {},
                     containerSize: CGSize(width: emptyAnimationHeight, height: emptyAnimationHeight)

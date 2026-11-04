@@ -8,7 +8,6 @@ import AppBundle
 import ViewControllerComponent
 import AccountContext
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import MultilineTextComponent
 import ButtonComponent
@@ -20,6 +19,7 @@ import ContextUI
 import AvatarNode
 import PlainButtonComponent
 import ToastComponent
+import TextFormat
 
 private final class JoinAffiliateProgramScreenComponent: Component {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
@@ -123,6 +123,8 @@ private final class JoinAffiliateProgramScreenComponent: Component {
         
         private var itemLayout: ItemLayout?
         private var topOffsetDistance: CGFloat?
+        /// iPhone Duo unfolded portrait: the close button's frame at the right edge, and how it clears the status island.
+        private var closeButtonIslandLayout: (frame: CGRect, inset: CGFloat, islandHeight: CGFloat)?
         
         private var currentTargetPeer: EnginePeer?
         private var currentMode: JoinAffiliateProgramScreen.Mode?
@@ -286,6 +288,11 @@ private final class JoinAffiliateProgramScreenComponent: Component {
             }
             
             transition.setPosition(view: self.navigationBarContainer, position: CGPoint(x: 0.0, y: topOffset + itemLayout.containerInset))
+            if let closeButtonView = self.closeButton.view, let islandLayout = self.closeButtonIslandLayout {
+                // Slides clear of the status island as the sheet's top rises beside it.
+                let shift = statusIslandTrailingShift(rowMinY: topOffset + itemLayout.containerInset + islandLayout.frame.minY, rowHeight: islandLayout.frame.height, islandHeight: islandLayout.islandHeight, inset: islandLayout.inset)
+                transition.setPosition(view: closeButtonView, position: CGPoint(x: islandLayout.frame.midX - shift, y: islandLayout.frame.midY))
+            }
             
             let topOffsetDistance: CGFloat = min(200.0, floor(itemLayout.containerSize.height * 0.25))
             self.topOffsetDistance = topOffsetDistance
@@ -465,7 +472,11 @@ private final class JoinAffiliateProgramScreenComponent: Component {
             
             let resetScrolling = self.scrollView.bounds.width != availableSize.width
             
+            // iPhone Duo: one side's safe inset is the side strip; the right margin is its own and centered
+            // content is centered in the band between the insets. With equal insets these are the old values.
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
+            let rightSideInset: CGFloat = 16.0 + environment.safeInsets.right
+            let bandCenterX: CGFloat = environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right) / 2.0
             
             let currentMode = self.currentMode ?? component.mode
             
@@ -538,6 +549,13 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                 }
                 transition.setFrame(view: closeButtonView, frame: closeButtonFrame)
             }
+            // iPhone Duo unfolded portrait: `updateScrolling` moves the button clear of the status island while the
+            // sheet's top is beside it.
+            if environment.navigationBarTrailingButtonsInset > 0.0, let island = environment.reservedCorners.topRight {
+                self.closeButtonIslandLayout = (closeButtonFrame, environment.navigationBarTrailingButtonsInset, island.height)
+            } else {
+                self.closeButtonIslandLayout = nil
+            }
             
             let containerInset: CGFloat = environment.statusBarHeight + 10.0
             
@@ -567,7 +585,8 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                 
                 let avatarSpacing: CGFloat = 41.0
                 
-                let sourceAvatarFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - sourceAvatarSize.width - avatarSpacing - targetAvatarSize.width) * 0.5), y: contentHeight), size: sourceAvatarSize)
+                // Centred on the band, as the arrow between the avatars is (iPhone Duo: beside the side strip).
+                let sourceAvatarFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - (sourceAvatarSize.width + avatarSpacing + targetAvatarSize.width) * 0.5), y: contentHeight), size: sourceAvatarSize)
                 let targetAvatarFrame = CGRect(origin: CGPoint(x: sourceAvatarFrame.maxX + avatarSpacing, y: contentHeight), size: targetAvatarSize)
                 
                 if let sourceAvatarView = self.sourceAvatar.view {
@@ -674,7 +693,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                     })
                 }
                 if let sourceTargetArrowSize = self.sourceTargetArrow.image?.size {
-                    let sourceTargetArrowFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - sourceTargetArrowSize.width) * 0.5), y: sourceAvatarFrame.minY + floor((sourceAvatarFrame.height - sourceTargetArrowSize.height) * 0.5)), size: sourceTargetArrowSize)
+                    let sourceTargetArrowFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - sourceTargetArrowSize.width * 0.5), y: sourceAvatarFrame.minY + floor((sourceAvatarFrame.height - sourceTargetArrowSize.height) * 0.5)), size: sourceTargetArrowSize)
                     
                     if self.sourceTargetArrow.superview == nil {
                         self.scrollContentView.addSubview(self.sourceTargetArrow)
@@ -694,7 +713,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                     environment: {},
                     containerSize: CGSize(width: 90.0, height: 90.0)
                 )
-                let linkIconBackgroundFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - linkIconBackgroundSize.width) * 0.5), y: contentHeight), size: linkIconBackgroundSize)
+                let linkIconBackgroundFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - linkIconBackgroundSize.width * 0.5), y: contentHeight), size: linkIconBackgroundSize)
                 if let linkIconBackgroundView = self.linkIconBackground.view {
                     if linkIconBackgroundView.superview == nil {
                         self.scrollContentView.addSubview(linkIconBackgroundView)
@@ -816,9 +835,9 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                     text: .plain(NSAttributedString(string: titleString, font: Font.bold(24.0), textColor: environment.theme.list.itemPrimaryTextColor))
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 100.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 100.0)
             )
-            let titleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - titleSize.width) * 0.5), y: contentHeight), size: titleSize)
+            let titleFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - titleSize.width * 0.5), y: contentHeight), size: titleSize)
             if let titleView = title.view {
                 if titleView.superview == nil {
                     self.titleTransformContainer.addSubview(titleView)
@@ -875,7 +894,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                         guard let infoController = component.context.sharedContext.makePeerInfoController(
                             context: component.context,
                             updatedPresentationData: nil,
-                            peer: component.sourcePeer._asPeer(),
+                            peer: component.sourcePeer,
                             mode: .generic,
                             avatarInitiallyExpanded: false,
                             fromChat: false,
@@ -897,9 +916,9 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                     animateContents: false
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
-            let openBotButtonFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - openBotButtonSize.width) * 0.5), y: contentHeight), size: openBotButtonSize)
+            let openBotButtonFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - openBotButtonSize.width * 0.5), y: contentHeight), size: openBotButtonSize)
             if let openBotButtonView = self.openBotButton.view {
                 if openBotButtonView.superview == nil {
                     self.scrollContentView.addSubview(openBotButtonView)
@@ -929,9 +948,9 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                     lineSpacing: 0.2
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
-            let subtitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - subtitleSize.width) * 0.5), y: contentHeight), size: subtitleSize)
+            let subtitleFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - subtitleSize.width * 0.5), y: contentHeight), size: subtitleSize)
             if let subtitleView = self.subtitle.view {
                 if subtitleView.superview == nil {
                     self.scrollContentView.addSubview(subtitleView)
@@ -1030,10 +1049,10 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                         lineSpacing: 0.2
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                 )
                 contentHeight += 16.0
-                let dailyRevenueTextFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - dailyRevenueTextSize.width) * 0.5), y: contentHeight), size: dailyRevenueTextSize)
+                let dailyRevenueTextFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - dailyRevenueTextSize.width * 0.5), y: contentHeight), size: dailyRevenueTextSize)
                 if let dailyRevenueTextView = dailyRevenueText.view {
                     if dailyRevenueTextView.superview == nil {
                         self.scrollContentView.addSubview(dailyRevenueTextView)
@@ -1070,9 +1089,9 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                         lineSpacing: 0.2
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                 )
-                let targetTextFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - targetTextSize.width) * 0.5), y: contentHeight), size: targetTextSize)
+                let targetTextFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - targetTextSize.width * 0.5), y: contentHeight), size: targetTextSize)
                 if let targetTextView = self.targetText.view {
                     if targetTextView.superview == nil {
                         self.scrollContentView.addSubview(targetTextView)
@@ -1098,9 +1117,9 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                             } : nil
                         )),
                         environment: {},
-                        containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 100.0)
+                        containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 100.0)
                     )
-                    let targetPeerFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - targetPeerSize.width) * 0.5), y: contentHeight), size: targetPeerSize)
+                    let targetPeerFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - targetPeerSize.width * 0.5), y: contentHeight), size: targetPeerSize)
                     if let targetPeerView = self.targetPeer.view {
                         if targetPeerView.superview == nil {
                             self.scrollContentView.addSubview(targetPeerView)
@@ -1134,7 +1153,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                             smoothCorners: true
                         )),
                         effectAlignment: .center,
-                        minSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 52.0),
+                        minSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 52.0),
                         contentInsets: UIEdgeInsets(top: 0.0, left: 10.0, bottom: 0.0, right: 10.0),
                         action: { [weak self] in
                             guard let self, case let .active(active) = self.currentMode else {
@@ -1148,9 +1167,9 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                         animateContents: false
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 52.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 52.0)
                 )
-                let linkTextFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - linkTextSize.width) * 0.5), y: contentHeight), size: linkTextSize)
+                let linkTextFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - linkTextSize.width * 0.5), y: contentHeight), size: linkTextSize)
                 if let linkTextView = self.linkText.view {
                     if linkTextView.superview == nil {
                         self.scrollContentView.addSubview(linkTextView)
@@ -1171,6 +1190,15 @@ private final class JoinAffiliateProgramScreenComponent: Component {
             }
             
             let buttonSideInset: CGFloat = 30.0
+            // iPhone Duo: when the side insets differ (one is the side strip) the bottom button and text span the strip
+            // and keep clear only of a corner block at the bottom; equal insets keep the old insets.
+            let bottomEdgeInsets = environment.bottomEdgeSideInsets()
+            let buttonInsetsDiffer = environment.safeInsets.left != environment.safeInsets.right
+            let buttonLeftInset: CGFloat = buttonSideInset + (buttonInsetsDiffer ? bottomEdgeInsets.left : 0.0)
+            let buttonRightInset: CGFloat = buttonSideInset + (buttonInsetsDiffer ? bottomEdgeInsets.right : 0.0)
+            let bottomTextSideInset: CGFloat = 16.0 + bottomEdgeInsets.left
+            let bottomTextRightSideInset: CGFloat = 16.0 + bottomEdgeInsets.right
+            let bottomTextCenterX: CGFloat = bottomEdgeInsets.left + (availableSize.width - bottomEdgeInsets.left - bottomEdgeInsets.right) / 2.0
             let actionButtonSize = self.actionButton.update(
                 transition: transition,
                 component: AnyComponent(ButtonComponent(
@@ -1209,7 +1237,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                     }
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - buttonSideInset * 2.0, height: 52.0)
+                containerSize: CGSize(width: availableSize.width - buttonLeftInset - buttonRightInset, height: 52.0)
             )
             
             let bottomTextSize = self.bottomText.update(
@@ -1221,16 +1249,31 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                             body: MarkdownAttributeSet(font: Font.regular(13.0), textColor: environment.theme.list.itemSecondaryTextColor),
                             bold: MarkdownAttributeSet(font: Font.semibold(13.0), textColor: environment.theme.list.itemSecondaryTextColor),
                             link: MarkdownAttributeSet(font: Font.regular(13.0), textColor: environment.theme.list.itemAccentColor),
-                            linkAttribute: { url in
-                                return ("URL", url)
+                            linkAttribute: { contents in
+                                return (TelegramTextAttributes.URL, contents)
                             }
                         )
                     ),
                     horizontalAlignment: .center,
-                    maximumNumberOfLines: 0
+                    maximumNumberOfLines: 0,
+                    highlightColor: environment.theme.list.itemAccentColor.withAlphaComponent(0.2),
+                    highlightAction: { attributes in
+                        if let _ = attributes[NSAttributedString.Key(rawValue: TelegramTextAttributes.URL)] {
+                            return NSAttributedString.Key(rawValue: TelegramTextAttributes.URL)
+                        } else {
+                            return nil
+                        }
+                    },
+                    tapAction: { [weak self] attributes, _ in
+                        guard let environment = self?.environment, let controller = environment.controller(), let navigationController = controller.navigationController as? NavigationController else {
+                            return
+                        }
+                        let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }
+                        component.context.sharedContext.openExternalUrl(context: component.context, urlContext: .generic, url: environment.strings.Stars_Purchase_Terms_URL, forceExternal: false, presentationData: presentationData, navigationController: navigationController, dismissInput: {})
+                    }
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 1000.0)
+                containerSize: CGSize(width: availableSize.width - bottomTextSideInset - bottomTextRightSideInset, height: 1000.0)
             )
             
             let bottomTextSpacing: CGFloat = 10.0
@@ -1239,7 +1282,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
             let bottomPanelFrame = CGRect(origin: CGPoint(x: 0.0, y: availableSize.height - bottomPanelHeight), size: CGSize(width: availableSize.width, height: bottomPanelHeight))
             transition.setFrame(view: self.bottomPanelContainer, frame: bottomPanelFrame)
             
-            let actionButtonFrame = CGRect(origin: CGPoint(x: buttonSideInset, y: 0.0), size: actionButtonSize)
+            let actionButtonFrame = CGRect(origin: CGPoint(x: buttonLeftInset, y: 0.0), size: actionButtonSize)
             if let actionButtonView = self.actionButton.view {
                 if actionButtonView.superview == nil {
                     self.bottomPanelContainer.addSubview(actionButtonView)
@@ -1247,7 +1290,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
                 transition.setFrame(view: actionButtonView, frame: actionButtonFrame)
             }
             
-            let bottomTextFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - bottomTextSize.width) * 0.5), y: actionButtonFrame.maxY + bottomTextSpacing), size: bottomTextSize)
+            let bottomTextFrame = CGRect(origin: CGPoint(x: floor(bottomTextCenterX - bottomTextSize.width * 0.5), y: actionButtonFrame.maxY + bottomTextSpacing), size: bottomTextSize)
             if let bottomTextView = self.bottomText.view {
                 if bottomTextView.superview == nil {
                     self.bottomPanelContainer.addSubview(bottomTextView)
@@ -1317,7 +1360,7 @@ private final class JoinAffiliateProgramScreenComponent: Component {
             transition.setPosition(layer: self.backgroundLayer, position: CGPoint(x: availableSize.width / 2.0, y: availableSize.height / 2.0))
             transition.setBounds(layer: self.backgroundLayer, bounds: CGRect(origin: CGPoint(), size: availableSize))
             
-            let scrollClippingFrame = CGRect(origin: CGPoint(x: sideInset, y: containerInset), size: CGSize(width: availableSize.width - sideInset * 2.0, height: clippingY - containerInset))
+            let scrollClippingFrame = CGRect(origin: CGPoint(x: sideInset, y: containerInset), size: CGSize(width: availableSize.width - sideInset - rightSideInset, height: clippingY - containerInset))
             transition.setPosition(view: self.scrollContentClippingView, position: scrollClippingFrame.center)
             transition.setBounds(view: self.scrollContentClippingView, bounds: CGRect(origin: CGPoint(x: scrollClippingFrame.minX, y: scrollClippingFrame.minY), size: scrollClippingFrame.size))
             

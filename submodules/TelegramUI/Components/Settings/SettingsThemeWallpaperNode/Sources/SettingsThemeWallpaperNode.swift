@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import TelegramPresentationData
 import AccountContext
@@ -233,7 +233,7 @@ public final class SettingsThemeWallpaperNode: ASDisplayNode {
             switch wallpaper {
                 case .builtin:
                     self.imageNode.alpha = 1.0
-                    self.imageNode.setSignal(settingsBuiltinWallpaperImage(account: context.account, thumbnail: true))
+                    self.imageNode.setSignal(settingsBuiltinWallpaperImage(thumbnail: true))
                     let apply = self.imageNode.asyncLayout()(TransformImageArguments(corners: corners, imageSize: CGSize(), boundingSize: size, intrinsicInsets: UIEdgeInsets()))
                     apply()
                     self.isLoadedDisposable.set(nil)
@@ -282,8 +282,8 @@ public final class SettingsThemeWallpaperNode: ASDisplayNode {
                         }
 
                         let anyStatus = combineLatest(queue: .mainQueue(),
-                            context.account.postbox.mediaBox.resourceStatus(convertedFullRepresentations[0].reference.resource, approximateSynchronousValue: true),
-                            context.sharedContext.accountManager.mediaBox.resourceStatus(convertedFullRepresentations[0].reference.resource, approximateSynchronousValue: true)
+                            context.engine.resources.status(resource: EngineMediaResource(convertedFullRepresentations[0].reference.resource), approximateSynchronousValue: true),
+                            context.sharedContext.accountManager.resources.status(resource: EngineMediaResource(convertedFullRepresentations[0].reference.resource), approximateSynchronousValue: true)
                         )
                         |> map { a, b -> Bool in
                             switch a {
@@ -362,13 +362,13 @@ public final class SettingsThemeWallpaperNode: ASDisplayNode {
             if let current = self.animatedStickerNode {
                 animatedStickerNode = current
             } else {
-                animatedStickerNode = DefaultAnimatedStickerNodeImpl()
+                animatedStickerNode = DefaultAnimatedStickerNodeImpl(lottieSettings: context.lottieRenderingSettings)
                 animatedStickerNode.started = { [weak self] in
                     self?.emojiImageNode.isHidden = true
                 }
                 self.animatedStickerNode = animatedStickerNode
                 self.emojiContainerNode.addSubnode(animatedStickerNode)
-                let pathPrefix = context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(file.resource.id)
+                let pathPrefix = context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(file.resource.id))
                 animatedStickerNode.setup(source: AnimatedStickerResourceSource(account: context.account, resource: file.resource), width: 128, height: 128, playbackMode: .still(.start), mode: .direct(cachePathPrefix: pathPrefix))
                 
                 animatedStickerNode.anchorPoint = CGPoint(x: 0.5, y: 1.0)
@@ -376,7 +376,7 @@ public final class SettingsThemeWallpaperNode: ASDisplayNode {
             animatedStickerNode.autoplay = true
             animatedStickerNode.visibility = true
             
-            self.stickerFetchedDisposable.set(fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .other, reference: MediaResourceReference.media(media: .standalone(media: file), resource: file.resource)).start())
+            self.stickerFetchedDisposable.set(context.engine.resources.fetch(reference: MediaResourceReference.media(media: .standalone(media: file), resource: file.resource), userLocation: .other, userContentType: .other).start())
             
 //            let thumbnailDimensions = PixelDimensions(width: 512, height: 512)
 //            self.placeholderNode.update(backgroundColor: nil, foregroundColor: UIColor(rgb: 0xffffff, alpha: 0.2), shimmeringColor: UIColor(rgb: 0xffffff, alpha: 0.3), data: file.immediateThumbnailData, size: emojiFrame.size, enableEffect: item.context.sharedContext.energyUsageSettings.fullTranslucency, imageSize: thumbnailDimensions.cgSize)

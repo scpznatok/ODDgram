@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 import LinkPresentation
 #if os(iOS)
@@ -37,10 +37,6 @@ public func webpagePreview(account: Account, urls: [String], webpageId: MediaId?
 public enum WebpagePreviewWithProgressResult {
     case result(WebpagePreviewResult.Result?)
     case progress(Float)
-}
-
-public func normalizedWebpagePreviewUrl(url: String) -> String {
-    return url
 }
 
 public func webpagePreviewWithProgress(account: Account, urls: [String], webpageId: MediaId? = nil, forPeerId: PeerId? = nil) -> Signal<WebpagePreviewWithProgressResult, NoError> {
@@ -131,7 +127,7 @@ public func webpagePreviewWithProgress(account: Account, urls: [String], webpage
                                     }
                                     
                                     if let imageProvider = metadata.imageProvider {
-                                        imageProvider.loadFileRepresentation(forTypeIdentifier: kUTTypeImage as String, completionHandler: { imageUrl, _ in
+                                        imageProvider.loadFileRepresentation(forTypeIdentifier: "public.image", completionHandler: { imageUrl, _ in
                                             guard let imageUrl, let imageData = try? Data(contentsOf: imageUrl) else {
                                                 completeWithImage(nil)
                                                 return
@@ -194,7 +190,7 @@ public func webpagePreviewWithProgress(account: Account, urls: [String], webpage
                                             account.stateManager.updatedWebpage(media.webpageId)
                                             |> take(1)
                                             |> map { next -> WebpagePreviewWithProgressResult in
-                                                if let url = next.content.url {
+                                                if let next, let url = next.content.url {
                                                     return .result(WebpagePreviewResult.Result(webpage: next, sourceUrl: url))
                                                 } else {
                                                     return .result(nil)
@@ -256,7 +252,7 @@ public func actualizedWebpage(account: Account, webpage: TelegramMediaWebpage) -
                                 file: content.file,
                                 story: content.story,
                                 attributes: content.attributes,
-                                instantPage: (content.instantPage?._parse()).flatMap({ InstantPage(blocks: $0.blocks, media: $0.media, isComplete: $0.isComplete, rtl: $0.rtl, url: $0.url, views: views) })
+                                instantPage: (content.instantPage?._parse()).flatMap({ InstantPage(blocks: $0.blocks, rawMedia: $0.rawMedia, isComplete: $0.isComplete, rtl: $0.rtl, url: $0.url, views: views) })
                             ))
                             let updatedWebpage = TelegramMediaWebpage(webpageId: webpage.webpageId, content: updatedContent)
                             updateMessageMedia(transaction: transaction, id: webpage.webpageId, media: updatedWebpage)

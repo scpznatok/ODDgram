@@ -1222,6 +1222,7 @@ private final class ChatListFilterPresetController: ItemListController {
     private func updateInputMediaNode(
         context: AccountContext,
         availableSize: CGSize,
+        sideInsets: (left: CGFloat, right: CGFloat),
         bottomInset: CGFloat,
         inputHeight: CGFloat,
         effectiveInputHeight: CGFloat,
@@ -1281,7 +1282,6 @@ private final class ChatListFilterPresetController: ItemListController {
                 mode: .standard(.default),
                 chatLocation: .peer(id: context.account.peerId),
                 subject: nil,
-                peerNearbyData: nil,
                 greetingData: nil,
                 pendingUnpinnedAllMessages: false,
                 activeGroupCallInfo: nil,
@@ -1295,7 +1295,7 @@ private final class ChatListFilterPresetController: ItemListController {
             
             self.inputMediaNodeBackground.backgroundColor = presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.cgColor
             
-            let heightAndOverflow = inputMediaNode.updateLayout(width: availableSize.width, leftInset: 0.0, rightInset: 0.0, bottomInset: bottomInset, standardInputHeight: deviceMetrics.standardInputHeight(inLandscape: false), inputHeight: inputHeight < 100.0 ? inputHeight - bottomContainerInset : inputHeight, maximumHeight: availableSize.height, inputPanelHeight: 0.0, transition: .immediate, interfaceState: presentationInterfaceState, layoutMetrics: metrics, deviceMetrics: deviceMetrics, isVisible: true, isExpanded: false)
+            let heightAndOverflow = inputMediaNode.updateLayout(width: availableSize.width, leftInset: sideInsets.left, rightInset: sideInsets.right, bottomInset: bottomInset, standardInputHeight: deviceMetrics.standardInputHeight(inLandscape: false), inputHeight: inputHeight < 100.0 ? inputHeight - bottomContainerInset : inputHeight, maximumHeight: availableSize.height, inputPanelHeight: 0.0, transition: .immediate, interfaceState: presentationInterfaceState, layoutMetrics: metrics, deviceMetrics: deviceMetrics, isVisible: true, isExpanded: false)
             let inputNodeHeight = heightAndOverflow.0
             let inputNodeFrame = CGRect(origin: CGPoint(x: 0.0, y: availableSize.height - inputNodeHeight), size: CGSize(width: availableSize.width, height: inputNodeHeight))
             
@@ -1331,7 +1331,7 @@ private final class ChatListFilterPresetController: ItemListController {
                 targetFrame.origin.y = availableSize.height
                 transition.setFrame(view: inputMediaNode.view, frame: targetFrame, completion: { [weak inputMediaNode] _ in
                     if let inputMediaNode {
-                        Queue.mainQueue().after(0.3) {
+                        Queue.mainQueue().after(0.3) { [inputMediaNode] in
                             inputMediaNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.35, removeOnCompletion: false, completion: { [weak inputMediaNode] _ in
                                 inputMediaNode?.view.removeFromSuperview()
                             })
@@ -1366,9 +1366,17 @@ private final class ChatListFilterPresetController: ItemListController {
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         self.currentLayout = layout
         
+        // The emoji keyboard keeps clear of a corner block at the bottom of a side strip (iPhone Duo, folded landscape-left);
+        // elsewhere it spans the width as before.
+        var inputSideInsets: (left: CGFloat, right: CGFloat) = (0.0, 0.0)
+        if layout.safeInsets.left != layout.safeInsets.right {
+            let standardInputHeight = layout.deviceMetrics.standardInputHeight(inLandscape: false)
+            inputSideInsets = layout.sideInsets(forBandFrom: layout.size.height - standardInputHeight, to: layout.size.height)
+        }
         let inputHeight = self.updateInputMediaNode(
             context: self.context,
             availableSize: layout.size,
+            sideInsets: inputSideInsets,
             bottomInset: layout.intrinsicInsets.bottom,
             inputHeight: layout.inputHeight ?? 0.0,
             effectiveInputHeight: layout.deviceMetrics.standardInputHeight(inLandscape: false),
@@ -2072,11 +2080,16 @@ public func chatListFilterPresetController(context: AccountContext, currentPrese
     )
     |> deliverOnMainQueue
     |> map { presentationData, stateWithPeers, peerView, premiumLimits, sharedLinks, currentPreset -> (ItemListControllerState, (ItemListNodeState, Any)) in
+        var presentationData = presentationData
+
+        let updatedTheme = presentationData.theme.withModalBlocksBackground()
+        presentationData = presentationData.withUpdated(theme: updatedTheme)
+        
         let (state, includePeers, excludePeers) = stateWithPeers
         
         let isPremium = peerView.peers[peerView.peerId]?.isPremium ?? false
         
-        let leftNavigationButton = ItemListNavigationButton(content: .text(presentationData.strings.Common_Cancel), style: .regular, enabled: true, action: {
+        let leftNavigationButton = ItemListNavigationButton(content: .icon(.close), style: .regular, enabled: true, action: {
             if let attemptNavigationImpl {
                 attemptNavigationImpl({ value in
                     if value {
@@ -2087,7 +2100,7 @@ public func chatListFilterPresetController(context: AccountContext, currentPrese
                 dismissImpl?()
             }
         })
-        let rightNavigationButton = ItemListNavigationButton(content: .text(currentPreset == nil ? presentationData.strings.Common_Create : presentationData.strings.Common_Done), style: .bold, enabled: state.isComplete, action: {
+        let rightNavigationButton = ItemListNavigationButton(content: .icon(.done), style: .bold, enabled: state.isComplete, action: {
             applyImpl?(false, {
                 dismissImpl?()
             })
@@ -2379,7 +2392,7 @@ private final class InviteLinkContextReferenceContentSource: ContextReferenceCon
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }
 

@@ -1,8 +1,8 @@
 import Display
 import UIKit
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
+import TelegramStringFormatting
 import SwiftSignalKit
 import TelegramPresentationData
 import AccountContext
@@ -97,19 +97,23 @@ final class ContactSelectionControllerNode: ASDisplayNode {
                 excludeSelf = false
             }
             if let birthdays {
-                let today = Calendar(identifier: .gregorian).component(.day, from: Date())
+                let currentDate = Date()
+                let currentTimeZone = TimeZone.current
                 var sections: [(String, [EnginePeer.Id], Bool)] = []
                 var todayPeers: [EnginePeer.Id] = []
                 var yesterdayPeers: [EnginePeer.Id] = []
                 var tomorrowPeers: [EnginePeer.Id] = []
                 
                 for (peerId, birthday) in birthdays {
-                    if birthday.day == today {
+                    switch relativeDateForBirthday(birthday, relativeTo: currentDate, timeZone: currentTimeZone) {
+                    case .today:
                         todayPeers.append(peerId)
-                    } else if birthday.day == today - 1 || birthday.day > today + 5 {
+                    case .yesterday:
                         yesterdayPeers.append(peerId)
-                    } else if birthday.day == today + 1 || birthday.day < today + 5 {
+                    case .tomorrow:
                         tomorrowPeers.append(peerId)
+                    case nil:
+                        break
                     }
                 }
                 
@@ -158,7 +162,7 @@ final class ContactSelectionControllerNode: ASDisplayNode {
             onlyWriteable: false,
             isGroupInvitation: false,
             isPeerEnabled: { peer in
-                return isPeerEnabled(.peer(peer: peer._asPeer(), isGlobal: false, participantCount: nil))
+                return isPeerEnabled(.peer(peer: peer, isGlobal: false, participantCount: nil))
             },
             displayCallIcons: displayCallIcons,
             contextAction: multipleSelection ? { peer, node, gesture, _, _ in
@@ -228,7 +232,7 @@ final class ContactSelectionControllerNode: ASDisplayNode {
                 strongSelf.contactListNode.updateSelectionState { state in
                     let peerId = ContactListPeerId.peer(peer.id)
                     let state = state ?? ContactListNodeGroupSelectionState()
-                    return state.withToggledPeerId(peerId).withSelectedPeerMap([peerId: ContactListPeer.peer(peer: peer._asPeer(), isGlobal: false, participantCount: nil)])
+                    return state.withToggledPeerId(peerId).withSelectedPeerMap([peerId: ContactListPeer.peer(peer: peer, isGlobal: false, participantCount: nil)])
                 }
             }
         }
@@ -281,7 +285,7 @@ final class ContactSelectionControllerNode: ASDisplayNode {
             }
             
             let inset: CGFloat
-            if layout.size.width >= 375.0 {
+            if layout.size.width >= 320.0 {
                 inset = max(16.0, floor((layout.size.width - 674.0) / 2.0))
             } else {
                 inset = 0.0
@@ -289,7 +293,7 @@ final class ContactSelectionControllerNode: ASDisplayNode {
             size.width -= inset * 2.0
         }
         
-        self.contactListNode.containerLayoutUpdated(ContainerViewLayout(size: size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: safeInsets, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver), headerInsets: headerInsets, storiesInset: 0.0, transition: transition)
+        self.contactListNode.containerLayoutUpdated(ContainerViewLayout(size: size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: insets, safeInsets: safeInsets, reservedCorners: layout.reservedCorners, division: layout.division, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver, presentedInFormSheet: layout.presentedInFormSheet), headerInsets: headerInsets, storiesInset: 0.0, transition: transition)
         
         self.contactListNode.frame = CGRect(origin: CGPoint(x: floorToScreenPixels((layout.size.width - size.width) / 2.0), y: 0.0), size: size)
         
@@ -299,13 +303,13 @@ final class ContactSelectionControllerNode: ASDisplayNode {
         
         if let searchContainerNode = self.searchContainerNode {
             searchContainerNode.frame = CGRect(origin: CGPoint(), size: layout.size)
-            searchContainerNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: LayoutMetrics(), deviceMetrics: layout.deviceMetrics, intrinsicInsets: layout.intrinsicInsets, safeInsets: layout.safeInsets, additionalInsets: layout.additionalInsets, statusBarHeight: nil, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver), navigationBarHeight: navigationBarHeight, transition: transition)
+            searchContainerNode.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: LayoutMetrics(), deviceMetrics: layout.deviceMetrics, intrinsicInsets: layout.intrinsicInsets, safeInsets: layout.safeInsets, reservedCorners: layout.reservedCorners, division: layout.division, additionalInsets: layout.additionalInsets, statusBarHeight: nil, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver, presentedInFormSheet: layout.presentedInFormSheet), navigationBarHeight: navigationBarHeight, transition: transition)
         }
         
         let topEdgeEffectHeight: CGFloat = 80.0
         let topEdgeEffectFrame = CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: layout.size.width, height: topEdgeEffectHeight))
         transition.updateFrame(view: self.topEdgeEffectView, frame: topEdgeEffectFrame)
-        self.topEdgeEffectView.update(content: self.presentationData.theme.list.blocksBackgroundColor, blur: true, alpha: 1.0, rect: topEdgeEffectFrame, edge: .top, edgeSize: topEdgeEffectFrame.height, transition: ComponentTransition(transition))
+        self.topEdgeEffectView.update(content: self.presentationData.theme.list.modalBlocksBackgroundColor, blur: true, alpha: 1.0, rect: topEdgeEffectFrame, edge: .top, edgeSize: topEdgeEffectFrame.height, transition: ComponentTransition(transition))
         
         let bottomEdgeEffectHeight: CGFloat = 88.0
         let bottomEdgeEffectFrame = CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - bottomEdgeEffectHeight - layout.additionalInsets.bottom), size: CGSize(width: layout.size.width, height: bottomEdgeEffectHeight))

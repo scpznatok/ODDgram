@@ -3,7 +3,6 @@ import UIKit
 import Display
 import ComponentFlow
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import MultilineTextComponent
 import TelegramPresentationData
@@ -26,21 +25,21 @@ final class BrowserAddressListItemComponent: Component {
     let context: AccountContext
     let theme: PresentationTheme
     let webPage: TelegramMediaWebpage
-    var message: Message?
+    var message: EngineMessage?
     let hasNext: Bool
     let insets: UIEdgeInsets
     let action: () -> Void
-    let contextAction: ((TelegramMediaWebpage, Message?, ContextExtractedContentContainingView, ContextGesture) -> Void)?
-    
+    let contextAction: ((TelegramMediaWebpage, EngineMessage?, ContextExtractedContentContainingView, ContextGesture) -> Void)?
+
     init(
         context: AccountContext,
         theme: PresentationTheme,
         webPage: TelegramMediaWebpage,
-        message: Message?,
+        message: EngineMessage?,
         hasNext: Bool,
         insets: UIEdgeInsets,
         action: @escaping () -> Void,
-        contextAction: ((TelegramMediaWebpage, Message?, ContextExtractedContentContainingView, ContextGesture) -> Void)?
+        contextAction: ((TelegramMediaWebpage, EngineMessage?, ContextExtractedContentContainingView, ContextGesture) -> Void)?
     ) {
         self.context = context
         self.theme = theme
@@ -170,7 +169,9 @@ final class BrowserAddressListItemComponent: Component {
             let iconSize = CGSize(width: 40.0, height: 40.0)
             let height: CGFloat = 60.0
             let leftInset: CGFloat = component.insets.left + 11.0 + iconSize.width + 11.0
-            let rightInset: CGFloat = 16.0
+            // Beside iPhone Duo's side strip (the side insets differ) the text stops at the strip; equal insets keep
+            // the old full-width text.
+            let rightInset: CGFloat = 16.0 + (component.insets.left != component.insets.right ? component.insets.right : 0.0)
             let titleSpacing: CGFloat = 2.0
             let contextInset: CGFloat = self.isExtractedToContextMenu ? 12.0 : 0.0
                 
@@ -190,7 +191,7 @@ final class BrowserAddressListItemComponent: Component {
                 if let image = content.image {
                     if let representation = imageRepresentationLargerThan(image.representations, size: PixelDimensions(width: 80, height: 80)) {
                         if let message = component.message {
-                            iconImageReferenceAndRepresentation = (.message(message: MessageReference(message), media: image), representation)
+                            iconImageReferenceAndRepresentation = (.message(message: MessageReference(message._asMessage()), media: image), representation)
                         } else {
                             iconImageReferenceAndRepresentation = (.standalone(media: image), representation)
                         }
@@ -198,7 +199,7 @@ final class BrowserAddressListItemComponent: Component {
                 } else if let file = content.file {
                     if let representation = smallestImageRepresentation(file.previewRepresentations) {
                         if let message = component.message {
-                            iconImageReferenceAndRepresentation = (.message(message: MessageReference(message), media: file), representation)
+                            iconImageReferenceAndRepresentation = (.message(message: MessageReference(message._asMessage()), media: file), representation)
                         } else {
                             iconImageReferenceAndRepresentation = (.standalone(media: file), representation)
                         }

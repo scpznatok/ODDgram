@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import Display
 import UIKit
 import ComponentFlow
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import AvatarNode
 import GlassBackgroundComponent
@@ -89,7 +89,7 @@ final class MessageItemComponent: Component {
         weak var standaloneReactionAnimation: StandaloneReactionAnimation?
         
         private var cachedEntities: [MessageTextEntity]?
-        private var entityFiles: [MediaId: TelegramMediaFile] = [:]
+        private var entityFiles: [EngineMedia.Id: TelegramMediaFile] = [:]
         
         private var component: MessageItemComponent?
         
@@ -390,7 +390,8 @@ final class MessageItemComponent: Component {
                         placeholderColor: nil,
                         startingPosition: .end,
                         size: CGSize(width: 40.0, height: 40.0),
-                        loop: false
+                        loop: false,
+                        lottieSettings: component.context.lottieRenderingSettings
                     )),
                     environment: {},
                     containerSize: CGSize(width: 40.0, height: 40.0)
@@ -449,7 +450,11 @@ final class MessageItemComponent: Component {
                 }
                 
                 if let reactionItem {
-                    Queue.mainQueue().justDispatch {
+                    Queue.mainQueue().justDispatch { [weak self] in
+                        guard let self else {
+                            return
+                        }
+
                         guard let listView = self.superview else {
                             return
                         }

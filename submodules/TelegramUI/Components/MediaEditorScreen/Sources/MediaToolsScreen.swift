@@ -13,8 +13,10 @@ import MultilineTextComponent
 import DrawingUI
 import MediaEditor
 import Photos
-import LottieAnimationComponent
 import MessageInputPanelComponent
+import BundleIconComponent
+import GlassBarButtonComponent
+import GlassBackgroundComponent
 
 private enum MediaToolsSection: Equatable {
     case adjustments
@@ -54,7 +56,6 @@ private final class ToolIconComponent: Component {
     }
     
     final class View: UIView {
-        private let selection = SimpleShapeLayer()
         private let icon = ComponentView<Empty>()
                 
         private var component: ToolIconComponent?
@@ -62,10 +63,6 @@ private final class ToolIconComponent: Component {
         
         override init(frame: CGRect) {
             super.init(frame: frame)
-         
-            self.selection.path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: CGSize(width: 33.0, height: 33.0)), cornerRadius: 10.0).cgPath
-            self.selection.fillColor = UIColor(rgb: 0xd1d1d1).cgColor
-            self.layer.addSublayer(self.selection)
         }
         
         required init?(coder: NSCoder) {
@@ -104,8 +101,6 @@ private final class ToolIconComponent: Component {
                 }
                 transition.setFrame(view: view, frame: iconFrame)
             }
-            
-            self.selection.isHidden = !component.isSelected
             
             return size
         }
@@ -163,7 +158,6 @@ private final class MediaToolsScreenComponent: Component {
             case tint
             case blur
             case curves
-            case done
         }
         private var cachedImages: [ImageKey: UIImage] = [:]
         func image(_ key: ImageKey) -> UIImage {
@@ -173,15 +167,13 @@ private final class MediaToolsScreenComponent: Component {
                 var image: UIImage
                 switch key {
                 case .adjustments:
-                    image = UIImage(bundleImageName: "Media Editor/Tools")!
+                    image = UIImage(bundleImageName: "Media Editor/Adjustments")!
                 case .tint:
                     image = UIImage(bundleImageName: "Media Editor/Tint")!
                 case .blur:
                     image = UIImage(bundleImageName: "Media Editor/Blur")!
                 case .curves:
                     image = UIImage(bundleImageName: "Media Editor/Curves")!
-                case .done:
-                    image = generateTintedImage(image: UIImage(bundleImageName: "Media Editor/Done"), color: .white)!
                 }
                 cachedImages[key] = image
                 return image
@@ -220,7 +212,8 @@ private final class MediaToolsScreenComponent: Component {
     
     public final class View: UIView {
         private let buttonsContainerView = UIView()
-        private let buttonsBackgroundView = UIView()
+        private let buttonsBackgroundView = GlassBackgroundView()
+        private let selectedToolBackgroundLayer = SimpleShapeLayer()
         private let cancelButton = ComponentView<Empty>()
         private let adjustmentsButton = ComponentView<Empty>()
         private let tintButton = ComponentView<Empty>()
@@ -248,7 +241,7 @@ private final class MediaToolsScreenComponent: Component {
             self.optionsBackgroundView.backgroundColor = UIColor(rgb: 0x000000, alpha: 0.9)
             
             super.init(frame: frame)
-            
+
             self.backgroundColor = .clear
 
             self.addSubview(self.previewContainerView)
@@ -256,6 +249,10 @@ private final class MediaToolsScreenComponent: Component {
             self.previewContainerView.addSubview(self.optionsContainerView)
             self.optionsContainerView.addSubview(self.optionsBackgroundView)
             self.buttonsContainerView.addSubview(self.buttonsBackgroundView)
+
+            self.selectedToolBackgroundLayer.path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: CGSize(width: 33.0, height: 33.0)), cornerRadius: 16.5).cgPath
+            self.selectedToolBackgroundLayer.fillColor = UIColor(rgb: 0xd1d1d1).cgColor
+            self.buttonsBackgroundView.contentView.layer.insertSublayer(self.selectedToolBackgroundLayer, at: 0)
         }
         
         required init?(coder: NSCoder) {
@@ -269,19 +266,16 @@ private final class MediaToolsScreenComponent: Component {
                 self.blurButton,
                 self.curvesButton
             ]
-            
-            var delay: Double = 0.0
             for button in buttons {
                 if let view = button.view {
-                    view.alpha = 0.0
-                    Queue.mainQueue().after(delay, {
-                        view.alpha = 1.0
-                        view.layer.animatePosition(from: CGPoint(x: 0.0, y: 64.0), to: .zero, duration: 0.3, delay: 0.0, timingFunction: kCAMediaTimingFunctionSpring, additive: true)
-                        view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2, delay: 0.0)
-                        view.layer.animateScale(from: 0.1, to: 1.0, duration: 0.2, delay: 0.0)
-                    })
-                    delay += 0.03
+                    view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2, delay: 0.0)
+                    view.layer.animateScale(from: 0.1, to: 1.0, duration: 0.2, delay: 0.0)
                 }
+            }
+                        
+            if let view = self.cancelButton.view {
+                view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2)
+                view.layer.animateScale(from: 0.1, to: 1.0, duration: 0.2)
             }
             
             if let view = self.doneButton.view {
@@ -297,9 +291,7 @@ private final class MediaToolsScreenComponent: Component {
         private var animatingOut = false
         func animateOutToEditor(completion: @escaping () -> Void) {
             self.animatingOut = true
-            
-            self.cancelButton.view?.isHidden = true
-            
+                        
             let buttons = [
                 self.adjustmentsButton,
                 self.tintButton,
@@ -309,17 +301,21 @@ private final class MediaToolsScreenComponent: Component {
             
             for button in buttons {
                 if let view = button.view {
-                    view.layer.animatePosition(from: .zero, to:  CGPoint(x: 0.0, y: 64.0), duration: 0.3, timingFunction: kCAMediaTimingFunctionSpring, additive: true, completion: { _ in
+                    view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2, removeOnCompletion: false, completion: { _ in
                         completion()
                     })
-                    view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2, removeOnCompletion: false)
                     view.layer.animateScale(from: 1.0, to: 0.1, duration: 0.2)
                 }
             }
             
+            if let view = self.cancelButton.view {
+                view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2, removeOnCompletion: false)
+                view.layer.animateScale(from: 1.0, to: 0.1, duration: 0.2, removeOnCompletion: false)
+            }
+            
             if let view = self.doneButton.view {
                 view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2, removeOnCompletion: false)
-                view.layer.animateScale(from: 1.0, to: 0.1, duration: 0.2)
+                view.layer.animateScale(from: 1.0, to: 0.1, duration: 0.2, removeOnCompletion: false)
             }
             
             if let view = self.toolScreen?.view {
@@ -364,12 +360,22 @@ private final class MediaToolsScreenComponent: Component {
                 buttonSideInset = 30.0
             } else {
                 previewSize = CGSize(width: availableSize.width, height: floorToScreenPixels(availableSize.width * 1.77778))
-                buttonSideInset = 10.0
+                
                 if availableSize.height < previewSize.height + 30.0 {
                     topInset = 0.0
                     controlsBottomInset = -75.0
+                    // Beside iPhone Duo's status island the bottom bar mirrors the editor's: its 44pt buttons centred
+                    // compact status height + 31 above the bottom edge, 16pt from the sides.
+                    buttonSideInset = environment.navigationBarTrailingButtonsInset > 0.0 ? 16.0 : 9.0
+                    if environment.navigationBarTrailingButtonsInset > 0.0 {
+                        controlsBottomInset = -(environment.statusBarHeight + 31.0 + buttonBottomInset + 22.0)
+                    }
                 } else {
-                    self.buttonsBackgroundView.backgroundColor = .clear
+                    if availableSize.width > 320.0 {
+                        buttonSideInset = 16.0
+                    } else {
+                        buttonSideInset = 9.0
+                    }
                 }
             }
             
@@ -378,25 +384,26 @@ private final class MediaToolsScreenComponent: Component {
                                     
             let cancelButtonSize = self.cancelButton.update(
                 transition: transition,
-                component: AnyComponent(Button(
-                    content: AnyComponent(
-                        LottieAnimationComponent(
-                            animation: LottieAnimationComponent.AnimationItem(
-                                name: "media_backToCancel",
-                                mode: .animating(loop: false),
-                                range: self.animatingOut ? (0.5, 1.0) : (0.0, 0.5)
-                            ),
-                            colors: ["__allcolors__": .white],
-                            size: CGSize(width: 33.0, height: 33.0)
-                        )
-                    ),
-                    action: {
-                        guard let controller = environment.controller() as? MediaToolsScreen else {
-                            return
+                component: AnyComponent(
+                    GlassBarButtonComponent(
+                        size: CGSize(width: 44.0, height: 44.0),
+                        backgroundColor: nil,
+                        isDark: true,
+                        state: .glass,
+                        component: AnyComponentWithIdentity(
+                            id: "close",
+                            component: AnyComponent(
+                                BundleIconComponent(name: "Navigation/Back", tintColor: .white)
+                            )
+                        ),
+                        action: { _ in
+                            guard let controller = environment.controller() as? MediaToolsScreen else {
+                                return
+                            }
+                            controller.requestDismiss(reset: true, animated: true)
                         }
-                        controller.requestDismiss(reset: true, animated: true)
-                    }
-                )),
+                    )
+                ),
                 environment: {},
                 containerSize: CGSize(width: 44.0, height: 44.0)
             )
@@ -413,23 +420,33 @@ private final class MediaToolsScreenComponent: Component {
             
             let doneButtonSize = self.doneButton.update(
                 transition: transition,
-                component: AnyComponent(Button(
-                    content: AnyComponent(Image(
-                        image: state.image(.done),
-                        size: CGSize(width: 33.0, height: 33.0)
-                    )),
-                    action: {
-                        guard let controller = environment.controller() as? MediaToolsScreen else {
-                            return
+                component: AnyComponent(
+                    GlassBarButtonComponent(
+                        size: CGSize(width: 44.0, height: 44.0),
+                        backgroundColor: UIColor(rgb: 0x0088ff),
+                        isDark: true,
+                        state: .tintedGlass,
+                        component: AnyComponentWithIdentity(
+                            id: "done",
+                            component: AnyComponent(
+                                BundleIconComponent(name: "Navigation/Done", tintColor: .white)
+                            )
+                        ),
+                        action: { _ in
+                            guard let controller = environment.controller() as? MediaToolsScreen else {
+                                return
+                            }
+                            controller.requestDismiss(reset: false, animated: true)
                         }
-                        controller.requestDismiss(reset: false, animated: true)
-                    }
-                )),
+                    )
+                ),
                 environment: {},
                 containerSize: CGSize(width: 44.0, height: 44.0)
             )
             let doneButtonFrame = CGRect(
-                origin: CGPoint(x: availableSize.width - buttonSideInset - doneButtonSize.width, y: buttonBottomInset),
+                // The wide (tablet) layout keeps the button clear of the right inset. A bottom button spans iPhone Duo's
+                // side strip; it keeps clear only of a corner block at the bottom.
+                origin: CGPoint(x: availableSize.width - (isTablet ? environment.bottomEdgeSideInsets().right : 0.0) - buttonSideInset - doneButtonSize.width, y: buttonBottomInset),
                 size: doneButtonSize
             )
             if let doneButtonView = self.doneButton.view {
@@ -439,15 +456,19 @@ private final class MediaToolsScreenComponent: Component {
                 transition.setFrame(view: doneButtonView, frame: doneButtonFrame)
             }
             
-            let buttonsAvailableWidth: CGFloat
-            let buttonsLeftOffset: CGFloat
-            if isTablet {
-                buttonsAvailableWidth = previewSize.width + 260.0
-                buttonsLeftOffset = floorToScreenPixels((availableSize.width - buttonsAvailableWidth) / 2.0)
-            } else {
-                buttonsAvailableWidth = availableSize.width
-                buttonsLeftOffset = 0.0
-            }
+            let buttonSize = CGSize(width: 44.0, height: 44.0)
+            let buttonSpacing: CGFloat = 10.0
+            let buttonsTotalWidth = buttonSize.width * 4.0 + buttonSpacing * 3.0
+            let buttonsBackgroundFrame = CGRect(
+                x: cancelButtonFrame.maxX + floorToScreenPixels((doneButtonFrame.minX - cancelButtonFrame.maxX - buttonsTotalWidth) / 2.0),
+                y: buttonBottomInset,
+                width: buttonsTotalWidth,
+                height: buttonSize.height
+            )
+            transition.setFrame(view: self.buttonsBackgroundView, frame: buttonsBackgroundFrame)
+            self.buttonsBackgroundView.update(size: buttonsBackgroundFrame.size, cornerRadius: buttonsBackgroundFrame.height * 0.5, isDark: true, tintColor: .init(kind: .panel), isInteractive: true, transition: transition)
+
+            var buttonOriginX: CGFloat = 0.0
             
             let adjustmentsButtonSize = self.adjustmentsButton.update(
                 transition: transition,
@@ -460,17 +481,18 @@ private final class MediaToolsScreenComponent: Component {
                     action: {
                         sectionUpdated(.adjustments)
                     }
-                )),
+                ).minSize(buttonSize)),
                 environment: {},
-                containerSize: CGSize(width: 40.0, height: 40.0)
+                containerSize: buttonSize
             )
             let adjustmentsButtonFrame = CGRect(
-                origin: CGPoint(x: buttonsLeftOffset + floorToScreenPixels(buttonsAvailableWidth / 4.0 - 3.0 - adjustmentsButtonSize.width / 2.0), y: buttonBottomInset),
+                origin: CGPoint(x: buttonOriginX, y: 0.0),
                 size: adjustmentsButtonSize
             )
+            buttonOriginX += adjustmentsButtonSize.width + buttonSpacing
             if let adjustmentsButtonView = self.adjustmentsButton.view {
                 if adjustmentsButtonView.superview == nil {
-                    self.buttonsContainerView.addSubview(adjustmentsButtonView)
+                    self.buttonsBackgroundView.contentView.addSubview(adjustmentsButtonView)
                 }
                 transition.setFrame(view: adjustmentsButtonView, frame: adjustmentsButtonFrame)
             }
@@ -486,17 +508,18 @@ private final class MediaToolsScreenComponent: Component {
                     action: {
                         sectionUpdated(.tint)
                     }
-                )),
+                ).minSize(buttonSize)),
                 environment: {},
-                containerSize: CGSize(width: 40.0, height: 40.0)
+                containerSize: buttonSize
             )
             let tintButtonFrame = CGRect(
-                origin: CGPoint(x: buttonsLeftOffset + floorToScreenPixels(buttonsAvailableWidth / 2.5 + 5.0 - tintButtonSize.width / 2.0), y: buttonBottomInset),
+                origin: CGPoint(x: buttonOriginX, y: 0.0),
                 size: tintButtonSize
             )
+            buttonOriginX += tintButtonSize.width + buttonSpacing
             if let tintButtonView = self.tintButton.view {
                 if tintButtonView.superview == nil {
-                    self.buttonsContainerView.addSubview(tintButtonView)
+                    self.buttonsBackgroundView.contentView.addSubview(tintButtonView)
                 }
                 transition.setFrame(view: tintButtonView, frame: tintButtonFrame)
             }
@@ -512,17 +535,18 @@ private final class MediaToolsScreenComponent: Component {
                     action: {
                         sectionUpdated(.blur)
                     }
-                )),
+                ).minSize(buttonSize)),
                 environment: {},
-                containerSize: CGSize(width: 40.0, height: 40.0)
+                containerSize: buttonSize
             )
             let blurButtonFrame = CGRect(
-                origin: CGPoint(x: floorToScreenPixels(availableSize.width - buttonsLeftOffset - buttonsAvailableWidth / 2.5 - 5.0 - blurButtonSize.width / 2.0), y: buttonBottomInset),
+                origin: CGPoint(x: buttonOriginX, y: 0.0),
                 size: blurButtonSize
             )
+            buttonOriginX += blurButtonSize.width + buttonSpacing
             if let blurButtonView = self.blurButton.view {
                 if blurButtonView.superview == nil {
-                    self.buttonsContainerView.addSubview(blurButtonView)
+                    self.buttonsBackgroundView.contentView.addSubview(blurButtonView)
                 }
                 transition.setFrame(view: blurButtonView, frame: blurButtonFrame)
             }
@@ -538,21 +562,42 @@ private final class MediaToolsScreenComponent: Component {
                     action: {
                         sectionUpdated(.curves)
                     }
-                )),
+                ).minSize(buttonSize)),
                 environment: {},
-                containerSize: CGSize(width: 40.0, height: 40.0)
+                containerSize: buttonSize
             )
             let curvesButtonFrame = CGRect(
-                origin: CGPoint(x: buttonsLeftOffset + floorToScreenPixels(buttonsAvailableWidth / 4.0 * 3.0 + 3.0 - curvesButtonSize.width / 2.0), y: buttonBottomInset),
+                origin: CGPoint(x: buttonOriginX, y: 0.0),
                 size: curvesButtonSize
             )
             if let curvesButtonView = self.curvesButton.view {
                 if curvesButtonView.superview == nil {
-                    self.buttonsContainerView.addSubview(curvesButtonView)
+                    self.buttonsBackgroundView.contentView.addSubview(curvesButtonView)
                 }
                 transition.setFrame(view: curvesButtonView, frame: curvesButtonFrame)
             }
             
+            let selectedButtonFrame: CGRect
+            switch component.section {
+            case .adjustments:
+                selectedButtonFrame = adjustmentsButtonFrame
+            case .tint:
+                selectedButtonFrame = tintButtonFrame
+            case .blur:
+                selectedButtonFrame = blurButtonFrame
+            case .curves:
+                selectedButtonFrame = curvesButtonFrame
+            }
+            let selectedToolBackgroundSize = CGSize(width: 33.0, height: 33.0)
+            let selectedToolBackgroundFrame = CGRect(
+                origin: CGPoint(
+                    x: floorToScreenPixels(selectedButtonFrame.midX - selectedToolBackgroundSize.width / 2.0),
+                    y: floorToScreenPixels(selectedButtonFrame.midY - selectedToolBackgroundSize.height / 2.0)
+                ),
+                size: selectedToolBackgroundSize
+            )
+            transition.setFrame(layer: self.selectedToolBackgroundLayer, frame: selectedToolBackgroundFrame)
+
             var sectionChanged = false
             if previousSection != component.section {
                 sectionChanged = true
@@ -848,7 +893,9 @@ private final class MediaToolsScreenComponent: Component {
                         )
                     ),
                     environment: {},
-                    containerSize: CGSize(width: previewContainerFrame.width, height: previewContainerFrame.height)
+                    // The blur's position maps onto the image, so where the 9:16 preview is much taller than the whole screen
+                    // (iPhone Duo; it starts at the top there) it spans the preview rather than the visible area.
+                    containerSize: CGSize(width: previewContainerFrame.width, height: previewSize.height > availableSize.height + 30.0 ? previewSize.height : previewContainerFrame.height)
                 )
             case .curves:
                 needsHistogram = true
@@ -938,7 +985,6 @@ private final class MediaToolsScreenComponent: Component {
             
             transition.setFrame(view: self.previewContainerView, frame: previewContainerFrame)
             transition.setFrame(view: self.buttonsContainerView, frame: buttonsContainerFrame)
-            transition.setFrame(view: self.buttonsBackgroundView, frame: CGRect(origin: .zero, size: buttonsContainerFrame.size))
             
             return availableSize
         }
@@ -1013,17 +1059,25 @@ public final class MediaToolsScreen: ViewController {
             let isTablet = layout.metrics.isTablet
 
             let previewSize: CGSize
-            let topInset: CGFloat = (layout.statusBarHeight ?? 0.0) + 5.0
+            var topInset: CGFloat = (layout.statusBarHeight ?? 0.0) + 5.0
             if isTablet {
                 let previewHeight = layout.size.height - topInset - 75.0
                 previewSize = CGSize(width: floorToScreenPixels(previewHeight / 1.77778), height: previewHeight)
             } else {
                 previewSize = CGSize(width: layout.size.width, height: floorToScreenPixels(layout.size.width * 1.77778))
             }
-            let bottomInset = layout.size.height - previewSize.height - topInset
+            var bottomInset = layout.size.height - previewSize.height - topInset
+            if previewSize.height > layout.size.height + 30.0 {
+                // A 9:16 preview much taller than the whole screen (iPhone Duo: 1189pt on the 951pt unfolded screen) leaves no
+                // space below it; as in the editor, the preview starts at the top and the bottom controls stay on screen.
+                topInset = 0.0
+                bottomInset = 0.0
+            }
             
             let environment = ViewControllerComponentContainer.Environment(
-                statusBarHeight: layout.statusBarHeight ?? 0.0,
+                // Beside iPhone Duo's status island the bottom bar mirrors the editor's (see MediaEditorScreen).
+                statusBarHeight: layout.navigationBarStatusBarHeight ?? 0.0,
+                fullStatusBarHeight: layout.statusBarHeight ?? 0.0,
                 navigationHeight: 0.0,
                 safeInsets: UIEdgeInsets(
                     top: topInset,
@@ -1031,6 +1085,8 @@ public final class MediaToolsScreen: ViewController {
                     bottom: bottomInset,
                     right: layout.safeInsets.right
                 ),
+                reservedCorners: layout.reservedCorners,
+                navigationBarTrailingButtonsInset: layout.navigationBarTrailingButtonsInset,
                 additionalInsets: layout.additionalInsets,
                 inputHeight: layout.inputHeight ?? 0.0,
                 metrics: layout.metrics,

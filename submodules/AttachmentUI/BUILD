@@ -13,7 +13,6 @@ swift_library(
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/AsyncDisplayKit:AsyncDisplayKit",
         "//submodules/Display:Display",
-        "//submodules/Postbox:Postbox",
         "//submodules/TelegramCore:TelegramCore",
         "//submodules/TelegramPresentationData:TelegramPresentationData",
         "//submodules/TelegramUIPreferences:TelegramUIPreferences",
@@ -26,7 +25,6 @@ swift_library(
         "//submodules/DirectionalPanGesture:DirectionalPanGesture",
         "//submodules/AttachmentTextInputPanelNode:AttachmentTextInputPanelNode",
         "//submodules/ChatSendMessageActionUI:ChatSendMessageActionUI",
-        "//submodules/ChatTextLinkEditUI:ChatTextLinkEditUI",
         "//submodules/ContextUI:ContextUI",
         "//submodules/ManagedAnimationNode:ManagedAnimationNode",
         "//submodules/PhotoResources:PhotoResources",
@@ -46,6 +44,7 @@ swift_library(
         "//submodules/TelegramUI/Components/EdgeEffect",
         "//submodules/TelegramUI/Components/LiquidLens",
         "//submodules/TelegramUI/Components/TabSelectionRecognizer",
+        "//submodules/TelegramBaseController",
     ],
     visibility = [
         "//visibility:public",

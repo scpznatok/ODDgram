@@ -4,7 +4,6 @@ import UIKit
 import Display
 import TelegramCore
 import SwiftSignalKit
-import Postbox
 import TelegramPresentationData
 import AccountContext
 import ContextUI
@@ -20,17 +19,17 @@ private let mediaBadgeBackgroundColor = UIColor(white: 0.0, alpha: 0.6)
 private let mediaBadgeTextColor = UIColor.white
 
 private final class VisualMediaItemInteraction {
-    let openMessage: (Message) -> Void
-    let openMessageContextActions: (Message, ASDisplayNode, CGRect, ContextGesture?) -> Void
-    let toggleSelection: (MessageId, Bool) -> Void
-    
-    var hiddenMedia: [MessageId: [Media]] = [:]
-    var selectedMessageIds: Set<MessageId>?
-    
+    let openMessage: (EngineRawMessage) -> Void
+    let openMessageContextActions: (EngineRawMessage, ASDisplayNode, CGRect, ContextGesture?) -> Void
+    let toggleSelection: (EngineMessage.Id, Bool) -> Void
+
+    var hiddenMedia: [EngineMessage.Id: [EngineRawMedia]] = [:]
+    var selectedMessageIds: Set<EngineMessage.Id>?
+
     init(
-        openMessage: @escaping (Message) -> Void,
-        openMessageContextActions: @escaping (Message, ASDisplayNode, CGRect, ContextGesture?) -> Void,
-        toggleSelection: @escaping (MessageId, Bool) -> Void
+        openMessage: @escaping (EngineRawMessage) -> Void,
+        openMessageContextActions: @escaping (EngineRawMessage, ASDisplayNode, CGRect, ContextGesture?) -> Void,
+        toggleSelection: @escaping (EngineMessage.Id, Bool) -> Void
     ) {
         self.openMessage = openMessage
         self.openMessageContextActions = openMessageContextActions
@@ -53,9 +52,9 @@ private final class VisualMediaItemNode: ASDisplayNode {
     
     private let fetchStatusDisposable = MetaDisposable()
     private let fetchDisposable = MetaDisposable()
-    private var resourceStatus: MediaResourceStatus?
+    private var resourceStatus: EngineMediaResourceStatus?
     
-    private var item: (VisualMediaItem, Media?, CGSize, CGSize?)?
+    private var item: (VisualMediaItem, EngineRawMedia?, CGSize, CGSize?)?
     private var theme: PresentationTheme?
     
     private var hasVisibility: Bool = false
@@ -117,8 +116,8 @@ private final class VisualMediaItemNode: ASDisplayNode {
             if let (gesture, _) = recognizer.lastRecognizedGestureAndLocation {
                 if case .tap = gesture {
                     if let _ = self.item {
-                        var media: Media?
-                        for value in message.media {
+                        var media: EngineRawMedia?
+                        for value in message.effectiveMedia {
                             if let image = value as? TelegramMediaImage {
                                 media = image
                                 break
@@ -127,10 +126,10 @@ private final class VisualMediaItemNode: ASDisplayNode {
                                 break
                             }
                         }
-                        
+
                         if let media = media {
                             if let file = media as? TelegramMediaFile {
-                                if isMediaStreamable(message: message, media: file) {
+                                if isMediaStreamable(message: EngineMessage(message), media: file) {
                                     self.interaction.openMessage(message)
                                 } else {
                                     self.progressPressed()
@@ -150,8 +149,8 @@ private final class VisualMediaItemNode: ASDisplayNode {
             return
         }
         
-        var media: Media?
-        for value in message.media {
+        var media: EngineRawMedia?
+        for value in message.effectiveMedia {
             if let image = value as? TelegramMediaImage {
                 media = image
                 break
@@ -160,7 +159,7 @@ private final class VisualMediaItemNode: ASDisplayNode {
                 break
             }
         }
-        
+
         if let resourceStatus = self.resourceStatus, let file = media as? TelegramMediaFile {
             switch resourceStatus {
             case .Fetching:
@@ -185,9 +184,9 @@ private final class VisualMediaItemNode: ASDisplayNode {
             return
         }
         self.theme = theme
-        var media: Media?
+        var media: EngineRawMedia?
         if let message = item.message {
-            for value in message.media {
+            for value in message.effectiveMedia {
                 if let image = value as? TelegramMediaImage {
                     media = image
                     break
@@ -226,7 +225,7 @@ private final class VisualMediaItemNode: ASDisplayNode {
                     if let strongSelf = self, let _ = strongSelf.item {
                         strongSelf.resourceStatus = status
                         
-                        let isStreamable = isMediaStreamable(message: message, media: file)
+                        let isStreamable = isMediaStreamable(message: EngineMessage(message), media: file)
                         
                         var statusState: RadialStatusNodeState = .none
                         if isStreamable || file.isAnimated {
@@ -404,17 +403,17 @@ private final class VisualMediaItemNode: ASDisplayNode {
 
 private final class VisualMediaItem {
     let index: UInt32?
-    let message: Message?
+    let message: EngineRawMessage?
     let dimensions: CGSize
     let aspectRatio: CGFloat
-    
-    init(message: Message, index: UInt32?) {
+
+    init(message: EngineRawMessage, index: UInt32?) {
         self.index = index
         self.message = message
         
         var aspectRatio: CGFloat = 1.0
         var dimensions = CGSize(width: 100.0, height: 100.0)
-        for media in message.media {
+        for media in message.effectiveMedia {
             if let file = media as? TelegramMediaFile {
                 if let dimensionsValue = file.dimensions, dimensions.height > 1 {
                     dimensions = dimensionsValue.cgSize
@@ -615,7 +614,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         return self._itemInteraction!
     }
     
-    private var currentParams: (size: CGSize, sideInset: CGFloat, bottomInset: CGFloat, visibleHeight: CGFloat, isScrollingLockedAtTop: Bool, expandProgress: CGFloat, presentationData: PresentationData)?
+    private var currentParams: (size: CGSize, sideInsets: UIEdgeInsets, bottomInset: CGFloat, visibleHeight: CGFloat, isScrollingLockedAtTop: Bool, expandProgress: CGFloat, presentationData: PresentationData)?
     
     private let ready = Promise<Bool>()
     private var didSetReady: Bool = false
@@ -637,7 +636,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
     public var beganInteractiveDragging: (() -> Void)?
     public var loadMore: (() -> Void)?
     
-    init(context: AccountContext, contentType: ContentType, openMessage: @escaping (Message, ChatControllerInteractionOpenMessageMode) -> Void, messageContextAction: @escaping (Message, ASDisplayNode?, CGRect?, UIGestureRecognizer?) -> Void, toggleMessageSelection: @escaping (MessageId, Bool) -> Void) {
+    init(context: AccountContext, contentType: ContentType, openMessage: @escaping (EngineRawMessage, ChatControllerInteractionOpenMessageMode) -> Void, messageContextAction: @escaping (EngineRawMessage, ASDisplayNode?, CGRect?, UIGestureRecognizer?) -> Void, toggleMessageSelection: @escaping (EngineMessage.Id, Bool) -> Void) {
         self.context = context
         self.contentType = contentType
         
@@ -675,7 +674,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
             guard let strongSelf = self else {
                 return
             }
-            var hiddenMedia: [MessageId: [Media]] = [:]
+            var hiddenMedia: [EngineMessage.Id: [EngineRawMedia]] = [:]
             for id in ids {
                 if case let .chat(accountId, messageId, media) = id, accountId == strongSelf.context.account.id {
                     hiddenMedia[messageId] = [media]
@@ -694,7 +693,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         self.animationTimer?.invalidate()
     }
     
-    func updateHistory(entries: [ChatListSearchEntry]?, totalCount: Int32, updateType: ViewUpdateType) {
+    func updateHistory(entries: [ChatListSearchEntry]?, totalCount: Int32, updateType: EngineViewUpdateType) {
         switch updateType {
         case .FillHole:
             break
@@ -714,8 +713,8 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
             
             self.initialized = true
             
-            if let (size, sideInset, bottomInset, visibleHeight, isScrollingLockedAtTop, expandProgress, presentationData) = self.currentParams {
-                self.update(size: size, sideInset: sideInset, bottomInset: bottomInset, visibleHeight: visibleHeight, isScrollingLockedAtTop: isScrollingLockedAtTop, expandProgress: expandProgress, presentationData: presentationData, synchronous: true, transition: .immediate)
+            if let (size, sideInsets, bottomInset, visibleHeight, isScrollingLockedAtTop, expandProgress, presentationData) = self.currentParams {
+                self.update(size: size, sideInsets: sideInsets, bottomInset: bottomInset, visibleHeight: visibleHeight, isScrollingLockedAtTop: isScrollingLockedAtTop, expandProgress: expandProgress, presentationData: presentationData, synchronous: true, transition: .immediate)
                 if !self.didSetReady {
                     self.didSetReady = true
                     self.ready.set(.single(true))
@@ -733,7 +732,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         }
     }
     
-    func findLoadedMessage(id: MessageId) -> Message? {
+    func findLoadedMessage(id: EngineMessage.Id) -> EngineRawMessage? {
         for item in self.mediaItems {
             if item.message?.id == id {
                 return item.message
@@ -754,7 +753,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         }
     }
     
-    func transitionNodeForGallery(messageId: MessageId, media: Media) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    func transitionNodeForGallery(messageId: EngineMessage.Id, media: EngineRawMedia) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         for item in self.mediaItems {
             if let message = item.message, message.id == messageId {
                 if let itemNode = self.visibleMediaItems[message.stableId] {
@@ -770,7 +769,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         self.scrollNode.view.addSubview(view)
     }
     
-    var selectedMessageIds: Set<MessageId>? {
+    var selectedMessageIds: Set<EngineMessage.Id>? {
         didSet {
             self.itemInteraction.selectedMessageIds = self.selectedMessageIds
         }
@@ -782,16 +781,17 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         }
     }
     
-    func update(size: CGSize, sideInset: CGFloat, bottomInset: CGFloat, visibleHeight: CGFloat, isScrollingLockedAtTop: Bool, expandProgress: CGFloat, presentationData: PresentationData, synchronous: Bool, transition: ContainedViewLayoutTransition) {
+    func update(size: CGSize, sideInsets: UIEdgeInsets, bottomInset: CGFloat, visibleHeight: CGFloat, isScrollingLockedAtTop: Bool, expandProgress: CGFloat, presentationData: PresentationData, synchronous: Bool, transition: ContainedViewLayoutTransition) {
         let previousParams = self.currentParams
-        self.currentParams = (size, sideInset, bottomInset, visibleHeight, isScrollingLockedAtTop, expandProgress, presentationData)
+        self.currentParams = (size, sideInsets, bottomInset, visibleHeight, isScrollingLockedAtTop, expandProgress, presentationData)
                 
         transition.updateFrame(node: self.scrollNode, frame: CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height)))
         
-        let availableWidth = size.width - sideInset * 2.0
+        // Per side: on iPhone Duo one side inset is the side strip; elsewhere both are equal.
+        let availableWidth = size.width - sideInsets.left - sideInsets.right
         
         let itemsLayout: ItemsLayout
-        if let current = self.itemsLayout, previousParams?.size.width == size.width {
+        if let current = self.itemsLayout, previousParams?.size.width == size.width, previousParams?.sideInsets == sideInsets {
             itemsLayout = current
         } else {
             switch self.contentType {
@@ -804,7 +804,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         }
         
         self.scrollNode.view.contentSize = CGSize(width: size.width, height: itemsLayout.contentHeight)
-        self.updateVisibleItems(size: size, sideInset: sideInset, bottomInset: bottomInset, visibleHeight: visibleHeight, theme: presentationData.theme, strings: presentationData.strings, synchronousLoad: synchronous)
+        self.updateVisibleItems(size: size, sideInset: sideInsets.left, bottomInset: bottomInset, visibleHeight: visibleHeight, theme: presentationData.theme, strings: presentationData.strings, synchronousLoad: synchronous)
         
         if isScrollingLockedAtTop {
             if self.scrollNode.view.contentOffset.y > .ulpOfOne {
@@ -828,8 +828,8 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
     }
     
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        if let (size, sideInset, bottomInset, visibleHeight, _, _, presentationData) = self.currentParams {
-            self.updateVisibleItems(size: size, sideInset: sideInset, bottomInset: bottomInset, visibleHeight: visibleHeight, theme: presentationData.theme, strings: presentationData.strings, synchronousLoad: false)
+        if let (size, sideInsets, bottomInset, visibleHeight, _, _, presentationData) = self.currentParams {
+            self.updateVisibleItems(size: size, sideInset: sideInsets.left, bottomInset: bottomInset, visibleHeight: visibleHeight, theme: presentationData.theme, strings: presentationData.strings, synchronousLoad: false)
             
             if scrollView.contentOffset.y >= scrollView.contentSize.height - scrollView.bounds.height * 2.0 {
                 self.loadMore?()
@@ -865,7 +865,7 @@ final class ChatListSearchMediaNode: ASDisplayNode, ASScrollViewDelegate {
         
         let (minVisibleIndex, maxVisibleIndex) = itemsLayout.visibleRange(rect: visibleRect)
         
-        var headerItem: Message?
+        var headerItem: EngineRawMessage?
         
         var validIds = Set<UInt32>()
         if minVisibleIndex <= maxVisibleIndex {

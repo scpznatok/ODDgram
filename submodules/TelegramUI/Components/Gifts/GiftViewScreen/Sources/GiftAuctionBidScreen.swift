@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import TelegramPresentationData
@@ -7,6 +8,7 @@ import ComponentFlow
 import AccountContext
 import ViewControllerComponent
 import TelegramCore
+import TelegramNotices
 import SwiftSignalKit
 import Display
 import MultilineTextComponent
@@ -283,7 +285,8 @@ private final class BadgeComponent: Component {
                     size: badgeShapeSize,
                     renderingScale: UIScreenScale,
                     loop: false,
-                    playOnce: nil
+                    playOnce: nil,
+                    lottieSettings: .noAccountFallback
                 )),
                 environment: {},
                 containerSize: badgeShapeSize
@@ -1184,6 +1187,7 @@ private final class GiftAuctionBidScreenComponent: Component {
         
         private var giftAuctionAcquiredGifts: [GiftAuctionAcquiredGift]?
         private let giftAuctionAcquiredGiftsDisposable = MetaDisposable()
+        private var didHandleFinishedAuction = false
         
         private let actionButton = ComponentView<Empty>()
                 
@@ -1194,6 +1198,10 @@ private final class GiftAuctionBidScreenComponent: Component {
         private var isUpdating: Bool = false
         private var environment: ViewControllerComponentContainer.Environment?
         private var itemLayout: ItemLayout?
+        /// The container's bottom corners where the screen's differ (iPhone Duo's cover screen); nil elsewhere.
+        private var containerBottomCornerRadii: CornerRadii?
+        /// iPhone Duo unfolded portrait: the "..." button's frame clear of the side strip, and how it clears the status island.
+        private var moreButtonIslandLayout: (frame: CGRect, inset: CGFloat, islandHeight: CGFloat)?
                 
         private var balance: StarsAmount?
         
@@ -1371,6 +1379,11 @@ private final class GiftAuctionBidScreenComponent: Component {
             transition.setTransform(layer: self.backgroundLayer, transform: CATransform3DMakeTranslation(0.0, topOffset + itemLayout.containerInset, 0.0))
             
             transition.setPosition(view: self.navigationBarContainer, position: CGPoint(x: 0.0, y: topOffset + itemLayout.containerInset))
+            if let moreButtonView = self.moreButton.view, let islandLayout = self.moreButtonIslandLayout {
+                // Slides clear of the status island as the sheet's top rises beside it.
+                let shift = statusIslandTrailingShift(rowMinY: topOffset + itemLayout.containerInset + islandLayout.frame.minY, rowHeight: islandLayout.frame.height, islandHeight: islandLayout.islandHeight, inset: islandLayout.inset)
+                transition.setPosition(view: moreButtonView, position: CGPoint(x: islandLayout.frame.midX - shift, y: islandLayout.frame.midY))
+            }
             
             var topOffsetFraction = self.scrollView.bounds.minY / 100.0
             topOffsetFraction = max(0.0, min(1.0, topOffsetFraction))
@@ -1387,7 +1400,9 @@ private final class GiftAuctionBidScreenComponent: Component {
             containerTransform = CATransform3DTranslate(containerTransform, 0.0, scaledTranslation, 0.0)
             containerTransform = CATransform3DScale(containerTransform, scale, scale, scale)
             transition.setTransform(view: self.containerView, transform: containerTransform)
-            transition.setCornerRadius(layer: self.containerView.layer, cornerRadius: scaledCornerRadius)
+            if !self.containerView.layer.applyCornerRadiiIfNeeded(self.containerBottomCornerRadii) {
+                transition.setCornerRadius(layer: self.containerView.layer, cornerRadius: scaledCornerRadius)
+            }
         }
         
         func animateIn() {
@@ -1724,71 +1739,72 @@ private final class GiftAuctionBidScreenComponent: Component {
                 link = "https://t.me/auction/\(slug)"
             }
             
-            let shareController = context.sharedContext.makeShareController(
+            let shareController = context.sharedContext.makeShareScreen(
                 context: context,
-                subject: .url(link),
-                forceExternal: false,
-                shareStory: nil,
-                enqueued: { [weak self, weak controller] peerIds, _ in
-                    guard let self else {
-                        return
-                    }
-                    let _ = (context.engine.data.get(
-                        EngineDataList(
-                            peerIds.map(TelegramEngine.EngineData.Item.Peer.Peer.init)
-                        )
-                    )
-                    |> deliverOnMainQueue).startStandalone(next: { [weak self, weak controller] peerList in
+                params: ShareControllerParams(
+                    subject: .url(link),
+                    externalShare: false,
+                    actionCompleted: { [weak controller] in
+                        controller?.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.Conversation_LinkCopied), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .current)
+                    },
+                    enqueued: { [weak self, weak controller] peerIds, _ in
                         guard let self else {
                             return
                         }
-                        let peers = peerList.compactMap { $0 }
-                        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                        let text: String
-                        var savedMessages = false
-                        if peerIds.count == 1, let peerId = peerIds.first, peerId == context.account.peerId {
-                            text = presentationData.strings.Conversation_ForwardTooltip_SavedMessages_One
-                            savedMessages = true
-                        } else {
-                            if peers.count == 1, let peer = peers.first {
-                                var peerName = peer.id == context.account.peerId ? presentationData.strings.DialogList_SavedMessages : peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
-                                peerName = peerName.replacingOccurrences(of: "**", with: "")
-                                text = presentationData.strings.Conversation_ForwardTooltip_Chat_One(peerName).string
-                            } else if peers.count == 2, let firstPeer = peers.first, let secondPeer = peers.last {
-                                var firstPeerName = firstPeer.id == context.account.peerId ? presentationData.strings.DialogList_SavedMessages : firstPeer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
-                                firstPeerName = firstPeerName.replacingOccurrences(of: "**", with: "")
-                                var secondPeerName = secondPeer.id == context.account.peerId ? presentationData.strings.DialogList_SavedMessages : secondPeer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
-                                secondPeerName = secondPeerName.replacingOccurrences(of: "**", with: "")
-                                text = presentationData.strings.Conversation_ForwardTooltip_TwoChats_One(firstPeerName, secondPeerName).string
-                            } else if let peer = peers.first {
-                                var peerName = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
-                                peerName = peerName.replacingOccurrences(of: "**", with: "")
-                                text = presentationData.strings.Conversation_ForwardTooltip_ManyChats_One(peerName, "\(peers.count - 1)").string
+                        let _ = (context.engine.data.get(
+                            EngineDataList(
+                                peerIds.map(TelegramEngine.EngineData.Item.Peer.Peer.init)
+                            )
+                        )
+                        |> deliverOnMainQueue).startStandalone(next: { [weak self, weak controller] peerList in
+                            guard let self else {
+                                return
+                            }
+                            let peers = peerList.compactMap { $0 }
+                            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+                            let text: String
+                            var savedMessages = false
+                            if peerIds.count == 1, let peerId = peerIds.first, peerId == context.account.peerId {
+                                text = presentationData.strings.Conversation_ForwardTooltip_SavedMessages_One
+                                savedMessages = true
                             } else {
-                                text = ""
+                                if peers.count == 1, let peer = peers.first {
+                                    var peerName = peer.id == context.account.peerId ? presentationData.strings.DialogList_SavedMessages : peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+                                    peerName = peerName.replacingOccurrences(of: "**", with: "")
+                                    text = presentationData.strings.Conversation_ForwardTooltip_Chat_One(peerName).string
+                                } else if peers.count == 2, let firstPeer = peers.first, let secondPeer = peers.last {
+                                    var firstPeerName = firstPeer.id == context.account.peerId ? presentationData.strings.DialogList_SavedMessages : firstPeer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+                                    firstPeerName = firstPeerName.replacingOccurrences(of: "**", with: "")
+                                    var secondPeerName = secondPeer.id == context.account.peerId ? presentationData.strings.DialogList_SavedMessages : secondPeer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+                                    secondPeerName = secondPeerName.replacingOccurrences(of: "**", with: "")
+                                    text = presentationData.strings.Conversation_ForwardTooltip_TwoChats_One(firstPeerName, secondPeerName).string
+                                } else if let peer = peers.first {
+                                    var peerName = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+                                    peerName = peerName.replacingOccurrences(of: "**", with: "")
+                                    text = presentationData.strings.Conversation_ForwardTooltip_ManyChats_One(peerName, "\(peers.count - 1)").string
+                                } else {
+                                    text = ""
+                                }
                             }
-                        }
-                        
-                        controller?.present(UndoOverlayController(presentationData: presentationData, content: .forward(savedMessages: savedMessages, text: text), elevatedLayout: false, animateInAsReplacement: false, action: { [weak self, weak controller] action in
-                            if let self, savedMessages, action == .info {
-                                let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
-                                |> deliverOnMainQueue).start(next: { [weak self, weak controller] peer in
-                                    guard let peer else {
-                                        return
-                                    }
-                                    self?.openPeer(peer)
-                                    Queue.mainQueue().after(0.6) {
-                                        controller?.dismiss(animated: false, completion: nil)
-                                    }
-                                })
-                            }
-                            return false
-                        }, additionalView: nil), in: .current)
-                    })
-                },
-                actionCompleted: { [weak controller] in
-                    controller?.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.Conversation_LinkCopied), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .current)
-                }
+
+                            controller?.present(UndoOverlayController(presentationData: presentationData, content: .forward(savedMessages: savedMessages, text: text), elevatedLayout: false, animateInAsReplacement: false, action: { [weak self, weak controller] action in
+                                if let self, savedMessages, action == .info {
+                                    let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
+                                    |> deliverOnMainQueue).start(next: { [weak self, weak controller] peer in
+                                        guard let peer else {
+                                            return
+                                        }
+                                        self?.openPeer(peer)
+                                        Queue.mainQueue().after(0.6) {
+                                            controller?.dismiss(animated: false, completion: nil)
+                                        }
+                                    })
+                                }
+                                return false
+                            }, additionalView: nil), in: .current)
+                        })
+                    }
+                )
             )
             controller.present(shareController, in: .window(.root))
         }
@@ -1917,11 +1933,16 @@ private final class GiftAuctionBidScreenComponent: Component {
             
             let resetScrolling = self.scrollView.bounds.width != availableSize.width
             
+            // Narrowed by the side safe insets only where there is one on each side. Beside iPhone Duo's side strip
+            // (one side only) the screen-centered sheet keeps its width: in landscape it already sits clear of the
+            // strip, and in folded portrait it spans the strip as a bottom panel. Subtracting the left inset twice
+            // made it 168pt narrower in landscape-right than in landscape-left.
+            let fillingSideInset: CGFloat = environment.safeInsets.left == environment.safeInsets.right ? environment.safeInsets.left : 0.0
             let fillingSize: CGFloat
             if case .regular = environment.metrics.widthClass {
-                fillingSize = min(availableSize.width, 414.0) - environment.safeInsets.left * 2.0
+                fillingSize = min(availableSize.width, 414.0) - fillingSideInset * 2.0
             } else {
-                fillingSize = min(availableSize.width, environment.deviceMetrics.screenSize.width) - environment.safeInsets.left * 2.0
+                fillingSize = min(availableSize.width, availableSize.height) - fillingSideInset * 2.0
             }
             let rawSideInset = floor((availableSize.width - fillingSize) * 0.5)
             let sideInset: CGFloat = floor((availableSize.width - fillingSize) * 0.5) + 24.0
@@ -2049,28 +2070,36 @@ private final class GiftAuctionBidScreenComponent: Component {
                         if !isFirstTime {
                             if let bidPeerId = previousState?.myState.bidPeerId, let controller = self.environment?.controller() {
                                 if let navigationController = controller.navigationController as? NavigationController {
-                                    var controllers = navigationController.viewControllers
-                                    controllers = controllers.filter { !($0 is GiftAuctionBidScreen) && !($0 is GiftSetupScreenProtocol) && !($0 is GiftOptionsScreenProtocol) && !($0 is PeerInfoScreen) && !($0 is ContactSelectionController) }
-                                                                        
-                                    var foundController = false
-                                    for controller in controllers.reversed() {
-                                        if let chatController = controller as? ChatController, case .peer(id: bidPeerId) = chatController.chatLocation {
+                                    let navigateToChat = {
+                                        var controllers = navigationController.viewControllers
+                                        controllers = controllers.filter { !($0 is GiftAuctionBidScreen) && !($0 is GiftSetupScreenProtocol) && !($0 is GiftOptionsScreenProtocol) && !($0 is PeerInfoScreen) && !($0 is ContactSelectionController) }
+                                                                            
+                                        var foundController = false
+                                        for controller in controllers.reversed() {
+                                            if let chatController = controller as? ChatController, case .peer(id: bidPeerId) = chatController.chatLocation {
+                                                chatController.hintPlayNextOutgoingGift()
+                                                foundController = true
+                                                break
+                                            }
+                                        }
+                                        if !foundController {
+                                            let chatController = component.context.sharedContext.makeChatController(context: component.context, chatLocation: .peer(id: bidPeerId), subject: nil, botStart: nil, mode: .standard(.default), params: nil)
                                             chatController.hintPlayNextOutgoingGift()
-                                            foundController = true
-                                            break
+                                            controllers.append(chatController)
+                                        }
+                                        navigationController.setViewControllers(controllers, animated: true)
+                                        
+                                        for controller in controllers {
+                                            if controller is MinimizableController {
+                                                controller.dismiss(animated: true)
+                                            }
                                         }
                                     }
-                                    if !foundController {
-                                        let chatController = component.context.sharedContext.makeChatController(context: component.context, chatLocation: .peer(id: bidPeerId), subject: nil, botStart: nil, mode: .standard(.default), params: nil)
-                                        chatController.hintPlayNextOutgoingGift()
-                                        controllers.append(chatController)
-                                    }
-                                    navigationController.setViewControllers(controllers, animated: true)
-                                    
-                                    for controller in controllers {
-                                        if controller is MinimizableController {
-                                            controller.dismiss(animated: true)
-                                        }
+                                    if bidPeerId.namespace == Namespaces.Peer.CloudUser {
+                                        let _ = (ApplicationSpecificNotice.incrementDismissedBirthdayPremiumGiftTip(accountManager: component.context.sharedContext.accountManager, peerId: bidPeerId, timestamp: Int32(Date().timeIntervalSince1970))
+                                        |> deliverOnMainQueue).startStandalone(completed: navigateToChat)
+                                    } else {
+                                        navigateToChat()
                                     }
                                 }
                             } else {
@@ -2080,8 +2109,9 @@ private final class GiftAuctionBidScreenComponent: Component {
                         }
                     }
                     
-                    if case .finished = auctionState?.auctionState, let controller = self.environment?.controller() {
+                    if case .finished = auctionState?.auctionState, !self.didHandleFinishedAuction, let controller = self.environment?.controller() {
                         if let navigationController = controller.navigationController as? NavigationController {
+                            self.didHandleFinishedAuction = true
                             controller.dismiss()
                             let auctionController = context.sharedContext.makeGiftAuctionViewScreen(context: context, auctionContext: auctionContext, peerId: nil, completion: { _, _ in })
                             navigationController.pushViewController(auctionController)
@@ -2724,7 +2754,8 @@ private final class GiftAuctionBidScreenComponent: Component {
                             ),
                             color: environment.theme.chat.inputPanel.panelControlColor,
                             size: CGSize(width: 34.0, height: 34.0),
-                            playOnce: self.moreButtonPlayOnce
+                            playOnce: self.moreButtonPlayOnce,
+                            lottieSettings: component.context.lottieRenderingSettings
                         )
                     )),
                     action: { [weak self] view in
@@ -2738,7 +2769,16 @@ private final class GiftAuctionBidScreenComponent: Component {
                 environment: {},
                 containerSize: CGSize(width: 44.0, height: 44.0)
             )
-            let infoButtonFrame = CGRect(origin: CGPoint(x: availableSize.width - rawSideInset - 16.0 - moreButtonSize.width, y: 16.0), size: moreButtonSize)
+            // Clear of the side strip's status corner when the sheet spans it (iPhone Duo, folded portrait); on the
+            // unfolded screen in portrait `updateScrolling` moves it clear of the status island while the sheet's top
+            // is beside it.
+            let infoButtonFrame = CGRect(origin: CGPoint(x: availableSize.width - rawSideInset - 16.0 - max(0.0, environment.safeInsets.right - rawSideInset) - moreButtonSize.width, y: 16.0), size: moreButtonSize)
+            if environment.navigationBarTrailingButtonsInset > 0.0, let island = environment.reservedCorners.topRight {
+                let islandInset = max(0.0, environment.safeInsets.right + environment.navigationBarTrailingButtonsInset - rawSideInset) - max(0.0, environment.safeInsets.right - rawSideInset)
+                self.moreButtonIslandLayout = (infoButtonFrame, islandInset, island.height)
+            } else {
+                self.moreButtonIslandLayout = nil
+            }
             if let infoButtonView = self.moreButton.view {
                 if infoButtonView.superview == nil {
                     self.navigationBarContainer.addSubview(infoButtonView)
@@ -3044,6 +3084,11 @@ private final class GiftAuctionBidScreenComponent: Component {
             
             self.scrollContentClippingView.layer.cornerRadius = 38.0
             
+            // iPhone Duo's cover screen: the container's bottom corners, which reach the screen's, follow each screen
+            // corner (8pt on the hinge side, 59pt outside) instead of one radius. Nil where the corners are uniform.
+            self.containerBottomCornerRadii = environment.screenCornerRadii.sheetBottomCornerRadii(inset: 0.0).map { CornerRadii(topLeft: 0.0, topRight: 0.0, bottomLeft: $0.left, bottomRight: $0.right) }
+            // The scroll content's clip keeps its bottom corners within the container's.
+            let _ = self.scrollContentClippingView.layer.applyCornerRadiiIfNeeded(self.containerBottomCornerRadii.map { CornerRadii(topLeft: 38.0, topRight: 38.0, bottomLeft: min(38.0, $0.bottomLeft), bottomRight: min(38.0, $0.bottomRight)) })
             self.itemLayout = ItemLayout(containerSize: availableSize, containerInset: containerInset, containerCornerRadius: environment.deviceMetrics.screenCornerRadius, bottomInset: environment.safeInsets.bottom, topInset: topInset)
             
             transition.setFrame(view: self.scrollContentView, frame: CGRect(origin: CGPoint(x: 0.0, y: topInset + containerInset), size: CGSize(width: availableSize.width, height: contentHeight)))
@@ -3079,11 +3124,14 @@ private final class GiftAuctionBidScreenComponent: Component {
                     deviceMetrics: environment.deviceMetrics,
                     intrinsicInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: bottomInset, right: 0.0),
                     safeInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: 0.0, right: 0.0),
+                    reservedCorners: environment.reservedCorners,
+                    division: nil,
                     additionalInsets: .zero,
-                    statusBarHeight: environment.statusBarHeight,
+                    statusBarHeight: environment.fullStatusBarHeight,
                     inputHeight: nil,
                     inputHeightIsInteractivellyChanging: false,
-                    inVoiceOver: false
+                    inVoiceOver: false,
+                    presentedInFormSheet: false
                 )
                 controller.presentationContext.containerLayoutUpdated(layout, transition: transition.containedViewLayoutTransition)
             }
@@ -3581,7 +3629,7 @@ private final class GiftViewContextReferenceContentSource: ContextReferenceConte
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }
 

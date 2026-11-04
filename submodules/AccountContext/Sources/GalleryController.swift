@@ -1,14 +1,26 @@
 import Foundation
 import UIKit
 import Display
-import Postbox
 import SwiftSignalKit
 import TelegramCore
 
+public enum GalleryMediaSubject: Hashable {
+    case paidMediaIndex(Int)
+    case pollDescription
+    case pollOption(Data)
+    case pollSolution
+    case instantPageMedia(EngineMedia.Id)
+    /// A specific medium inside a rich message's `RichTextMessageAttribute` InstantPage. Rich media lives
+    /// in the attribute, not `message.media`, so `effectiveMedia` can hold several and the default
+    /// first-match resolution would open the wrong one. Distinct from `instantPageMedia`, whose only
+    /// consumer sits inside `GalleryData`'s `TelegramMediaWebpage` (link-preview) branch.
+    case richTextMedia(EngineMedia.Id)
+}
+
 public enum GalleryControllerItemSource {
-    case peerMessagesAtId(messageId: MessageId, chatLocation: ChatLocation, customTag: MemoryBuffer?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>)
-    case standaloneMessage(Message, Int?)
-    case custom(messages: Signal<([Message], Int32, Bool), NoError>, messageId: MessageId, loadMore: (() -> Void)?)
+    case peerMessagesAtId(messageId: EngineMessage.Id, chatLocation: ChatLocation, customTag: EngineMemoryBuffer?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>)
+    case standaloneMessage(EngineRawMessage, GalleryMediaSubject?)
+    case custom(messages: Signal<([EngineRawMessage], Int32, Bool), NoError>, messageId: EngineMessage.Id, loadMore: (() -> Void)?)
 }
 
 public final class GalleryControllerActionInteraction {
@@ -18,10 +30,10 @@ public final class GalleryControllerActionInteraction {
     public let openPeer: (EnginePeer) -> Void
     public let openHashtag: (String?, String) -> Void
     public let openBotCommand: (String) -> Void
-    public let openAd: (MessageId) -> Void
+    public let openAd: (EngineMessage.Id) -> Void
     public let addContact: (String) -> Void
-    public let storeMediaPlaybackState: (MessageId, Double?, Double) -> Void
-    public let editMedia: (MessageId, [UIView], @escaping () -> Void) -> Void
+    public let storeMediaPlaybackState: (EngineMessage.Id, Double?, Double) -> Void
+    public let editMedia: (EngineMessage.Id, [UIView], @escaping () -> Void) -> Void
     public let updateCanReadHistory: (Bool) -> Void
     public let sendSticker: ((FileMediaReference) -> Void)?
 
@@ -32,10 +44,10 @@ public final class GalleryControllerActionInteraction {
         openPeer: @escaping (EnginePeer) -> Void,
         openHashtag: @escaping (String?, String) -> Void,
         openBotCommand: @escaping (String) -> Void,
-        openAd: @escaping (MessageId) -> Void,
+        openAd: @escaping (EngineMessage.Id) -> Void,
         addContact: @escaping (String) -> Void,
-        storeMediaPlaybackState: @escaping (MessageId, Double?, Double) -> Void, 
-        editMedia: @escaping (MessageId, [UIView], @escaping () -> Void) -> Void,
+        storeMediaPlaybackState: @escaping (EngineMessage.Id, Double?, Double) -> Void, 
+        editMedia: @escaping (EngineMessage.Id, [UIView], @escaping () -> Void) -> Void,
         updateCanReadHistory: @escaping (Bool) -> Void,
         sendSticker: ((FileMediaReference) -> Void)?
     ) {

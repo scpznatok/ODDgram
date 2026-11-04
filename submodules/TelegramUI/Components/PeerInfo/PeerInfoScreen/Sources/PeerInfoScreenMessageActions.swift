@@ -3,14 +3,13 @@ import UIKit
 import Display
 import AccountContext
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TextFormat
 import UndoUI
 import ChatInterfaceState
 
 extension PeerInfoScreenNode {
-    func deleteMessages(messageIds: Set<MessageId>?) {
+    func deleteMessages(messageIds: Set<EngineMessage.Id>?) {
         if let messageIds = messageIds ?? self.state.selectedMessageIds, !messageIds.isEmpty {
             self.activeActionDisposable.set((self.context.sharedContext.chatAvailableMessageActions(engine: self.context.engine, accountPeerId: self.context.account.peerId, messageIds: messageIds, keepUpdated: false)
             |> deliverOnMainQueue).startStrict(next: { [weak self] actions in
@@ -19,9 +18,9 @@ extension PeerInfoScreenNode {
                     var items: [ActionSheetItem] = []
                     var personalPeerName: String?
                     var isChannel = false
-                    if let user = peer as? TelegramUser {
-                        personalPeerName = EnginePeer(user).compactDisplayTitle
-                    } else if let channel = peer as? TelegramChannel, case .broadcast = channel.info {
+                    if case .user = peer {
+                        personalPeerName = peer.compactDisplayTitle
+                    } else if case let .channel(channel) = peer, case .broadcast = channel.info {
                         isChannel = true
                     }
                     
@@ -37,7 +36,7 @@ extension PeerInfoScreenNode {
                         items.append(ActionSheetButtonItem(title: globalTitle, color: .destructive, action: { [weak actionSheet] in
                             actionSheet?.dismissAnimated()
                             if let strongSelf = self {
-                                strongSelf.headerNode.navigationButtonContainer.performAction?(.selectionDone, nil, nil)
+                                strongSelf.performNavigationButtonAction?(.selectionDone, nil, nil)
                                 let _ = strongSelf.context.engine.messages.deleteMessagesInteractively(messageIds: Array(messageIds), type: .forEveryone).startStandalone()
                             }
                         }))
@@ -54,7 +53,7 @@ extension PeerInfoScreenNode {
                         items.append(ActionSheetButtonItem(title: localOptionText, color: .destructive, action: { [weak actionSheet] in
                             actionSheet?.dismissAnimated()
                             if let strongSelf = self {
-                                strongSelf.headerNode.navigationButtonContainer.performAction?(.selectionDone, nil, nil)
+                                strongSelf.performNavigationButtonAction?(.selectionDone, nil, nil)
                                 let _ = strongSelf.context.engine.messages.deleteMessagesInteractively(messageIds: Array(messageIds), type: .forLocalPeer).startStandalone()
                             }
                         }))
@@ -71,7 +70,7 @@ extension PeerInfoScreenNode {
         }
     }
     
-    func forwardMessages(messageIds: Set<MessageId>?) {
+    func forwardMessages(messageIds: Set<EngineMessage.Id>?) {
         if let messageIds = messageIds ?? self.state.selectedMessageIds, !messageIds.isEmpty {
             let peerSelectionController = self.context.sharedContext.makePeerSelectionController(PeerSelectionControllerParams(context: self.context, updatedPresentationData: self.controller?.updatedPresentationData, filter: [.onlyWriteable, .excludeDisabled], hasFilters: true, multipleSelection: true, selectForumThreads: true))
             peerSelectionController.multiplePeersSelected = { [weak self, weak peerSelectionController] peers, peerMap, messageText, mode, forwardOptions, _ in
@@ -85,7 +84,7 @@ extension PeerInfoScreenNode {
                     let inputText = convertMarkdownToAttributes(messageText)
                     for text in breakChatInputText(trimChatInputText(inputText)) {
                         if text.length != 0 {
-                            var attributes: [MessageAttribute] = []
+                            var attributes: [EngineMessage.Attribute] = []
                             let entities = generateTextEntities(text.string, enabledTypes: .all, currentEntities: generateChatInputTextEntities(text))
                             if !entities.isEmpty {
                                 attributes.append(TextEntitiesMessageAttribute(entities: entities))
@@ -95,7 +94,7 @@ extension PeerInfoScreenNode {
                     }
                 }
                 
-                var attributes: [MessageAttribute] = []
+                var attributes: [EngineMessage.Attribute] = []
                 attributes.append(ForwardOptionsMessageAttribute(hideNames: forwardOptions?.hideNames == true, hideCaptions: forwardOptions?.hideCaptions == true))
                 
                 result.append(contentsOf: messageIds.map { messageId -> EnqueueMessage in
@@ -206,7 +205,7 @@ extension PeerInfoScreenNode {
                             return false
                         }), in: .current)
                         
-                        strongSelf.headerNode.navigationButtonContainer.performAction?(.selectionDone, nil, nil)
+                        strongSelf.performNavigationButtonAction?(.selectionDone, nil, nil)
                         
                         let _ = (enqueueMessages(account: strongSelf.context.account, peerId: peerId, messages: messageIds.map { id -> EnqueueMessage in
                             return .forward(source: id, threadId: nil, grouping: .auto, attributes: [], correlationId: nil)
@@ -241,7 +240,7 @@ extension PeerInfoScreenNode {
                         |> deliverOnMainQueue).startStandalone(completed: {
                             if let strongSelf = self {
                                 let proceed: (ChatController) -> Void = { chatController in
-                                    strongSelf.headerNode.navigationButtonContainer.performAction?(.selectionDone, nil, nil)
+                                    strongSelf.performNavigationButtonAction?(.selectionDone, nil, nil)
                                     
                                     if let navigationController = strongSelf.controller?.navigationController as? NavigationController {
                                         var viewControllers = navigationController.viewControllers

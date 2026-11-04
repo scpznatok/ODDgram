@@ -11,9 +11,7 @@ import AccountContext
 import SwiftSignalKit
 import AppBundle
 import MessageInputPanelComponent
-import ShareController
 import TelegramCore
-import Postbox
 import UndoUI
 import ReactionSelectionNode
 import EntityKeyboard
@@ -281,14 +279,14 @@ private final class StoryContainerScreenComponent: Component {
     
     let context: AccountContext
     let content: StoryContentContext
-    let focusedItemPromise: Promise<StoryId?>
+    let focusedItemPromise: Promise<EngineStoryId?>
     let transitionIn: StoryContainerScreen.TransitionIn?
     let transitionOut: (EnginePeer.Id, Int32) -> StoryContainerScreen.TransitionOut?
     
     init(
         context: AccountContext,
         content: StoryContentContext,
-        focusedItemPromise: Promise<StoryId?>,
+        focusedItemPromise: Promise<EngineStoryId?>,
         transitionIn: StoryContainerScreen.TransitionIn?,
         transitionOut: @escaping (EnginePeer.Id, Int32) -> StoryContainerScreen.TransitionOut?
     ) {
@@ -371,11 +369,14 @@ private final class StoryContainerScreenComponent: Component {
         private let isComponentReadyPromise = ValuePromise(false, ignoreRepeated: true)
         private weak var state: EmptyComponentState?
         private var environment: ViewControllerComponentContainer.Environment?
+        /// The story is a card with space around it, as on an iPad, rather than filling the screen: on a regular width,
+        /// and on iPhone Duo's unfolded screen, which is as large as a small tablet's but regular only in landscape.
+        private var isCardLayout = false
         
         private let backgroundLayer: SimpleLayer
         private let backgroundEffectView: BlurredBackgroundView
         
-        private let focusedItem = ValuePromise<StoryId?>(nil, ignoreRepeated: true)
+        private let focusedItem = ValuePromise<EngineStoryId?>(nil, ignoreRepeated: true)
         private var stateValue: StoryContentContextState?
         private var contentUpdatedDisposable: Disposable?
         
@@ -385,6 +386,9 @@ private final class StoryContainerScreenComponent: Component {
         
         private let storyItemSharedState = StoryContentItem.SharedState()
         private var visibleItemSetViews: [EnginePeer.Id: ItemSetView] = [:]
+        // Holds the item set views. It keeps this view's coordinate space (bounds origin = frame origin) and, on
+        // iPhone Duo, clips the cube to the band beside the side strip.
+        private let itemSetsContainerView: UIView
         
         private var itemSetPinchState: StoryItemSetContainerComponent.PinchState?
         private var itemSetPanState: ItemSetPanState?
@@ -429,12 +433,13 @@ private final class StoryContainerScreenComponent: Component {
         
         var longPressRecognizer: StoryLongPressRecognizer?
         
-        private var pendingNavigationToItemId: StoryId?
+        private var pendingNavigationToItemId: EngineStoryId?
         
+        // MARK: Swiftgram
         private let storiesWarning = ComponentView<Empty>()
-        private var requestedDisplayStoriesWarning: Bool = SGSimpleSettings.shared.warnOnStoriesOpen // MARK: Swiftgram
         private var displayStoriesWarningDisposable: Disposable?
         private var isDisplayingStoriesWarning: Bool = false
+        //
         
         private let interactionGuide = ComponentView<Empty>()
         private var isDisplayingInteractionGuide: Bool = false
@@ -458,9 +463,12 @@ private final class StoryContainerScreenComponent: Component {
             transitionCloneMasterView.isUserInteractionEnabled = false
             self.transitionCloneMasterView = transitionCloneMasterView
             
+            self.itemSetsContainerView = UIView()
+            
             super.init(frame: frame)
             
             self.addSubview(transitionCloneMasterView)
+            self.addSubview(self.itemSetsContainerView)
             
             self.layer.addSublayer(self.backgroundLayer)
             
@@ -471,7 +479,7 @@ private final class StoryContainerScreenComponent: Component {
                 if self.isDisplayingInteractionGuide || self.isDisplayingStoriesWarning {
                     return []
                 }
-                if let environment = self.environment, case .regular = environment.metrics.widthClass {
+                if self.isCardLayout {
                 } else {
                     if !itemSetComponentView.isPointInsideContentArea(point: self.convert(point, to: itemSetComponentView)) {
                         return []
@@ -774,7 +782,7 @@ private final class StoryContainerScreenComponent: Component {
                 return false
             }
             
-            if let environment = self.environment, case .regular = environment.metrics.widthClass {
+            if self.isCardLayout {
                 
             } else {
                 if !itemSetComponentView.isPointInsideContentArea(point: touch.location(in: itemSetComponentView)) {
@@ -982,17 +990,20 @@ private final class StoryContainerScreenComponent: Component {
                     continue
                 }
                 
-                if subview is ItemSetView {
-                    if let stateValue = self.stateValue, let slice = stateValue.slice, let itemSetView = self.visibleItemSetViews[slice.peer.id], itemSetView === subview {
-                        if let result = subview.hitTest(self.convert(point, to: subview), with: event) {
+                if subview === self.itemSetsContainerView {
+                    if let stateValue = self.stateValue, let slice = stateValue.slice, let itemSetView = self.visibleItemSetViews[slice.peer.id], itemSetView.isUserInteractionEnabled, !itemSetView.isHidden, itemSetView.alpha != 0.0 {
+                        if let result = itemSetView.hitTest(self.convert(point, to: itemSetView), with: event) {
                             return result
                         }
                     }
                 } else {
                     if let result = subview.hitTest(self.convert(self.convert(point, to: subview), to: subview), with: event) {
-                        if let environment = self.environment, case .regular = environment.metrics.widthClass {
+                        if self.isCardLayout {
                             if result.isDescendant(of: self.backgroundEffectView) {
                                 if let stateValue = self.stateValue, let slice = stateValue.slice, let itemSetView = self.visibleItemSetViews[slice.peer.id] {
+                                    if point.x < itemSetView.frame.minX || point.x > itemSetView.frame.maxX {
+                                        return result
+                                    }
                                     return itemSetView.view.view
                                 }
                             }
@@ -1240,7 +1251,7 @@ private final class StoryContainerScreenComponent: Component {
                         self.commitHorizontalPan(velocity: CGPoint(x: 200.0, y: 0.0))
                     }
                 } else {
-                    var mappedId: StoryId?
+                    var mappedId: EngineStoryId?
                     switch direction {
                     case .previous:
                         mappedId = slice.previousItemId
@@ -1255,6 +1266,13 @@ private final class StoryContainerScreenComponent: Component {
                     }
                 }
             }
+        }
+
+        fileprivate func navigateWithKeyShortcut(direction: StoryItemSetContainerComponent.NavigationDirection) {
+            guard !hasFirstResponder(self) else {
+                return
+            }
+            self.navigate(direction: direction)
         }
         
         func presentExternalTooltip(_ tooltipScreen: UndoOverlayController) {
@@ -1279,6 +1297,11 @@ private final class StoryContainerScreenComponent: Component {
             
             let environment = environment[ViewControllerComponentContainer.Environment.self].value
             self.environment = environment
+            if case .regular = environment.metrics.widthClass {
+                self.isCardLayout = true
+            } else {
+                self.isCardLayout = environment.deviceMetrics.isIPhoneDuoInnerScreen(size: availableSize)
+            }
             
             if self.component == nil {
                 self.areHeadphonesConnected = component.context.sharedContext.mediaManager.audioSession.getIsHeadsetPluggedIn()
@@ -1328,8 +1351,7 @@ private final class StoryContainerScreenComponent: Component {
                 })
                 
                 // MARK: Swiftgram
-                self.requestedDisplayStoriesWarning = SGSimpleSettings.shared.warnOnStoriesOpen
-                if self.requestedDisplayStoriesWarning {
+                if SGSimpleSettings.shared.warnOnStoriesOpen {
                     self.isDisplayingStoriesWarning = true
                     if update {
                         self.state?.updated(transition: .immediate)
@@ -1388,18 +1410,20 @@ private final class StoryContainerScreenComponent: Component {
                     
                     let stateValue = component.content.stateValue
                     
-                    var focusedItemId: StoryId?
+                    var focusedItemId: EngineStoryId?
                     var isVideo = false
                     if let slice = stateValue?.slice {
-                        focusedItemId = StoryId(peerId: slice.peer.id, id: slice.item.storyItem.id)
+                        focusedItemId = EngineStoryId(peerId: slice.peer.id, id: slice.item.storyItem.id)
                         if case .file = slice.item.storyItem.media {
                             isVideo = true
                         }
+                        // MARK: Swiftgram
                         // TODO(swiftgram): Show warning on each new peerId story
-                        /* if self.requestedDisplayStoriesWarning, let previousSlice = stateValue?.previousSlice, previousSlice.peer.id != slice.peer.id {
-                            self.isDisplayingStoriesWarning = self.requestedDisplayStoriesWarning
+                        /* if SGSimpleSettings.shared.warnOnStoriesOpen, let previousSlice = stateValue?.previousSlice, previousSlice.peer.id != slice.peer.id {
+                            self.isDisplayingStoriesWarning = SGSimpleSettings.shared.warnOnStoriesOpen
                             update = false
                         }*/
+                        //
                     }
                     self.focusedItem.set(focusedItemId)
                     self.contentWantsVolumeButtonMonitoring.set(isVideo)
@@ -1502,7 +1526,7 @@ private final class StoryContainerScreenComponent: Component {
             transition.setFrame(layer: self.backgroundLayer, frame: CGRect(origin: CGPoint(), size: availableSize))
             transition.setFrame(view: self.backgroundEffectView, frame: CGRect(origin: CGPoint(), size: availableSize))
             
-            if case .regular = environment.metrics.widthClass {
+            if self.isCardLayout {
                 self.backgroundLayer.isHidden = true
                 self.backgroundEffectView.update(size: availableSize, transition: transition.containedViewLayoutTransition)
                 self.insertSubview(self.backgroundEffectView, at: 0)
@@ -1557,6 +1581,21 @@ private final class StoryContainerScreenComponent: Component {
             }
             
             var centerDismissFraction: CGFloat = 0.0
+            
+            // iPhone Duo: the band clips the stories the way the screen's edge does on a phone. The cube's resting
+            // neighbours sit just past the story's edge, which is inside the side strip here. The clip is off while
+            // the story opens and closes, so it can fly from and to an avatar in the strip, and the neighbours are
+            // hidden while it closes.
+            var itemSetsContainerFrame = CGRect(origin: CGPoint(), size: availableSize)
+            var isItemSetsContainerBand = false
+            if self.isCardLayout {
+            } else if environment.safeInsets.left != environment.safeInsets.right {
+                itemSetsContainerFrame = CGRect(origin: CGPoint(x: environment.safeInsets.left, y: 0.0), size: CGSize(width: availableSize.width - environment.safeInsets.left - environment.safeInsets.right, height: availableSize.height))
+                isItemSetsContainerBand = true
+            }
+            self.itemSetsContainerView.center = itemSetsContainerFrame.center
+            self.itemSetsContainerView.bounds = itemSetsContainerFrame
+            self.itemSetsContainerView.clipsToBounds = isItemSetsContainerBand && self.didAnimateIn && !self.isAnimatingOut
             
             var presentationContextInsets = UIEdgeInsets()
             if !currentSlices.isEmpty, let focusedIndex {
@@ -1617,10 +1656,39 @@ private final class StoryContainerScreenComponent: Component {
                         }
                         
                         var itemSetContainerSize = availableSize
+                        // iPhone Duo unfolded portrait: the story starts at the compact status height, its header beside
+                        // the status island with the right controls clear of it (headerTrailingInset).
                         var itemSetContainerInsets = UIEdgeInsets(top: environment.statusBarHeight + 5.0, left: 0.0, bottom: 0.0, right: 0.0)
+                        if environment.navigationBarTrailingButtonsInset > 0.0 {
+                            // The header row (avatar, sound, more, close) is centred ~33pt below the card's top: put it on
+                            // the island's clock line (compact status height + 31), as the other rows beside it are.
+                            itemSetContainerInsets.top = environment.statusBarHeight + 31.0 - 33.0
+                        }
                         var itemSetContainerSafeInsets = environment.safeInsets
-                        if case .regular = environment.metrics.widthClass {
-                            let availableHeight = min(1080.0, availableSize.height - max(45.0, environment.safeInsets.bottom) * 2.0)
+                        var itemSetContainerOriginX: CGFloat?
+                        var itemSetHeaderTrailingInset = environment.navigationBarTrailingButtonsInset
+                        var itemSetMinimumInputPanelWidth: CGFloat = 0.0
+                        if self.isCardLayout {
+                            var verticalInset = max(45.0, environment.safeInsets.bottom)
+                            let isDuoInnerScreen = environment.deviceMetrics.isIPhoneDuoInnerScreen(size: availableSize)
+                            if isDuoInnerScreen {
+                                if availableSize.width > availableSize.height {
+                                    // iPhone Duo, unfolded landscape: the height is what limits the card, and nothing
+                                    // reserves the top or the bottom of the band (the status corner is in the side
+                                    // strip), so the card takes all of it but a margin.
+                                    verticalInset = max(16.0, environment.safeInsets.bottom)
+                                } else {
+                                    // Portrait: the card stays clear of the status island as an iPad's stays clear of
+                                    // its status bar.
+                                    verticalInset = max(verticalInset, environment.fullStatusBarHeight + 8.0)
+                                }
+                                // Its header needs no room beside the island, and its input row is never narrower than
+                                // on a phone: the landscape card is narrower than any phone, and a long placeholder
+                                // (Stealth Mode's countdown) ran under the share button.
+                                itemSetHeaderTrailingInset = 0.0
+                                itemSetMinimumInputPanelWidth = 375.0
+                            }
+                            let availableHeight = min(1080.0, availableSize.height - verticalInset * 2.0)
                             let mediaHeight = availableHeight - 60.0
                             let mediaWidth = floor(mediaHeight * 0.5625)
                             itemSetContainerSize = CGSize(width: mediaWidth, height: availableHeight)
@@ -1631,6 +1699,26 @@ private final class StoryContainerScreenComponent: Component {
                             presentationContextInsets.left =  floorToScreenPixels((availableSize.width - itemSetContainerSize.width) / 2.0)
                             presentationContextInsets.right = presentationContextInsets.left
                             presentationContextInsets.bottom = itemSetContainerInsets.bottom
+                            if isDuoInnerScreen && environment.safeInsets.left != environment.safeInsets.right {
+                                // Centred in the band beside the side strip (landscape), as the screen's content is.
+                                let bandWidth = availableSize.width - environment.safeInsets.left - environment.safeInsets.right
+                                let originX = environment.safeInsets.left + floorToScreenPixels((bandWidth - itemSetContainerSize.width) / 2.0)
+                                itemSetContainerOriginX = originX
+                                presentationContextInsets.left = originX
+                                presentationContextInsets.right = availableSize.width - originX - itemSetContainerSize.width
+                            }
+                        } else if environment.safeInsets.left != environment.safeInsets.right {
+                            // iPhone Duo: one side's safe inset is the side strip, whose top corner holds the status
+                            // corner. The story (and its close, more and sound buttons) is laid out in the band beside
+                            // it. Equal insets (every phone in portrait) keep the full-width story.
+                            itemSetContainerSize.width = availableSize.width - environment.safeInsets.left - environment.safeInsets.right
+                            itemSetContainerSafeInsets.left = 0.0
+                            itemSetContainerSafeInsets.right = 0.0
+                            itemSetContainerOriginX = environment.safeInsets.left
+
+                            // Toasts and tooltips presented over the story keep to the same band.
+                            presentationContextInsets.left = environment.safeInsets.left
+                            presentationContextInsets.right = environment.safeInsets.right
                         }
                         
                         itemSetView.view.parentState = self.state
@@ -1648,9 +1736,12 @@ private final class StoryContainerScreenComponent: Component {
                                 containerInsets: itemSetContainerInsets,
                                 safeInsets: itemSetContainerSafeInsets,
                                 statusBarHeight: environment.statusBarHeight,
+                                headerTrailingInset: itemSetHeaderTrailingInset,
                                 inputHeight: environment.inputHeight,
                                 metrics: environment.metrics,
                                 deviceMetrics: environment.deviceMetrics,
+                                isCardLayout: self.isCardLayout,
+                                minimumInputPanelWidth: itemSetMinimumInputPanelWidth,
                                 isEmbeddedInCamera: false,
                                 isProgressPaused: isProgressPaused || i != focusedIndex,
                                 isAudioMuted: self.audioMode == .off || (self.audioMode == .ambient && !(self.isMuteSwitchOn || self.areHeadphonesConnected)),
@@ -1826,12 +1917,13 @@ private final class StoryContainerScreenComponent: Component {
                             centerDismissFraction = itemSetView.externalState.dismissFraction
                         }
                         
-                        let itemFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((availableSize.width - itemSetContainerSize.width) / 2.0), y: floorToScreenPixels((availableSize.height - itemSetContainerSize.height) / 2.0)), size: itemSetContainerSize)
+                        let itemFrame = CGRect(origin: CGPoint(x: itemSetContainerOriginX ?? floorToScreenPixels((availableSize.width - itemSetContainerSize.width) / 2.0), y: floorToScreenPixels((availableSize.height - itemSetContainerSize.height) / 2.0)), size: itemSetContainerSize)
                         if let itemSetComponentView = itemSetView.view.view as? StoryItemSetContainerComponent.View {
                             if itemSetView.superview == nil {
-                                self.addSubview(itemSetView)
+                                self.itemSetsContainerView.addSubview(itemSetView)
                                 //print("init time: \((CFAbsoluteTimeGetCurrent() - startTime) * 1000.0) ms")
                             }
+                            itemSetView.isHidden = isItemSetsContainerBand && self.isAnimatingOut && i != focusedIndex
                             if itemSetComponentView.superview == nil {
                                 itemSetView.tintLayer.isDoubleSided = false
                                 itemSetComponentView.layer.isDoubleSided = false
@@ -1848,7 +1940,7 @@ private final class StoryContainerScreenComponent: Component {
                             itemSetTransition.setBounds(view: itemSetComponentView, bounds: CGRect(origin: CGPoint(), size: itemFrame.size))
                             
                             let itemTintSize: CGSize
-                            if case .regular = environment.metrics.widthClass {
+                            if self.isCardLayout {
                                 itemTintSize = itemSetView.externalState.derivedMediaSize
                             } else {
                                 itemTintSize = itemFrame.size
@@ -1861,7 +1953,7 @@ private final class StoryContainerScreenComponent: Component {
                             let width = itemFrame.width
                             
                             let sideDistance: CGFloat
-                            if case .regular = environment.metrics.widthClass {
+                            if self.isCardLayout {
                                 sideDistance = 0.0
                             } else {
                                 sideDistance = 40.0
@@ -1984,11 +2076,15 @@ private final class StoryContainerScreenComponent: Component {
                     deviceMetrics: environment.deviceMetrics,
                     intrinsicInsets: UIEdgeInsets(top: environment.statusBarHeight + 54.0, left: 0.0, bottom: contentDerivedBottomInset + presentationContextInsets.bottom, right: 0.0),
                     safeInsets: UIEdgeInsets(top: 0.0, left: presentationContextInsets.left, bottom: 0.0, right: presentationContextInsets.right),
+                    // iPhone Duo: the status corner, for what is presented over the story; `.none` elsewhere.
+                    reservedCorners: environment.reservedCorners,
+                    division: nil,
                     additionalInsets: UIEdgeInsets(),
                     statusBarHeight: nil,
                     inputHeight: nil,
                     inputHeightIsInteractivellyChanging: false,
-                    inVoiceOver: false
+                    inVoiceOver: false,
+                    presentedInFormSheet: false
                 )
                 controller.presentationContext.containerLayoutUpdated(subLayout, transition: transition.containedViewLayoutTransition)
             }
@@ -2086,7 +2182,7 @@ private final class StoryContainerScreenComponent: Component {
     }
 }
 
-public class StoryContainerScreen: ViewControllerComponentContainer {
+public class StoryContainerScreen: ViewControllerComponentContainer, KeyShortcutResponder {
     public struct TransitionState: Equatable {
         public var sourceSize: CGSize
         public var destinationSize: CGSize
@@ -2167,8 +2263,8 @@ public class StoryContainerScreen: ViewControllerComponentContainer {
     private var didAnimateIn: Bool = false
     private var isDismissed: Bool = false
     
-    private let focusedItemPromise = Promise<StoryId?>()
-    public var focusedItem: Signal<StoryId?, NoError> {
+    private let focusedItemPromise = Promise<EngineStoryId?>()
+    public var focusedItem: Signal<EngineStoryId?, NoError> {
         return self.focusedItemPromise.get()
     }
     
@@ -2225,6 +2321,56 @@ public class StoryContainerScreen: ViewControllerComponentContainer {
                 componentView.animateIn()
             }
         }
+    }
+
+    public var keyShortcuts: [KeyShortcut] {
+        if self.isViewLoaded, hasFirstResponder(self.view) {
+            return []
+        }
+        var keyShortcuts: [KeyShortcut] = []
+        keyShortcuts.append(
+            KeyShortcut(
+                title: "",
+                input: UIKeyCommand.inputUpArrow,
+                modifiers: [.command],
+                action: { [weak self] in
+                    self?.dismiss()
+                }
+            )
+        )
+        keyShortcuts.append(
+            KeyShortcut(
+                title: "",
+                input: "W",
+                modifiers: [.command],
+                action: { [weak self] in
+                    self?.dismiss()
+                }
+            )
+        )
+        keyShortcuts.append(
+            KeyShortcut(
+                input: UIKeyCommand.inputLeftArrow,
+                modifiers: [],
+                action: { [weak self] in
+                    if let componentView = self?.node.hostView.componentView as? StoryContainerScreenComponent.View {
+                        componentView.navigateWithKeyShortcut(direction: .previous)
+                    }
+                }
+            )
+        )
+        keyShortcuts.append(
+            KeyShortcut(
+                input: UIKeyCommand.inputRightArrow,
+                modifiers: [],
+                action: { [weak self] in
+                    if let componentView = self?.node.hostView.componentView as? StoryContainerScreenComponent.View {
+                        componentView.navigateWithKeyShortcut(direction: .next)
+                    }
+                }
+            )
+        )
+        return keyShortcuts
     }
     
     public func presentExternalTooltip(_ tooltipScreen: UndoOverlayController) {
@@ -2306,13 +2452,9 @@ public class StoryContainerScreen: ViewControllerComponentContainer {
 }
 
 func allowedStoryReactions(context: AccountContext) -> Signal<[ReactionItem], NoError> {
-    let viewKey: PostboxViewKey = .orderedItemList(id: Namespaces.OrderedItemList.CloudTopReactions)
-    let topReactions = context.account.postbox.combinedView(keys: [viewKey])
-    |> map { views -> [RecentReactionItem] in
-        guard let view = views.views[viewKey] as? OrderedItemListView else {
-            return []
-        }
-        return view.items.compactMap { item -> RecentReactionItem? in
+    let topReactions = context.engine.data.subscribe(TelegramEngine.EngineData.Item.OrderedLists.ListItems(collectionId: Namespaces.OrderedItemList.CloudTopReactions))
+    |> map { items -> [RecentReactionItem] in
+        return items.compactMap { item -> RecentReactionItem? in
             return item.contents.get(RecentReactionItem.self)
         }
     }

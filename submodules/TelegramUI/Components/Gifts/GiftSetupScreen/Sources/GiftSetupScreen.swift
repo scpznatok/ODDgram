@@ -3,8 +3,8 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
+import TelegramNotices
 import TelegramPresentationData
 import TelegramUIPreferences
 import TelegramStringFormatting
@@ -104,6 +104,7 @@ private final class GiftSetupScreenComponent: Component {
         private let backgroundHandleView: UIImageView
         
         private let closeButton = ComponentView<Empty>()
+        private var doneButton: ComponentView<Empty>?
         
         private let remainingCount = ComponentView<Empty>()
         private let auctionFooter = ComponentView<Empty>()
@@ -127,6 +128,10 @@ private final class GiftSetupScreenComponent: Component {
         private var isUpdating: Bool = false
         private var environment: ViewControllerComponentContainer.Environment?
         private var itemLayout: ItemLayout?
+        /// The container's bottom corners where the screen's differ (iPhone Duo's cover screen); nil elsewhere.
+        private var containerBottomCornerRadii: CornerRadii?
+        /// iPhone Duo unfolded portrait: the Done button's frame clear of the side strip, and how it clears the status island.
+        private var doneButtonIslandLayout: (frame: CGRect, inset: CGFloat, islandHeight: CGFloat)?
         
         private var currentInputMode: MessageInputPanelComponent.InputMode = .text
         
@@ -282,6 +287,11 @@ private final class GiftSetupScreenComponent: Component {
             transition.setTransform(layer: self.backgroundLayer, transform: CATransform3DMakeTranslation(0.0, topOffset + itemLayout.containerInset, 0.0))
             
             transition.setPosition(view: self.navigationBarContainer, position: CGPoint(x: 0.0, y: topOffset + itemLayout.containerInset))
+            if let doneButtonView = self.doneButton?.view, let islandLayout = self.doneButtonIslandLayout {
+                // Slides clear of the status island as the sheet's top rises beside it.
+                let shift = statusIslandTrailingShift(rowMinY: topOffset + itemLayout.containerInset + islandLayout.frame.minY, rowHeight: islandLayout.frame.height, islandHeight: islandLayout.islandHeight, inset: islandLayout.inset)
+                transition.setPosition(view: doneButtonView, position: CGPoint(x: islandLayout.frame.midX - shift, y: islandLayout.frame.midY))
+            }
             
             var topOffsetFraction = self.scrollView.bounds.minY / 100.0
             topOffsetFraction = max(0.0, min(1.0, topOffsetFraction))
@@ -298,7 +308,9 @@ private final class GiftSetupScreenComponent: Component {
             containerTransform = CATransform3DTranslate(containerTransform, 0.0, scaledTranslation, 0.0)
             containerTransform = CATransform3DScale(containerTransform, scale, scale, scale)
             transition.setTransform(view: self.containerView, transform: containerTransform)
-            transition.setCornerRadius(layer: self.containerView.layer, cornerRadius: scaledCornerRadius)
+            if !self.containerView.layer.applyCornerRadiiIfNeeded(self.containerBottomCornerRadii) {
+                transition.setCornerRadius(layer: self.containerView.layer, cornerRadius: scaledCornerRadius)
+            }
         }
         
         func animateIn() {
@@ -329,7 +341,12 @@ private final class GiftSetupScreenComponent: Component {
         }
         
         @objc private func proceed() {
-            guard let component = self.component, let environment = self.environment else {
+            guard !self.inProgress, let component = self.component, let environment = self.environment else {
+                return
+            }
+            
+            if let inputPanelView = self.inputPanel.view as? MessageInputPanelComponent.View, !inputPanelView.canDeactivateInput() {
+                inputPanelView.animateError()
                 return
             }
                         
@@ -367,7 +384,7 @@ private final class GiftSetupScreenComponent: Component {
         }
         
         private func proceedWithPremiumGift() {
-            guard let component = self.component, case let .premium(product) = component.subject, let storeProduct = product.storeProduct, let inAppPurchaseManager = component.context.inAppPurchaseManager else {
+            guard !self.inProgress, let component = self.component, case let .premium(product) = component.subject, let storeProduct = product.storeProduct, let inAppPurchaseManager = component.context.inAppPurchaseManager else {
                 return
             }
             
@@ -376,7 +393,7 @@ private final class GiftSetupScreenComponent: Component {
 
             let (currency, amount) = storeProduct.priceCurrencyAndAmount
                      
-            addAppLogEvent(postbox: component.context.account.postbox, type: "premium_gift.promo_screen_accept")
+            component.context.engine.accountData.addAppLogEvent(type: "premium_gift.promo_screen_accept")
 
             var textInputText = NSAttributedString()
             if let inputPanelView = self.inputPanel.view as? MessageInputPanelComponent.View, case let .text(text) = inputPanelView.getSendMessageInput() {
@@ -408,27 +425,36 @@ private final class GiftSetupScreenComponent: Component {
                                 return
                             }
                             
-                            var controllers = navigationController.viewControllers
-                            controllers = controllers.filter { !($0 is GiftSetupScreen) && !($0 is GiftOptionsScreenProtocol) && !($0 is PeerInfoScreen) && !($0 is ContactSelectionController) }
-                            var foundController = false
-                            for controller in controllers.reversed() {
-                                if let chatController = controller as? ChatController, case .peer(id: component.peerId) = chatController.chatLocation {
-                                    chatController.hintPlayNextOutgoingGift()
-                                    foundController = true
-                                    break
+                            let navigateToChat = {
+                                var controllers = navigationController.viewControllers
+                                controllers = controllers.filter { !($0 is GiftSetupScreen) && !($0 is GiftOptionsScreenProtocol) && !($0 is PeerInfoScreen) && !($0 is ContactSelectionController) }
+                                var foundController = false
+                                for controller in controllers.reversed() {
+                                    if let chatController = controller as? ChatController, case .peer(id: component.peerId) = chatController.chatLocation {
+                                        chatController.hintPlayNextOutgoingGift()
+                                        foundController = true
+                                        break
+                                    }
                                 }
+                                if !foundController {
+                                    let chatController = component.context.sharedContext.makeChatController(context: component.context, chatLocation: .peer(id: component.peerId), subject: nil, botStart: nil, mode: .standard(.default), params: nil)
+                                    chatController.hintPlayNextOutgoingGift()
+                                    controllers.append(chatController)
+                                }
+                                navigationController.setViewControllers(controllers, animated: true)
                             }
-                            if !foundController {
-                                let chatController = component.context.sharedContext.makeChatController(context: component.context, chatLocation: .peer(id: component.peerId), subject: nil, botStart: nil, mode: .standard(.default), params: nil)
-                                chatController.hintPlayNextOutgoingGift()
-                                controllers.append(chatController)
+                            if component.peerId.namespace == Namespaces.Peer.CloudUser {
+                                let _ = (ApplicationSpecificNotice.incrementDismissedBirthdayPremiumGiftTip(accountManager: component.context.sharedContext.accountManager, peerId: component.peerId, timestamp: Int32(Date().timeIntervalSince1970))
+                                |> deliverOnMainQueue).startStandalone(completed: navigateToChat)
+                            } else {
+                                navigateToChat()
                             }
-                            navigationController.setViewControllers(controllers, animated: true)
                         }
                     }, error: { [weak self] error in
                         guard let self, let controller = self.environment?.controller() else {
                             return
                         }
+                        self.inProgress = false
                         self.state?.updated(transition: .immediate)
 
                         var errorText: String?
@@ -450,7 +476,7 @@ private final class GiftSetupScreenComponent: Component {
                         }
                         
                         if let errorText {
-                            addAppLogEvent(postbox: component.context.account.postbox, type: "premium_gift.promo_screen_fail")
+                            component.context.engine.accountData.addAppLogEvent(type: "premium_gift.promo_screen_fail")
                             
                             let alertController = textAlertController(context: component.context, title: nil, text: errorText, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})])
                             controller.present(alertController, in: .window(.root))
@@ -464,7 +490,7 @@ private final class GiftSetupScreenComponent: Component {
         }
         
         private func proceedWithStarGift() {
-            guard let component = self.component, let environment = self.environment, let starsContext = component.context.starsContext, let starsState = starsContext.currentState else {
+            guard !self.inProgress, let component = self.component, let environment = self.environment, let starsContext = component.context.starsContext, let starsState = starsContext.currentState else {
                 return
             }
             
@@ -546,6 +572,20 @@ private final class GiftSetupScreenComponent: Component {
                     guard let self, let controller = self.environment?.controller(), let navigationController = controller.navigationController as? NavigationController else {
                         return
                     }
+                    
+                    let complete: () -> Void = {
+                        if let completion {
+                            completion()
+                            
+                            if let controller = self.environment?.controller() {
+                                controller.dismiss()
+                            }
+                        }
+                        
+                        Queue.mainQueue().after(2.5) {
+                            starsContext.load(force: true)
+                        }
+                    }
 
                     if peerId.namespace == Namespaces.Peer.CloudChannel, case let .starGift(starGift, _) = component.subject {
                         var controllers = navigationController.viewControllers
@@ -569,62 +609,59 @@ private final class GiftSetupScreenComponent: Component {
                         
                         navigationController.view.addSubview(ConfettiView(frame: navigationController.view.bounds))
                     } else if peerId.namespace == Namespaces.Peer.CloudUser {
-                        var controllers = navigationController.viewControllers
-                        controllers = controllers.filter { !($0 is GiftSetupScreen) && !($0 is GiftOptionsScreenProtocol) && !($0 is PeerInfoScreen) && !($0 is ContactSelectionController) }
-                        var foundController = false
-                        for controller in controllers.reversed() {
-                            if let chatController = controller as? ChatController, case .peer(id: component.peerId) = chatController.chatLocation {
-                                chatController.hintPlayNextOutgoingGift()
-                                foundController = true
-                                break
-                            }
-                        }
-                        if !foundController {
-                            let chatController = component.context.sharedContext.makeChatController(context: component.context, chatLocation: .peer(id: component.peerId), subject: nil, botStart: nil, mode: .standard(.default), params: nil)
-                            chatController.hintPlayNextOutgoingGift()
-                            controllers.append(chatController)
-                        }
-                        navigationController.setViewControllers(controllers, animated: true)
-                        
-                        if case let .starGift(starGift, _) = component.subject, let perUserLimit = starGift.perUserLimit {
-                            Queue.mainQueue().after(0.5) {
-                                let remains = max(0, perUserLimit.remains - 1)
-                                let text: String
-                                if remains == 0 {
-                                    text = presentationData.strings.Gift_Send_Limited_Success_Text_None
-                                } else {
-                                    text = presentationData.strings.Gift_Send_Limited_Success_Text(remains)
+                        let navigateToChat = {
+                            var controllers = navigationController.viewControllers
+                            controllers = controllers.filter { !($0 is GiftSetupScreen) && !($0 is GiftOptionsScreenProtocol) && !($0 is PeerInfoScreen) && !($0 is ContactSelectionController) }
+                            var foundController = false
+                            for controller in controllers.reversed() {
+                                if let chatController = controller as? ChatController, case .peer(id: component.peerId) = chatController.chatLocation {
+                                    chatController.hintPlayNextOutgoingGift()
+                                    foundController = true
+                                    break
                                 }
-                                let tooltipController = UndoOverlayController(
-                                    presentationData: presentationData,
-                                    content: .sticker(
-                                        context: context,
-                                        file: starGift.file,
-                                        loop: true,
-                                        title: presentationData.strings.Gift_Send_Limited_Success_Title,
-                                        text: text,
-                                        undoText: nil,
-                                        customAction: nil
-                                    ),
-                                    position: .top,
-                                    action: { _ in return true }
-                                )
-                                (navigationController.viewControllers.last as? ViewController)?.present(tooltipController, in: .current)
                             }
+                            if !foundController {
+                                let chatController = component.context.sharedContext.makeChatController(context: component.context, chatLocation: .peer(id: component.peerId), subject: nil, botStart: nil, mode: .standard(.default), params: nil)
+                                chatController.hintPlayNextOutgoingGift()
+                                controllers.append(chatController)
+                            }
+                            navigationController.setViewControllers(controllers, animated: true)
+                            
+                            if case let .starGift(starGift, _) = component.subject, let perUserLimit = starGift.perUserLimit {
+                                Queue.mainQueue().after(0.5) {
+                                    let remains = max(0, perUserLimit.remains - 1)
+                                    let text: String
+                                    if remains == 0 {
+                                        text = presentationData.strings.Gift_Send_Limited_Success_Text_None
+                                    } else {
+                                        text = presentationData.strings.Gift_Send_Limited_Success_Text(remains)
+                                    }
+                                    let tooltipController = UndoOverlayController(
+                                        presentationData: presentationData,
+                                        content: .sticker(
+                                            context: context,
+                                            file: starGift.file,
+                                            loop: true,
+                                            title: presentationData.strings.Gift_Send_Limited_Success_Title,
+                                            text: text,
+                                            undoText: nil,
+                                            customAction: nil
+                                        ),
+                                        position: .top,
+                                        action: { _ in return true }
+                                    )
+                                    (navigationController.viewControllers.last as? ViewController)?.present(tooltipController, in: .current)
+                                }
+                            }
+                            
+                            complete()
                         }
+                        let _ = (ApplicationSpecificNotice.incrementDismissedBirthdayPremiumGiftTip(accountManager: component.context.sharedContext.accountManager, peerId: component.peerId, timestamp: Int32(Date().timeIntervalSince1970))
+                        |> deliverOnMainQueue).startStandalone(completed: navigateToChat)
+                        return
                     }
                     
-                    if let completion {
-                        completion()
-                        
-                        if let controller = self.environment?.controller() {
-                            controller.dismiss()
-                        }
-                    }
-                    
-                    Queue.mainQueue().after(2.5) {
-                        starsContext.load(force: true)
-                    }
+                    complete()
                 }, error: { [weak self] error in
                     guard let self, let controller = self.environment?.controller() else {
                         return
@@ -667,7 +704,7 @@ private final class GiftSetupScreenComponent: Component {
                 let _ = (self.optionsPromise.get()
                 |> filter { $0 != nil }
                 |> take(1)
-                |> deliverOnMainQueue).startStandalone(next: { [weak self] options in
+                |> deliverOnMainQueue).startStandalone(next: { [weak self, starsContext] options in
                     guard let self, let component = self.component, let controller = self.environment?.controller() else {
                         return
                     }
@@ -766,7 +803,6 @@ private final class GiftSetupScreenComponent: Component {
                     mode: .standard(.default),
                     chatLocation: .peer(id: component.context.account.peerId),
                     subject: nil,
-                    peerNearbyData: nil,
                     greetingData: nil,
                     pendingUnpinnedAllMessages: false,
                     activeGroupCallInfo: nil,
@@ -777,8 +813,6 @@ private final class GiftSetupScreenComponent: Component {
                     accountPeerColor: nil,
                     businessIntro: nil
                 )
-                
-                self.inputMediaNodeBackground.backgroundColor = presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.cgColor
                 
                 let heightAndOverflow = inputMediaNode.updateLayout(width: availableSize.width, leftInset: 0.0, rightInset: 0.0, bottomInset: bottomInset, standardInputHeight: deviceMetrics.standardInputHeight(inLandscape: false), inputHeight: inputHeight < 100.0 ? inputHeight - bottomContainerInset : inputHeight, maximumHeight: availableSize.height, inputPanelHeight: 0.0, transition: .immediate, interfaceState: presentationInterfaceState, layoutMetrics: metrics, deviceMetrics: deviceMetrics, isVisible: true, isExpanded: false)
                 let inputNodeHeight = heightAndOverflow.0
@@ -818,7 +852,7 @@ private final class GiftSetupScreenComponent: Component {
                     targetFrame.origin.y = availableSize.height
                     transition.setFrame(view: inputMediaNode.view, frame: targetFrame, completion: { [weak inputMediaNode] _ in
                         if let inputMediaNode {
-                            Queue.mainQueue().after(0.3) {
+                            Queue.mainQueue().after(0.3) { [inputMediaNode] in
                                 inputMediaNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.35, removeOnCompletion: false, completion: { [weak inputMediaNode] _ in
                                     inputMediaNode?.view.removeFromSuperview()
                                 })
@@ -894,11 +928,16 @@ private final class GiftSetupScreenComponent: Component {
             
             let resetScrolling = self.scrollView.bounds.width != availableSize.width
             
+            // Narrowed by the side safe insets only where there is one on each side. Beside iPhone Duo's side strip
+            // (one side only) the screen-centered sheet keeps its width: in landscape it already sits clear of the
+            // strip, and in folded portrait it spans the strip as a bottom panel. Subtracting the left inset twice
+            // made it 168pt narrower in landscape-right than in landscape-left.
+            let fillingSideInset: CGFloat = environment.safeInsets.left == environment.safeInsets.right ? environment.safeInsets.left : 0.0
             let fillingSize: CGFloat
             if case .regular = environment.metrics.widthClass {
-                fillingSize = min(availableSize.width, 414.0) - environment.safeInsets.left * 2.0
+                fillingSize = min(availableSize.width, 414.0) - fillingSideInset * 2.0
             } else {
-                fillingSize = min(availableSize.width, environment.deviceMetrics.screenSize.width) - environment.safeInsets.left * 2.0
+                fillingSize = min(availableSize.width, availableSize.height) - fillingSideInset * 2.0
             }
             let rawSideInset: CGFloat = floor((availableSize.width - fillingSize) * 0.5)
             let sideInset: CGFloat = rawSideInset + 24.0
@@ -986,6 +1025,7 @@ private final class GiftSetupScreenComponent: Component {
                         hasStickers: false,
                         hasGifs: false,
                         hideBackground: true,
+                        maskEdge: .clip,
                         forceHasPremium: true,
                         sendGif: nil
                     )
@@ -1003,7 +1043,6 @@ private final class GiftSetupScreenComponent: Component {
                         return false
                     },
                     sendEmoji: { _, _, _ in
-                        let _ = self
                     },
                     sendGif: { _, _, _, _, _ in
                         return false
@@ -1148,6 +1187,75 @@ private final class GiftSetupScreenComponent: Component {
                     self.navigationBarContainer.addSubview(closeButtonView)
                 }
                 transition.setFrame(view: closeButtonView, frame: closeButtonFrame)
+            }
+            
+            if environment.inputHeight > 0.0  {
+                var doneButtonTransition = transition
+                let doneButton: ComponentView<Empty>
+                if let current = self.doneButton {
+                    doneButton = current
+                } else {
+                    doneButton = ComponentView()
+                    self.doneButton = doneButton
+                    doneButtonTransition = .immediate
+                }
+                
+                let doneButtonSize = doneButton.update(
+                    transition: .immediate,
+                    component: AnyComponent(GlassBarButtonComponent(
+                        size: CGSize(width: 44.0, height: 44.0),
+                        backgroundColor: environment.theme.list.itemCheckColors.fillColor,
+                        isDark: environment.theme.overallDarkAppearance,
+                        state: .tintedGlass,
+                        component: AnyComponentWithIdentity(id: "done", component: AnyComponent(
+                            BundleIconComponent(
+                                name: "Navigation/Done",
+                                tintColor: environment.theme.list.itemCheckColors.foregroundColor
+                            )
+                        )),
+                        action: { [weak self] _ in
+                            self?.proceed()
+                        }
+                    )),
+                    environment: {},
+                    containerSize: CGSize(width: 44.0, height: 44.0)
+                )
+                // Clear of the side strip's status corner when the sheet spans it (iPhone Duo, folded portrait); on the
+                // unfolded screen in portrait `updateScrolling` moves it clear of the status island while the sheet's
+                // top is beside it.
+                let doneButtonFrame = CGRect(origin: CGPoint(x: availableSize.width - rawSideInset - 16.0 - max(0.0, environment.safeInsets.right - rawSideInset) - doneButtonSize.width, y: 16.0), size: doneButtonSize)
+                if environment.navigationBarTrailingButtonsInset > 0.0, let island = environment.reservedCorners.topRight {
+                    let islandInset = max(0.0, environment.safeInsets.right + environment.navigationBarTrailingButtonsInset - rawSideInset) - max(0.0, environment.safeInsets.right - rawSideInset)
+                    self.doneButtonIslandLayout = (doneButtonFrame, islandInset, island.height)
+                } else {
+                    self.doneButtonIslandLayout = nil
+                }
+                if let doneButtonView = doneButton.view {
+                    if doneButtonView.superview == nil {
+                        doneButtonView.layer.rasterizationScale = UIScreenScale
+                        self.navigationBarContainer.addSubview(doneButtonView)
+                        
+                        if !transition.animation.isImmediate {
+                            doneButtonView.layer.shouldRasterize = true
+                            transition.animateScale(view: doneButtonView, from: 0.01, to: 1.0, completion: { _ in
+                                doneButtonView.layer.shouldRasterize = false
+                            })
+                            transition.animateAlpha(view: doneButtonView, from: 0.0, to: 1.0)
+                        }
+                    }
+                    doneButtonTransition.setPosition(view: doneButtonView, position: doneButtonFrame.center)
+                    doneButtonTransition.setBounds(view: doneButtonView, bounds: CGRect(origin: .zero, size: doneButtonFrame.size))
+                }
+            } else if let doneButton = self.doneButton {
+                self.doneButton = nil
+                self.doneButtonIslandLayout = nil
+                if let doneButtonView = doneButton.view {
+                    doneButtonView.layer.shouldRasterize = true
+                    doneButtonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.25, removeOnCompletion: false)
+                    doneButtonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.25, removeOnCompletion: false, completion: { _ in
+                        doneButtonView.removeFromSuperview()
+                    })
+                }
             }
             
             let containerInset: CGFloat = environment.statusBarHeight + 10.0
@@ -1409,14 +1517,15 @@ private final class GiftSetupScreenComponent: Component {
                                             )
                                         )),
                                     ], alignment: .left, spacing: 2.0)),
-                                    accessory: .custom(ListActionItemComponent.CustomAccessory(component: AnyComponentWithIdentity(id: 0, component: AnyComponent(MultilineTextComponent(
+                                    icon: ListActionItemComponent.Icon(component: AnyComponentWithIdentity(id: 0, component: AnyComponent(MultilineTextComponent(
                                         text: .plain(NSAttributedString(
                                             string: presentationStringsFormattedNumber(Int32(availability.resale), environment.dateTimeFormat.groupingSeparator),
                                             font: Font.regular(presentationData.listsFontSize.baseDisplaySize),
                                             textColor: theme.list.itemSecondaryTextColor
                                         )),
-                                        maximumNumberOfLines: 0
-                                    ))), insets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: 0.0, right: 16.0))),
+                                        maximumNumberOfLines: 1
+                                    )))),
+                                    accessory: .arrow,
                                     action: { [weak self] _ in
                                         guard let self, let component = self.component, let controller = environment.controller() else {
                                             return
@@ -1449,7 +1558,7 @@ private final class GiftSetupScreenComponent: Component {
             switch component.subject {
             case let .premium(product):
                 let balance = component.context.starsContext?.currentState?.balance.value ?? 0
-                if let starsPrice = product.starsPrice, balance >= starsPrice {
+                if let starsPrice = product.starsPrice { //}, balance >= starsPrice {
                     let balanceString = presentationStringsFormattedNumber(Int32(balance), environment.dateTimeFormat.groupingSeparator)
                     
                     let starsFooterRawString = environment.strings.Gift_Send_PayWithStars_Info("# \(balanceString)").string
@@ -1981,6 +2090,11 @@ private final class GiftSetupScreenComponent: Component {
             
             self.scrollContentClippingView.layer.cornerRadius = 38.0
             
+            // iPhone Duo's cover screen: the container's bottom corners, which reach the screen's, follow each screen
+            // corner (8pt on the hinge side, 59pt outside) instead of one radius. Nil where the corners are uniform.
+            self.containerBottomCornerRadii = environment.screenCornerRadii.sheetBottomCornerRadii(inset: 0.0).map { CornerRadii(topLeft: 0.0, topRight: 0.0, bottomLeft: $0.left, bottomRight: $0.right) }
+            // The scroll content's clip keeps its bottom corners within the container's.
+            let _ = self.scrollContentClippingView.layer.applyCornerRadiiIfNeeded(self.containerBottomCornerRadii.map { CornerRadii(topLeft: 38.0, topRight: 38.0, bottomLeft: min(38.0, $0.bottomLeft), bottomRight: min(38.0, $0.bottomRight)) })
             self.itemLayout = ItemLayout(containerSize: availableSize, containerInset: containerInset, containerCornerRadius: environment.deviceMetrics.screenCornerRadius, bottomInset: environment.safeInsets.bottom, topInset: topInset)
             
             transition.setFrame(view: self.scrollContentView, frame: CGRect(origin: CGPoint(x: 0.0, y: topInset + containerInset), size: CGSize(width: availableSize.width, height: contentHeight)))
@@ -2016,11 +2130,14 @@ private final class GiftSetupScreenComponent: Component {
                     deviceMetrics: environment.deviceMetrics,
                     intrinsicInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: bottomInset, right: 0.0),
                     safeInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: 0.0, right: 0.0),
+                    reservedCorners: environment.reservedCorners,
+                    division: nil,
                     additionalInsets: .zero,
-                    statusBarHeight: environment.statusBarHeight,
+                    statusBarHeight: environment.fullStatusBarHeight,
                     inputHeight: nil,
                     inputHeightIsInteractivellyChanging: false,
-                    inVoiceOver: false
+                    inVoiceOver: false,
+                    presentedInFormSheet: false
                 )
                 controller.presentationContext.containerLayoutUpdated(layout, transition: transition.containedViewLayoutTransition)
             }
@@ -2109,30 +2226,6 @@ public class GiftSetupScreen: ViewControllerComponentContainer, GiftSetupScreenP
             } else {
                 self.dismiss(animated: false)
             }
-        }
-    }
-}
-
-private struct GiftConfiguration {
-    static var defaultValue: GiftConfiguration {
-        return GiftConfiguration(maxCaptionLength: 255)
-    }
-    
-    let maxCaptionLength: Int32
-    
-    fileprivate init(maxCaptionLength: Int32) {
-        self.maxCaptionLength = maxCaptionLength
-    }
-    
-    static func with(appConfiguration: AppConfiguration) -> GiftConfiguration {
-        if let data = appConfiguration.data {
-            var maxCaptionLength: Int32?
-            if let value = data["stargifts_message_length_max"] as? Double {
-                maxCaptionLength = Int32(value)
-            }
-            return GiftConfiguration(maxCaptionLength: maxCaptionLength ?? GiftConfiguration.defaultValue.maxCaptionLength)
-        } else {
-            return .defaultValue
         }
     }
 }

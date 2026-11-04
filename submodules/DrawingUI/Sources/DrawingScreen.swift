@@ -6,7 +6,6 @@ import Display
 import ComponentFlow
 import LegacyComponents
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import TelegramPresentationData
 import AccountContext
@@ -26,6 +25,10 @@ import FastBlur
 import MediaEditor
 import StickerPickerScreen
 import ImageObjectSeparation
+import GlassBarButtonComponent
+import GlassControls
+import BundleIconComponent
+import UniformTypeIdentifiers
 
 public struct DrawingResultData {
     public let data: Data?
@@ -364,15 +367,17 @@ private final class ReferenceContentSource: ContextReferenceContentSource {
     private let sourceView: UIView
     private let contentArea: CGRect
     private let customPosition: CGPoint
+    private let actionsPosition: ContextControllerReferenceViewInfo.ActionsPosition
     
-    init(sourceView: UIView, contentArea: CGRect, customPosition: CGPoint) {
+    init(sourceView: UIView, contentArea: CGRect, customPosition: CGPoint, actionsPosition: ContextControllerReferenceViewInfo.ActionsPosition = .top) {
         self.sourceView = sourceView
         self.contentArea = contentArea
         self.customPosition = customPosition
+        self.actionsPosition = actionsPosition
     }
 
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: self.contentArea, customPosition: self.customPosition, actionsPosition: .top)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: self.contentArea, customPosition: self.customPosition, actionsPosition: self.actionsPosition)
     }
 }
 
@@ -468,13 +473,11 @@ private let bottomGradientTag = GenericComponentViewTag()
 private let undoButtonTag = GenericComponentViewTag()
 private let redoButtonTag = GenericComponentViewTag()
 private let clearAllButtonTag = GenericComponentViewTag()
+private let topButtonsTag = GenericComponentViewTag()
 private let colorButtonTag = GenericComponentViewTag()
 private let addButtonTag = GenericComponentViewTag()
 private let toolsTag = GenericComponentViewTag()
 private let modeTag = GenericComponentViewTag()
-private let flipButtonTag = GenericComponentViewTag()
-private let fillButtonTag = GenericComponentViewTag()
-private let zoomOutButtonTag = GenericComponentViewTag()
 private let textSettingsTag = GenericComponentViewTag()
 private let sizeSliderTag = GenericComponentViewTag()
 private let fontTag = GenericComponentViewTag()
@@ -489,6 +492,12 @@ private let color8Tag = GenericComponentViewTag()
 private let colorTags = [color1Tag, color2Tag, color3Tag, color4Tag, color5Tag, color6Tag, color7Tag, color8Tag]
 private let cancelButtonTag = GenericComponentViewTag()
 private let doneButtonTag = GenericComponentViewTag()
+
+enum DrawingMode: Int {
+    case drawing
+    case sticker
+    case text
+}
 
 private final class DrawingScreenComponent: CombinedComponent {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
@@ -617,7 +626,6 @@ private final class DrawingScreenComponent: CombinedComponent {
     final class State: ComponentState {
         enum ImageKey: Hashable {
             case undo
-            case redo
             case done
             case add
             case fill
@@ -634,8 +642,6 @@ private final class DrawingScreenComponent: CombinedComponent {
                 switch key {
                 case .undo:
                     image = generateTintedImage(image: UIImage(bundleImageName: "Media Editor/Undo"), color: .white)!
-                case .redo:
-                    image = generateTintedImage(image: UIImage(bundleImageName: "Media Editor/Redo"), color: .white)!
                 case .done:
                     image = generateTintedImage(image: UIImage(bundleImageName: "Media Editor/Done"), color: .white)!
                 case .add:
@@ -653,13 +659,7 @@ private final class DrawingScreenComponent: CombinedComponent {
                 return image
             }
         }
-        
-        enum Mode {
-            case drawing
-            case sticker
-            case text
-        }
-        
+
         private let context: AccountContext
         private let updateToolState: ActionSlot<DrawingToolState>
         private let insertEntity: ActionSlot<DrawingEntity>
@@ -676,7 +676,7 @@ private final class DrawingScreenComponent: CombinedComponent {
         private let entityViewForEntity: (DrawingEntity) -> DrawingEntityView?
         private let present: (ViewController) -> Void
         
-        var currentMode: Mode
+        var currentMode: DrawingMode
         var drawingState: DrawingState
         var drawingViewState: DrawingView.NavigationState
         var currentColor: DrawingColor
@@ -825,7 +825,7 @@ private final class DrawingScreenComponent: CombinedComponent {
             let tools = self.drawingState.tools
             let _ = (self.context.sharedContext.accountManager.transaction { transaction -> Void in
                 transaction.updateSharedData(ApplicationSpecificSharedDataKeys.drawingSettings, { _ in
-                    return PreferencesEntry(DrawingSettings(tools: tools, colors: []))
+                    return EnginePreferencesEntry(DrawingSettings(tools: tools, colors: []))
                 })
             }).start()
         }
@@ -989,11 +989,11 @@ private final class DrawingScreenComponent: CombinedComponent {
                 )
             ]
             let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }.withUpdated(theme: defaultDarkPresentationTheme)
-            let contextController = makeContextController(presentationData: presentationData, source: .reference(ReferenceContentSource(sourceView: sourceView, contentArea: UIScreen.main.bounds, customPosition: CGPoint(x: 7.0, y: 3.0))), items: .single(ContextController.Items(content: .list(items))))
+            let contextController = makeContextController(presentationData: presentationData, source: .reference(ReferenceContentSource(sourceView: sourceView, contentArea: mainWindowScreenBounds, customPosition: CGPoint(x: 7.0, y: 3.0))), items: .single(ContextController.Items(content: .list(items))))
             self.present(contextController)
         }
         
-        func updateCurrentMode(_ mode: Mode, update: Bool = true) {
+        func updateCurrentMode(_ mode: DrawingMode, update: Bool = true) {
             self.currentMode = mode
             if let selectedEntity = self.selectedEntity {
                 if selectedEntity is DrawingStickerEntity || selectedEntity is DrawingTextEntity {
@@ -1059,15 +1059,13 @@ private final class DrawingScreenComponent: CombinedComponent {
         let topGradient = Child(BlurredGradientComponent.self)
         let bottomGradient = Child(BlurredGradientComponent.self)
 
-        let undoButton = Child(Button.self)
+        let undoButton = Child(GlassBarButtonComponent.self)
+        let redoButton = Child(GlassBarButtonComponent.self)
+        let clearAllButton = Child(GlassBarButtonComponent.self)
+        let topButtons = Child(GlassControlPanelComponent.self)
         
-        let redoButton = Child(Button.self)
-        let clearAllButton = Child(Button.self)
-        
-        let zoomOutButton = Child(Button.self)
-
         let tools = Child(ToolsComponent.self)
-        let modeAndSize = Child(ModeAndSizeComponent.self)
+        let mode = Child(ModeComponent.self)
         
         let colorButton = Child(ColorSwatchComponent.self)
         
@@ -1083,16 +1081,11 @@ private final class DrawingScreenComponent: CombinedComponent {
         let swatch8Button = Child(ColorSwatchComponent.self)
         
         let addButton = Child(Button.self)
-        
-        let flipButton = Child(Button.self)
-        let fillButton = Child(Button.self)
-        
-        let backButton = Child(Button.self)
-        let doneButton = Child(Button.self)
+
+        let backButton = Child(GlassBarButtonComponent.self)
+        let doneButton = Child(GlassBarButtonComponent.self)
         
         let textSize = Child(TextSizeSliderComponent.self)
-        let textCancelButton = Child(Button.self)
-        let textDoneButton = Child(Button.self)
         
         let presetColors: [DrawingColor] = [
             DrawingColor(rgb: 0xff453a),
@@ -1172,23 +1165,59 @@ private final class DrawingScreenComponent: CombinedComponent {
                     controlsBottomInset = -50.0
                 }
             }
-            let previewBottomInset = context.availableSize.height - previewSize.height - previewTopInset
+            // Clamped like the story editor's: a 9:16 preview much taller than the screen (iPhone Duo's unfolded
+            // screen in portrait, 238pt over) would otherwise put the bottom bar below the screen. There the bar also
+            // takes the editor's offset, so it does not move when drawing opens over the editor.
+            let unclampedPreviewBottomInset = context.availableSize.height - previewSize.height - previewTopInset
+            var bottomPanelLift: CGFloat = 0.0
+            if unclampedPreviewBottomInset < 0.0 {
+                controlsBottomInset = -62.0
+                if environment.navigationBarTrailingButtonsInset > 0.0 {
+                    // Beside a status island the bottom bar mirrors the top row: its 44pt buttons centred as far above
+                    // the bottom edge as the top row's are below the top one (compact status height + 31). The rows
+                    // above it move up with it.
+                    let mirroredControlsBottomInset = -(environment.statusBarHeight + 31.0 + 30.0)
+                    bottomPanelLift = max(0.0, controlsBottomInset - mirroredControlsBottomInset)
+                    controlsBottomInset -= bottomPanelLift
+                } else {
+                    // Elsewhere (folded) the editor's bar is 62pt above the home indicator; so is this one, and the rows
+                    // above it move up with it.
+                    bottomPanelLift = environment.safeInsets.bottom
+                    controlsBottomInset -= bottomPanelLift
+                }
+            }
+            let previewBottomInset = max(0.0, unclampedPreviewBottomInset)
             
             var topInset = environment.safeInsets.top + 31.0
             if component.sourceHint == .storyEditor {
                 topInset = previewTopInset + 31.0
             }
+            if environment.navigationBarTrailingButtonsInset > 0.0 {
+                // iPhone Duo unfolded portrait: the top row sits on the status island's clock line, as a navigation
+                // bar beside the island does (its right group stops left of the island, see topTrailingInset).
+                topInset = environment.statusBarHeight + 31.0
+            }
 
             let bottomInset: CGFloat = environment.inputHeight > 0.0 ? environment.inputHeight : 145.0
             
-            var leftEdge: CGFloat = environment.safeInsets.left
-            var rightEdge: CGFloat = context.availableSize.width - environment.safeInsets.right
+            // The bottom controls span iPhone Duo's side strip; they keep clear only of a corner block at the bottom.
+            let bottomEdgeInsets = environment.bottomEdgeSideInsets()
+            var leftEdge: CGFloat = bottomEdgeInsets.left
+            var rightEdge: CGFloat = context.availableSize.width - bottomEdgeInsets.right
             var availableWidth = context.availableSize.width
             if case .regular = environment.metrics.widthClass {
                 availableWidth = 430.0
                 leftEdge = floorToScreenPixels((context.availableSize.width - availableWidth) / 2.0)
                 rightEdge = floorToScreenPixels((context.availableSize.width - availableWidth) / 2.0) + availableWidth
             }
+            // The bottom control bars center between the edges: the screen's center unless a corner block of iPhone
+            // Duo's strip reaches the bottom (folded landscape-left), where they keep to the band and narrow by the strip.
+            let controlsCenterX = (leftEdge + rightEdge) / 2.0
+            // iPhone Duo unfolded portrait: the top row's right buttons stop left of the status island, which stays on
+            // screen while the editor hides the status bar; 0 elsewhere.
+            let topTrailingInset = environment.navigationBarTrailingButtonsInset
+            let controlsStripInset: CGFloat = environment.safeInsets.left != environment.safeInsets.right ? environment.safeInsets.left + environment.safeInsets.right : 0.0
+            let bottomControlsStripInset: CGFloat = environment.safeInsets.left != environment.safeInsets.right ? bottomEdgeInsets.left + bottomEdgeInsets.right : 0.0
             
             if component.sourceHint != .storyEditor {
                 let topGradient = topGradient.update(
@@ -1220,7 +1249,9 @@ private final class DrawingScreenComponent: CombinedComponent {
             
             var additionalBottomInset: CGFloat = 0.0
             if component.sourceHint == .storyEditor {
-                additionalBottomInset = max(0.0, previewBottomInset - environment.safeInsets.bottom - 49.0)
+                additionalBottomInset = max(0.0, previewBottomInset - environment.safeInsets.bottom - 49.0) + bottomPanelLift
+            } else {
+                additionalBottomInset = 8.0
             }
             
             if let textEntity = state.selectedEntity as? DrawingTextEntity {
@@ -1298,11 +1329,11 @@ private final class DrawingScreenComponent: CombinedComponent {
                         },
                         toggleKeyboard: nil
                     ),
-                    availableSize: CGSize(width: availableWidth - 84.0, height: 44.0),
+                    availableSize: CGSize(width: availableWidth - 84.0 - bottomControlsStripInset, height: 44.0),
                     transition: context.transition
                 )
                 context.add(textSettings
-                    .position(CGPoint(x: context.availableSize.width / 2.0, y: context.availableSize.height - environment.safeInsets.bottom - textSettings.size.height / 2.0 - 89.0 - additionalBottomInset))
+                    .position(CGPoint(x: controlsCenterX, y: context.availableSize.height - environment.safeInsets.bottom - textSettings.size.height / 2.0 - 89.0 - additionalBottomInset))
                     .appear(ComponentTransition.Appear({ _, view, transition in
                         if let view = view as? TextSettingsComponent.View, !transition.animation.isImmediate {
                             view.animateIn()
@@ -1319,8 +1350,8 @@ private final class DrawingScreenComponent: CombinedComponent {
                 )
             }
             
-            let rightButtonPosition = rightEdge - 24.0
-            var offsetX: CGFloat = leftEdge + 24.0
+            let rightButtonPosition = rightEdge - 28.0
+            var offsetX: CGFloat = leftEdge + 28.0
             let delta: CGFloat = (rightButtonPosition - offsetX) / 7.0
             
             let applySwatchColor: (DrawingColor) -> Void = { [weak state] color in
@@ -1587,11 +1618,11 @@ private final class DrawingScreenComponent: CombinedComponent {
                             previewBrushSize.invoke(nil)
                         }
                     ),
-                    availableSize: CGSize(width: availableWidth - environment.safeInsets.left - environment.safeInsets.right, height: 120.0),
+                    availableSize: CGSize(width: availableWidth - bottomEdgeInsets.left - bottomEdgeInsets.right, height: 120.0),
                     transition: context.transition
                 )
                 context.add(tools
-                    .position(CGPoint(x: context.availableSize.width / 2.0, y: context.availableSize.height - environment.safeInsets.bottom - tools.size.height / 2.0 - 78.0 - additionalBottomInset))
+                    .position(CGPoint(x: controlsCenterX, y: context.availableSize.height - environment.safeInsets.bottom - tools.size.height / 2.0 - 78.0 - additionalBottomInset))
                     .appear(ComponentTransition.Appear({ _, view, transition in
                         if let view = view as? ToolsComponent.View, !transition.animation.isImmediate {
                             view.animateIn(completion: {})
@@ -1609,6 +1640,7 @@ private final class DrawingScreenComponent: CombinedComponent {
             }
             
             var hasTopButtons = false
+            var centerItems: [GlassControlGroupComponent.Item] = []
             if let entity = state.selectedEntity {
                 var isFilled: Bool?
                 if let entity = entity as? DrawingSimpleShapeEntity {
@@ -1626,12 +1658,13 @@ private final class DrawingScreenComponent: CombinedComponent {
                 
                 hasTopButtons = isFilled != nil || hasFlip
                 
-                if let isFilled = isFilled {
-                    let fillButton = fillButton.update(
-                        component: Button(
-                            content: AnyComponent(
-                                Image(image: state.image(isFilled ? .fill : .stroke))
-                            ),
+                if controlsAreVisible {
+                    if let isFilled = isFilled {
+                        centerItems.append(GlassControlGroupComponent.Item(
+                            id: AnyHashable("fill"),
+                            content: .customIcon(id: AnyHashable("fill"), component: AnyComponent(
+                                Image(image: state.image(isFilled ? .fill : .stroke), size: CGSize(width: 30.0, height: 30.0))
+                            ), insets: .zero),
                             action: { [weak state] in
                                 guard let state = state else {
                                     return
@@ -1662,25 +1695,15 @@ private final class DrawingScreenComponent: CombinedComponent {
                                 }
                                 state.updated(transition: .easeInOut(duration: 0.2))
                             }
-                        ).minSize(CGSize(width: 44.0, height: 44.0)).tagged(fillButtonTag),
-                        availableSize: CGSize(width: 30.0, height: 30.0),
-                        transition: .immediate
-                    )
-                    context.add(fillButton
-                        .position(CGPoint(x: context.availableSize.width / 2.0 - (hasFlip ? 46.0 : 0.0), y: topInset))
-                        .appear(.default(scale: true))
-                        .disappear(.default(scale: true))
-                        .opacity(!controlsAreVisible ? 0.0 : 1.0)
-                        .shadow(component.sourceHint == .storyEditor ? Shadow(color: UIColor(rgb: 0x000000, alpha: 0.35), radius: 2.0, offset: .zero) : nil)
-                    )
-                }
-                
-                if hasFlip {
-                    let flipButton = flipButton.update(
-                        component: Button(
-                            content: AnyComponent(
-                                Image(image: state.image(.flip))
-                            ),
+                        ))
+                    }
+
+                    if hasFlip {
+                        centerItems.append(GlassControlGroupComponent.Item(
+                            id: AnyHashable("flip"),
+                            content: .customIcon(id: AnyHashable("flip"), component: AnyComponent(
+                                Image(image: state.image(.flip), size: CGSize(width: 30.0, height: 30.0))
+                            ), insets: .zero),
                             action: { [weak state] in
                                 guard let state = state else {
                                     return
@@ -1696,17 +1719,8 @@ private final class DrawingScreenComponent: CombinedComponent {
                                 }
                                 state.updated(transition: .easeInOut(duration: 0.2))
                             }
-                        ).minSize(CGSize(width: 44.0, height: 44.0)).tagged(flipButtonTag),
-                        availableSize: CGSize(width: 30.0, height: 30.0),
-                        transition: .immediate
-                    )
-                    context.add(flipButton
-                        .position(CGPoint(x: context.availableSize.width / 2.0 + (isFilled != nil ? 46.0 : 0.0), y: topInset))
-                        .appear(.default(scale: true))
-                        .disappear(.default(scale: true))
-                        .opacity(!controlsAreVisible ? 0.0 : 1.0)
-                        .shadow(component.sourceHint == .storyEditor ? Shadow(color: UIColor(rgb: 0x000000, alpha: 0.35), radius: 2.0, offset: .zero) : nil)
-                    )
+                        ))
+                    }
                 }
             }
             
@@ -1731,28 +1745,24 @@ private final class DrawingScreenComponent: CombinedComponent {
                         sizeValue = entity.lineWidth
                     }
                 }
-                if state.drawingViewState.canZoomOut && !hasTopButtons {
-                    let zoomOutButton = zoomOutButton.update(
-                        component: Button(
-                            content: AnyComponent(
-                                ZoomOutButtonContent(
-                                    title: strings.Paint_ZoomOut,
-                                    image: state.image(.zoomOut)
-                                )
-                            ),
-                            action: {
-                                dismissEyedropper.invoke(Void())
-                                performAction.invoke(.zoomOut)
-                            }
-                        ).minSize(CGSize(width: 44.0, height: 44.0)).tagged(zoomOutButtonTag),
-                        availableSize: CGSize(width: 120.0, height: 33.0),
-                        transition: .immediate
-                    )
-                    context.add(zoomOutButton
-                        .position(CGPoint(x: context.availableSize.width / 2.0, y: environment.safeInsets.top + 32.0 - UIScreenPixel))
-                        .appear(.default(scale: true, alpha: true))
-                        .disappear(.default(scale: true, alpha: true))
-                    )
+                if state.drawingViewState.canZoomOut && !hasTopButtons && controlsAreVisible {
+                    centerItems.append(GlassControlGroupComponent.Item(
+                        id: AnyHashable("zoomOut"),
+                        content: .customIcon(id: AnyHashable("zoomOut"), component: AnyComponent(
+                            HStack([
+                                AnyComponentWithIdentity(id: "icon", component: AnyComponent(
+                                    Image(image: state.image(.zoomOut), size: CGSize(width: 24.0, height: 24.0))
+                                )),
+                                AnyComponentWithIdentity(id: "label", component: AnyComponent(
+                                    Text(text: environment.strings.Paint_ZoomOut, font: Font.regular(17.0), color: .white)
+                                )),
+                            ], spacing: 2.0)
+                        ), insets: UIEdgeInsets(top: 0.0, left: 10.0, bottom: 0.0, right: 12.0)),
+                        action: {
+                            dismissEyedropper.invoke(Void())
+                            performAction.invoke(.zoomOut)
+                        }
+                    ))
                 }
             }
             if let sizeValue {
@@ -1785,111 +1795,174 @@ private final class DrawingScreenComponent: CombinedComponent {
                 .position(CGPoint(x: textSize.size.width / 2.0, y: topInset + (context.availableSize.height - topInset - bottomInset) / 2.0))
                 .opacity(sizeSliderVisible && controlsAreVisible ? 1.0 : 0.0)
             )
-            
-            let undoButton = undoButton.update(
-                component: Button(
-                    content: AnyComponent(
-                        Image(image: state.image(.undo))
-                    ),
-                    isEnabled: state.drawingViewState.canUndo,
-                    action: {
+
+            var leftItems: [GlassControlGroupComponent.Item] = []
+            var rightItems: [GlassControlGroupComponent.Item] = []
+
+            if !isEditingText && controlsAreVisible {
+                leftItems.append(GlassControlGroupComponent.Item(
+                    id: "undo",
+                    content: .customIcon(id: "undo", component: AnyComponent(Image(image: state.image(.undo), tintColor: state.drawingViewState.canUndo ? .white : .white.withAlphaComponent(0.4), size: CGSize(width: 30.0, height: 30.0))), insets: .zero),
+                    action: state.drawingViewState.canUndo ? {
                         dismissEyedropper.invoke(Void())
                         performAction.invoke(.undo)
-                    }
-                ).minSize(CGSize(width: 44.0, height: 44.0)).tagged(undoButtonTag),
-                availableSize: CGSize(width: 24.0, height: 24.0),
+                    } : nil
+                ))
+
+                if state.drawingViewState.canRedo {
+                    leftItems.append(GlassControlGroupComponent.Item(
+                        id: "redo",
+                        content: .customIcon(id: "redo", component: AnyComponent(Image(image: state.image(.undo), tintColor: state.drawingViewState.canRedo ? .white : .white.withAlphaComponent(0.4), size: CGSize(width: 30.0, height: 30.0), flipHorizontally: true)), insets: .zero),
+                        action: state.drawingViewState.canRedo ? {
+                            dismissEyedropper.invoke(Void())
+                            performAction.invoke(.redo)
+                        } : nil
+                    ))
+                }
+            }
+
+            let undoButton = undoButton.update(
+                component: GlassBarButtonComponent(
+                    size: CGSize(width: 44.0, height: 44.0),
+                    backgroundColor: nil,
+                    isDark: true,
+                    state: .glass,
+                    component: AnyComponentWithIdentity(
+                        id: "icon",
+                        component: AnyComponent(Image(image: state.image(.undo)))
+                    ),
+                    action: { _ in
+                        dismissEyedropper.invoke(Void())
+                        performAction.invoke(.undo)
+                    },
+                    tag: undoButtonTag
+                ),
+                availableSize: CGSize(width: 44.0, height: 44.0),
                 transition: context.transition
             )
             context.add(undoButton
-                .position(CGPoint(x: environment.safeInsets.left + undoButton.size.width / 2.0 + 2.0, y: topInset))
+                .position(CGPoint(x: environment.safeInsets.left + undoButton.size.width / 2.0 + 16.0, y: topInset))
                 .scale(isEditingText ? 0.01 : 1.0)
-                .opacity(isEditingText || !controlsAreVisible ? 0.0 : 1.0)
-                .shadow(component.sourceHint == .storyEditor ? Shadow(color: UIColor(rgb: 0x000000, alpha: 0.35), radius: 2.0, offset: .zero) : nil)
+                .opacity(0.0)
+                //.opacity(isEditingText || !controlsAreVisible ? 0.0 : 1.0)
             )
             
-            
             let redoButton = redoButton.update(
-                component: Button(
-                    content: AnyComponent(
-                        Image(image: state.image(.redo))
+                component: GlassBarButtonComponent(
+                    size: CGSize(width: 44.0, height: 44.0),
+                    backgroundColor: nil,
+                    isDark: true,
+                    state: .glass,
+                    component: AnyComponentWithIdentity(
+                        id: "icon",
+                        component: AnyComponent(Image(image: state.image(.undo), flipHorizontally: true))
                     ),
-                    action: {
+                    action: { _ in
                         dismissEyedropper.invoke(Void())
                         performAction.invoke(.redo)
-                    }
-                ).minSize(CGSize(width: 44.0, height: 44.0)).tagged(redoButtonTag),
-                availableSize: CGSize(width: 24.0, height: 24.0),
+                    },
+                    tag: redoButtonTag
+                ),
+                availableSize: CGSize(width: 44.0, height: 44.0),
                 transition: context.transition
             )
             context.add(redoButton
                 .position(CGPoint(x: environment.safeInsets.left + undoButton.size.width + 2.0 + redoButton.size.width / 2.0, y: topInset))
                 .scale(state.drawingViewState.canRedo && !isEditingText ? 1.0 : 0.01)
-                .opacity(state.drawingViewState.canRedo && !isEditingText && controlsAreVisible ? 1.0 : 0.0)
-                .shadow(component.sourceHint == .storyEditor ? Shadow(color: UIColor(rgb: 0x000000, alpha: 0.35), radius: 2.0, offset: .zero) : nil)
+                .opacity(0.0)
+                //.opacity(state.drawingViewState.canRedo && !isEditingText && controlsAreVisible ? 1.0 : 0.0)
             )
             
             let clearAllButton = clearAllButton.update(
-                component: Button(
-                    content: AnyComponent(
-                        MultilineTextComponent(
-                            text: .plain(NSAttributedString(string: strings.Paint_Clear, font: Font.regular(17.0), textColor: .white)),
-                            textShadowColor: component.sourceHint == .storyEditor ? UIColor(rgb: 0x000000, alpha: 0.35) : nil,
-                            textShadowBlur: 2.0
-                        )
+                component: GlassBarButtonComponent(
+                    size: nil,
+                    backgroundColor: nil,
+                    isDark: true,
+                    state: .glass,
+                    component: AnyComponentWithIdentity(
+                        id: "label",
+                        component: AnyComponent(MultilineTextComponent(
+                            text: .plain(NSAttributedString(string: strings.Paint_Clear, font: Font.regular(17.0), textColor: .white))
+                        ))
                     ),
-                    isEnabled: state.drawingViewState.canClear,
-                    action: {
+                    action: { _ in
                         dismissEyedropper.invoke(Void())
                         performAction.invoke(.clear)
-                    }
-                ).tagged(clearAllButtonTag),
+                    },
+                    tag: clearAllButtonTag
+                ),
                 availableSize: CGSize(width: 180.0, height: 30.0),
                 transition: context.transition
             )
             context.add(clearAllButton
                 .position(CGPoint(x: context.availableSize.width - environment.safeInsets.right - clearAllButton.size.width / 2.0 - 13.0, y: topInset))
                 .scale(isEditingText ? 0.01 : 1.0)
-                .opacity(isEditingText || !controlsAreVisible ? 0.0 : 1.0)
+                .opacity(0.0)
+                //.opacity(isEditingText || !controlsAreVisible ? 0.0 : 1.0)
             )
             
-            let textCancelButton = textCancelButton.update(
-                component: Button(
-                    content: AnyComponent(
-                        Text(text: environment.strings.Common_Cancel, font: Font.regular(17.0), color: .white)
-                    ),
+            if !isEditingText && controlsAreVisible {
+                rightItems.append(GlassControlGroupComponent.Item(
+                    id: "clearAll",
+                    content: .text(strings.Paint_Clear),
+                    action: state.drawingViewState.canClear ? {
+                        dismissEyedropper.invoke(Void())
+                        performAction.invoke(.clear)
+                    } : nil
+                ))
+            }
+
+            if isEditingText {
+                leftItems.append(GlassControlGroupComponent.Item(
+                    id: "cancel",
+                    content: .text(strings.Common_Cancel),
                     action: { [weak state] in
                         if let entity = state?.selectedEntity as? DrawingTextEntity {
                             endEditingTextEntityView.invoke((entity.uuid, true))
                         }
                     }
-                ),
-                availableSize: CGSize(width: 100.0, height: 30.0),
-                transition: context.transition
-            )
-            context.add(textCancelButton
-                .position(CGPoint(x: environment.safeInsets.left + textCancelButton.size.width / 2.0 + 13.0, y: topInset))
-                .scale(isEditingText ? 1.0 : 0.01)
-                .opacity(isEditingText ? 1.0 : 0.0)
-            )
-            
-            let textDoneButton = textDoneButton.update(
-                component: Button(
-                    content: AnyComponent(
-                        Text(text: environment.strings.Common_Done, font: Font.semibold(17.0), color: .white)
-                    ),
+                ))
+
+                rightItems.append(GlassControlGroupComponent.Item(
+                    id: "done",
+                    content: .text(strings.Common_Done),
                     action: { [weak state] in
                         if let entity = state?.selectedEntity as? DrawingTextEntity {
                             endEditingTextEntityView.invoke((entity.uuid, false))
                         }
                     }
+                ))
+            }
+
+            let topButtons = topButtons.update(
+                component: GlassControlPanelComponent(
+                    theme: defaultDarkPresentationTheme,
+                    leftItem: leftItems.isEmpty ? nil : GlassControlPanelComponent.Item(
+                        items: leftItems,
+                        background: .panel
+                    ),
+                    centralItem: centerItems.isEmpty ? nil : GlassControlPanelComponent.Item(
+                        items: centerItems,
+                        background: .panel
+                    ),
+                    rightItem: rightItems.isEmpty ? nil : GlassControlPanelComponent.Item(
+                        items: rightItems,
+                        background: .panel
+                    ),
+                    centerAlignmentIfPossible: true,
+                    isDark: true,
+                    tag: topButtonsTag
                 ),
-                availableSize: CGSize(width: 100.0, height: 30.0),
+                availableSize: CGSize(width: context.availableSize.width - 32.0 - controlsStripInset - topTrailingInset, height: 44.0),
                 transition: context.transition
             )
-            context.add(textDoneButton
-                .position(CGPoint(x: context.availableSize.width - environment.safeInsets.right - textDoneButton.size.width / 2.0 - 13.0, y: topInset))
-                .scale(isEditingText ? 1.0 : 0.01)
-                .opacity(isEditingText ? 1.0 : 0.0)
+            // The panel spans the band beside the strip, so it centres on the band: in a regular-width layout
+            // (iPhone Duo's unfolded screen in landscape) `controlsCenterX` is the 430pt column's centre, which put the
+            // panel's right end under the strip. Without a strip it stays `controlsCenterX`.
+            let topButtonsCenterX: CGFloat = controlsStripInset > 0.0 ? (environment.safeInsets.left + context.availableSize.width - environment.safeInsets.right) / 2.0 : controlsCenterX
+            context.add(topButtons
+                .position(CGPoint(x: topButtonsCenterX - topTrailingInset * 0.5, y: topInset))
+                //.opacity(isEditingText ? 1.0 : 0.0)
             )
                                     
             var color: DrawingColor?
@@ -1931,7 +2004,7 @@ private final class DrawingScreenComponent: CombinedComponent {
                 transition: context.transition
             )
             context.add(colorButton
-                .position(CGPoint(x: leftEdge + colorButton.size.width / 2.0 + 2.0, y: context.availableSize.height - environment.safeInsets.bottom - colorButton.size.height / 2.0 - 89.0 - additionalBottomInset))
+                .position(CGPoint(x: leftEdge + colorButton.size.width / 2.0 + 6.0, y: context.availableSize.height - environment.safeInsets.bottom - colorButton.size.height / 2.0 - 89.0 - additionalBottomInset))
                 .appear(.default(scale: true))
                 .disappear(.default(scale: true))
                 .opacity(controlsAreVisible ? 1.0 : 0.0)
@@ -1980,7 +2053,7 @@ private final class DrawingScreenComponent: CombinedComponent {
                 transition: .immediate
             )
             context.add(addButton
-                .position(CGPoint(x: rightEdge - addButton.size.width / 2.0 - 2.0, y: context.availableSize.height - environment.safeInsets.bottom - addButton.size.height / 2.0 - 89.0 - additionalBottomInset))
+                .position(CGPoint(x: rightEdge - addButton.size.width / 2.0 - 6.0, y: context.availableSize.height - environment.safeInsets.bottom - addButton.size.height / 2.0 - 89.0 - additionalBottomInset))
                 .appear(.default(scale: true))
                 .disappear(.default(scale: true))
                 .cornerRadius(12.0)
@@ -1988,27 +2061,38 @@ private final class DrawingScreenComponent: CombinedComponent {
             )
             
             let doneButton = doneButton.update(
-                component: Button(
-                    content: AnyComponent(
-                        Image(image: state.image(.done))
+                component: GlassBarButtonComponent(
+                    size: CGSize(width: 44.0, height: 44.0),
+                    backgroundColor: UIColor(rgb: 0x0088ff),
+                    isDark: true,
+                    state: .tintedGlass,
+                    component: AnyComponentWithIdentity(
+                        id: "icon",
+                        component: AnyComponent(
+                            BundleIconComponent(name: "Navigation/Done", tintColor: .white)
+                        )
                     ),
-                    action: { [weak state] in
+                    action: { [weak state] _ in
                         dismissEyedropper.invoke(Void())
                         state?.saveToolState()
                         apply.invoke(Void())
-                    }
-                ).minSize(CGSize(width: 44.0, height: 44.0)).tagged(doneButtonTag),
-                availableSize: CGSize(width: 33.0, height: 33.0),
+                    },
+                    tag: doneButtonTag
+                ),
+                availableSize: CGSize(width: 44.0, height: 44.0),
                 transition: .immediate
             )
             
-            var doneButtonPosition = CGPoint(x: context.availableSize.width - environment.safeInsets.right - doneButton.size.width / 2.0 - 3.0, y: context.availableSize.height - environment.safeInsets.bottom - doneButton.size.height / 2.0 - 2.0 - UIScreenPixel)
+            var doneButtonPosition = CGPoint(x: context.availableSize.width - bottomEdgeInsets.right - doneButton.size.width / 2.0 - 14.0, y: context.availableSize.height - environment.safeInsets.bottom - doneButton.size.height / 2.0 - 2.0 - UIScreenPixel)
             if component.sourceHint == .storyEditor {
                 doneButtonPosition.x = doneButtonPosition.x - 2.0
                 if case .regular = environment.metrics.widthClass {
                     doneButtonPosition.x -= 20.0
                 }
-                doneButtonPosition.y = floorToScreenPixels(context.availableSize.height - previewBottomInset + 3.0 + doneButton.size.height / 2.0) + controlsBottomInset
+                doneButtonPosition.y = floorToScreenPixels(context.availableSize.height - previewBottomInset + 3.0 + doneButton.size.height / 2.0) + controlsBottomInset + 5.0
+            } else {
+                doneButtonPosition.x = doneButtonPosition.x - 12.0
+                doneButtonPosition.y -= 3.0 - UIScreenPixel
             }
             context.add(doneButton
                 .position(doneButtonPosition)
@@ -2028,116 +2112,93 @@ private final class DrawingScreenComponent: CombinedComponent {
                 .opacity(controlsAreVisible ? 1.0 : 0.0)
             )
             
-            let selectedIndex: Int
-            switch state.currentMode {
-            case .drawing:
-                selectedIndex = 0
-            case .sticker:
-                selectedIndex = 1
-            case .text:
-                selectedIndex = 2
-            }
-                        
-            var selectedSize: CGFloat = 0.0
-            if let entity = state.selectedEntity {
-                selectedSize = entity.lineWidth
+            // Between the back and Done buttons, which span iPhone Duo's side strip unless its corner block is at the
+            // bottom: then the strip's width comes off too (`bottomControlsStripInset` is 0 otherwise).
+            let modeConstrainedWidth: CGFloat
+            if component.sourceHint == .storyEditor {
+                modeConstrainedWidth = context.availableSize.width - 66.0 * 2.0 - bottomControlsStripInset
             } else {
-                selectedSize = state.drawingState.toolState(for: state.drawingState.selectedTool).size ?? 0.0
+                modeConstrainedWidth = context.availableSize.width - 76.0 * 2.0 - bottomControlsStripInset
             }
-                  
-            let modeAndSize = modeAndSize.update(
-                component: ModeAndSizeComponent(
-                    values: [ strings.Paint_Draw, strings.Paint_Sticker, strings.Paint_Text],
-                    sizeValue: selectedSize,
-                    isEditing: false,
-                    isEnabled: true,
-                    rightInset: modeRightInset - 57.0,
-                    tag: modeTag,
-                    selectedIndex: selectedIndex,
-                    selectionChanged: { [weak state] index in
-                        dismissEyedropper.invoke(Void())
-                        guard let state = state else {
-                            return
-                        }
-                        switch index {
-                        case 1:
-                            state.presentStickerPicker()
-                        case 2:
-                            state.addTextEntity()
-                        default:
-                            state.updateCurrentMode(.drawing)
-                        }
-                    },
-                    sizeUpdated: { [weak state] size in
-                        if let state = state {
+            let mode = mode.update(
+                component: ModeComponent(
+                    isTablet: false,
+                    strings: environment.strings,
+                    tintColor: .white,
+                    availableModes: [.drawing, .sticker, .text],
+                    currentMode: state.currentMode,
+                    updatedMode: { [weak state] mode in
+                        if let state {
                             dismissEyedropper.invoke(Void())
-                            state.updateBrushSize(size)
-                            if state.selectedEntity == nil {
-                                previewBrushSize.invoke(size)
+                            switch mode {
+                            case .drawing:
+                                state.updateCurrentMode(.drawing)
+                            case .sticker:
+                                state.presentStickerPicker()
+                            case .text:
+                                state.addTextEntity()
                             }
                         }
                     },
-                    sizeReleased: {
-                        previewBrushSize.invoke(nil)
-                    }
+                    tag: modeTag
                 ),
-                availableSize: CGSize(width: availableWidth - 57.0 - modeRightInset, height: context.availableSize.height),
+                availableSize: CGSize(width: modeConstrainedWidth, height: 44.0),
                 transition: context.transition
             )
-            var modeAndSizePosition = CGPoint(x: context.availableSize.width / 2.0 - (modeRightInset - 57.0) / 2.0, y: context.availableSize.height - environment.safeInsets.bottom - modeAndSize.size.height / 2.0 - 9.0)
+            // Centred between the back and Done buttons: on the band beside iPhone Duo's strip where its corner block
+            // reaches the bottom (folded landscape-left; on the screen's centre the pill would run under Done, which
+            // keeps clear of the block); on the tools column in a regular-width layout. Otherwise the screen's centre.
+            let modeCenterX: CGFloat = controlsCenterX
+            var modePosition = CGPoint(x: modeCenterX - (modeRightInset - 57.0) / 2.0, y: context.availableSize.height - environment.safeInsets.bottom - mode.size.height / 2.0 - 9.0)
             if component.sourceHint == .storyEditor {
-                modeAndSizePosition.y = floorToScreenPixels(context.availableSize.height - previewBottomInset + 8.0 + modeAndSize.size.height / 2.0) + controlsBottomInset
+                modePosition.y = floorToScreenPixels(context.availableSize.height - previewBottomInset + 8.0 + mode.size.height / 2.0) + controlsBottomInset
+            } else {
+                modePosition.y += 4.0
             }
-            context.add(modeAndSize
-                .position(modeAndSizePosition)
+            context.add(mode
+                .position(modePosition)
                 .opacity(controlsAreVisible ? 1.0 : 0.0)
             )
             
-            var animatingOut = false
-            if let appearanceTransition = context.transition.userData(DrawingScreenTransition.self), case .animateOut = appearanceTransition {
-                animatingOut = true
-            }
-            
-            if animatingOut && component.sourceHint == .storyEditor {
-                
-            } else {
-                let backButton = backButton.update(
-                    component: Button(
-                        content: AnyComponent(
-                            LottieAnimationComponent(
-                                animation: LottieAnimationComponent.AnimationItem(
-                                    name: "media_backToCancel",
-                                    mode: .animating(loop: false),
-                                    range: animatingOut || component.isAvatar ? (0.5, 1.0) : (0.0, 0.5)
-                                ),
-                                colors: ["__allcolors__": .white],
-                                size: CGSize(width: 33.0, height: 33.0)
-                            )
-                        ),
-                        action: { [weak state] in
-                            if let state = state {
-                                dismissEyedropper.invoke(Void())
-                                state.saveToolState()
-                                dismiss.invoke(Void())
-                            }
+            let backButton = backButton.update(
+                component: GlassBarButtonComponent(
+                    size: CGSize(width: 44.0, height: 44.0),
+                    backgroundColor: nil,
+                    isDark: true,
+                    state: .glass,
+                    component: AnyComponentWithIdentity(
+                        id: "icon",
+                        component: AnyComponent(
+                            BundleIconComponent(name: "Navigation/Close", tintColor: .white)
+                        )
+                    ),
+                    action: { [weak state] _ in
+                        if let state {
+                            dismissEyedropper.invoke(Void())
+                            state.saveToolState()
+                            dismiss.invoke(Void())
                         }
-                    ).minSize(CGSize(width: 44.0, height: 44.0)).tagged(cancelButtonTag),
-                    availableSize: CGSize(width: 33.0, height: 33.0),
-                    transition: .immediate
-                )
-                var backButtonPosition = CGPoint(x: environment.safeInsets.left + backButton.size.width / 2.0 + 3.0, y: context.availableSize.height - environment.safeInsets.bottom - backButton.size.height / 2.0 - 2.0 - UIScreenPixel)
-                if component.sourceHint == .storyEditor {
-                    backButtonPosition.x = backButtonPosition.x + 2.0
-                    if case .regular = environment.metrics.widthClass {
-                        backButtonPosition.x += 20.0
-                    }
-                    backButtonPosition.y = floorToScreenPixels(context.availableSize.height - previewBottomInset + 3.0 + backButton.size.height / 2.0) + controlsBottomInset
+                    },
+                    tag: cancelButtonTag
+                ),
+                availableSize: CGSize(width: 44.0, height: 44.0),
+                transition: .immediate
+            )
+            var backButtonPosition = CGPoint(x: bottomEdgeInsets.left + backButton.size.width / 2.0 + 14.0, y: context.availableSize.height - environment.safeInsets.bottom - backButton.size.height / 2.0 - 2.0 - UIScreenPixel)
+            if component.sourceHint == .storyEditor {
+                backButtonPosition.x = backButtonPosition.x + 2.0
+                if case .regular = environment.metrics.widthClass {
+                    backButtonPosition.x += 20.0
                 }
-                context.add(backButton
-                    .position(backButtonPosition)
-                    .opacity(controlsAreVisible ? 1.0 : 0.0)
-                )
+                backButtonPosition.y = floorToScreenPixels(context.availableSize.height - previewBottomInset + 3.0 + backButton.size.height / 2.0) + controlsBottomInset + 5.0
+            } else {
+                backButtonPosition.x = backButtonPosition.x + 12.0
+                backButtonPosition.y -= 3.0 - UIScreenPixel
             }
+            context.add(backButton
+                .position(backButtonPosition)
+                .opacity(controlsAreVisible ? 1.0 : 0.0)
+            )
             
             return context.availableSize
         }
@@ -2225,22 +2286,24 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
                 self.performAction.connect { [weak self] action in
                     if let self {
                         if case .clear = action {
-                            let actionSheet = ActionSheetController(presentationData: self.presentationData.withUpdated(theme: defaultDarkColorPresentationTheme))
-                            actionSheet.setItemGroups([
-                                ActionSheetItemGroup(items: [
-                                    ActionSheetButtonItem(title: self.presentationData.strings.Paint_ClearConfirm, color: .destructive, action: { [weak actionSheet, weak self] in
-                                        actionSheet?.dismissAnimated()
-                                        
-                                        self?._drawingView?.performAction(action)
-                                    })
-                                ]),
-                                ActionSheetItemGroup(items: [
-                                    ActionSheetButtonItem(title: self.presentationData.strings.Common_Cancel, color: .accent, font: .bold, action: { [weak actionSheet] in
-                                        actionSheet?.dismissAnimated()
-                                    })
-                                ])
-                            ])
-                            self.controller?.present(actionSheet, in: .window(.root))
+                            let sourceView: UIView
+                            if let topButtonsView = self.componentHost.findTaggedView(tag: topButtonsTag) as? GlassControlPanelComponent.View, let rightItemView = topButtonsView.rightItemView, let clearAllView = rightItemView.itemView(id: AnyHashable("clearAll")) {
+                                sourceView = clearAllView
+                            } else {
+                                sourceView = self.view
+                            }
+
+                            let items: [ContextMenuItem] = [
+                                .action(ContextMenuActionItem(text: self.presentationData.strings.Paint_ClearConfirm, textColor: .destructive, icon: { _ in
+                                    return nil
+                                }, action: { [weak self] f in
+                                    f.dismissWithResult(.default)
+                                    self?._drawingView?.performAction(.clear)
+                                }))
+                            ]
+                            let presentationData = self.presentationData.withUpdated(theme: defaultDarkPresentationTheme)
+                            let contextController = makeContextController(presentationData: presentationData, source: .reference(ReferenceContentSource(sourceView: sourceView, contentArea: mainWindowScreenBounds, customPosition: CGPoint(), actionsPosition: .bottom)), items: .single(ContextController.Items(content: .list(items))))
+                            self.controller?.present(contextController, in: .window(.root))
                         } else {
                             self._drawingView?.performAction(action)
                         }
@@ -2404,22 +2467,18 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
             self.dismiss.connect { [weak self] _ in
                 if let strongSelf = self {
                     if strongSelf.drawingView.canUndo || strongSelf.entitiesView.hasChanges {
-                        let actionSheet = ActionSheetController(presentationData: strongSelf.presentationData.withUpdated(theme: defaultDarkColorPresentationTheme))
-                        actionSheet.setItemGroups([
-                            ActionSheetItemGroup(items: [
-                                ActionSheetButtonItem(title: strongSelf.presentationData.strings.PhotoEditor_DiscardChanges, color: .accent, action: { [weak actionSheet, weak self] in
-                                    actionSheet?.dismissAnimated()
-                                    
-                                    self?.controller?.requestDismiss()
-                                })
-                            ]),
-                            ActionSheetItemGroup(items: [
-                                ActionSheetButtonItem(title: strongSelf.presentationData.strings.Common_Cancel, color: .accent, font: .bold, action: { [weak actionSheet] in
-                                    actionSheet?.dismissAnimated()
-                                })
-                            ])
-                        ])
-                        strongSelf.controller?.present(actionSheet, in: .window(.root))
+                        let sourceView = strongSelf.componentHost.findTaggedView(tag: cancelButtonTag) ?? strongSelf.view
+                        let items: [ContextMenuItem] = [
+                            .action(ContextMenuActionItem(text: strongSelf.presentationData.strings.PhotoEditor_DiscardChanges, textColor: .destructive, icon: { _ in
+                                return nil
+                            }, action: { [weak self] f in
+                                f.dismissWithResult(.default)
+                                self?.controller?.requestDismiss()
+                            }))
+                        ]
+                        let presentationData = strongSelf.presentationData.withUpdated(theme: defaultDarkPresentationTheme)
+                        let contextController = makeContextController(presentationData: presentationData, source: .reference(ReferenceContentSource(sourceView: sourceView, contentArea: mainWindowScreenBounds, customPosition: CGPoint())), items: .single(ContextController.Items(content: .list(items))))
+                        strongSelf.controller?.present(contextController, in: .window(.root))
                     } else {
                         strongSelf.controller?.requestDismiss()
                     }
@@ -2498,17 +2557,24 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
             if let view = self.componentHost.findTaggedView(tag: bottomGradientTag) {
                 view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
             }
-            if let buttonView = self.componentHost.findTaggedView(tag: undoButtonTag) {
-                buttonView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
+            if let topButtonsView = self.componentHost.findTaggedView(tag: topButtonsTag) as? GlassControlPanelComponent.View {
+                topButtonsView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+                
+                if let leftItemView = topButtonsView.leftItemView {
+                    leftItemView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+                    leftItemView.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
+                }
+                if let rightItemView = topButtonsView.rightItemView {
+                    rightItemView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+                    rightItemView.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
+                }
             }
-            if let buttonView = self.componentHost.findTaggedView(tag: clearAllButtonTag) {
-                buttonView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
+            if let view = self.componentHost.findTaggedView(tag: modeTag) {
+                view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
             }
-            if let buttonView = self.componentHost.findTaggedView(tag: addButtonTag) {
-                buttonView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
+            if let view = self.componentHost.findTaggedView(tag: addButtonTag) {
+                view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+                view.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
             }
             var delay: Double = 0.0
             for tag in colorTags {
@@ -2520,6 +2586,15 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
             }
             if let view = self.componentHost.findTaggedView(tag: sizeSliderTag) {
                 view.layer.animatePosition(from: CGPoint(x: -33.0, y: 0.0), to: CGPoint(), duration: 0.3, additive: true)
+            }
+            
+            if let view = self.componentHost.findTaggedView(tag: cancelButtonTag) {
+                view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+                view.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
+            }
+            if let view = self.componentHost.findTaggedView(tag: doneButtonTag) {
+                view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+                view.layer.animateScale(from: 0.01, to: 1.0, duration: 0.3)
             }
         }
         
@@ -2537,43 +2612,24 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
                 }
                 view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
             }
-            if let buttonView = self.componentHost.findTaggedView(tag: undoButtonTag) {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
-            }
-            if let buttonView = self.componentHost.findTaggedView(tag: redoButtonTag), buttonView.alpha > 0.0 {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
-            }
-            if let buttonView = self.componentHost.findTaggedView(tag: clearAllButtonTag) {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
+            if let topButtonsView = self.componentHost.findTaggedView(tag: topButtonsTag) as? GlassControlPanelComponent.View {
+                topButtonsView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
+                
+                if let view = topButtonsView.leftItemView {
+                    view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
+                    view.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3, removeOnCompletion: false)
+                }
+                if let view = topButtonsView.rightItemView {
+                    view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
+                    view.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3, removeOnCompletion: false)
+                }
             }
             if let view = self.componentHost.findTaggedView(tag: colorButtonTag) as? ColorSwatchComponent.View {
                 view.animateOut()
             }
-            if let buttonView = self.componentHost.findTaggedView(tag: addButtonTag) {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
-            }
-            if let buttonView = self.componentHost.findTaggedView(tag: flipButtonTag) {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
-            }
-            if let buttonView = self.componentHost.findTaggedView(tag: fillButtonTag) {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
-            }
-            if let buttonView = self.componentHost.findTaggedView(tag: zoomOutButtonTag) {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
-                buttonView.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
+            if let view = self.componentHost.findTaggedView(tag: addButtonTag) {
+                view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
+                view.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3, removeOnCompletion: false)
             }
             if let view = self.componentHost.findTaggedView(tag: sizeSliderTag) {
                 view.layer.animatePosition(from: CGPoint(), to: CGPoint(x: -33.0, y: 0.0), duration: 0.3, removeOnCompletion: false, additive: true)
@@ -2597,12 +2653,18 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
                 })
             }
             
-            if let view = self.componentHost.findTaggedView(tag: modeTag) as? ModeAndSizeComponent.View {
-                view.animateOut()
+            if let view = self.componentHost.findTaggedView(tag: modeTag) {
+                view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
             }
-            if let buttonView = self.componentHost.findTaggedView(tag: doneButtonTag) {
-                buttonView.alpha = 0.0
-                buttonView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3)
+            
+            if let view = self.componentHost.findTaggedView(tag: cancelButtonTag) {
+                view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
+                view.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3, removeOnCompletion: false)
+            }
+            
+            if let view = self.componentHost.findTaggedView(tag: doneButtonTag) {
+                view.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
+                view.layer.animateScale(from: 1.0, to: 0.01, duration: 0.3)
             }
         }
         
@@ -2628,7 +2690,8 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
             self.validLayout = (layout, orientation)
                         
             let environment = ViewControllerComponentContainer.Environment(
-                statusBarHeight: layout.statusBarHeight ?? 0.0,
+                statusBarHeight: layout.navigationBarStatusBarHeight ?? 0.0,
+                fullStatusBarHeight: layout.statusBarHeight ?? 0.0,
                 navigationHeight: 0.0,
                 safeInsets: UIEdgeInsets(
                     top: layout.intrinsicInsets.top + layout.safeInsets.top,
@@ -2636,6 +2699,8 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
                     bottom: layout.intrinsicInsets.bottom + layout.safeInsets.bottom,
                     right: layout.safeInsets.right
                 ),
+                reservedCorners: layout.reservedCorners,
+                navigationBarTrailingButtonsInset: layout.navigationBarTrailingButtonsInset,
                 additionalInsets: layout.additionalInsets,
                 inputHeight: layout.inputHeight ?? 0.0,
                 metrics: layout.metrics,
@@ -2893,13 +2958,13 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
         var stickers: [Any] = []
         for entity in self.entitiesView.entities {
             if let sticker = entity as? DrawingStickerEntity, case let .file(file, _) = sticker.content {
-                let coder = PostboxEncoder()
+                let coder = EnginePostboxEncoder()
                 coder.encodeRootObject(file.media)
                 stickers.append(coder.makeData())
             } else if let text = entity as? DrawingTextEntity, let subEntities = text.renderSubEntities {
                 for sticker in subEntities {
                     if let sticker = sticker as? DrawingStickerEntity, case let .file(file, _) = sticker.content {
-                        let coder = PostboxEncoder()
+                        let coder = EnginePostboxEncoder()
                         coder.encodeRootObject(file.media)
                         stickers.append(coder.makeData())
                     }
@@ -2926,6 +2991,14 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
     }
     
     public func adapterContainerLayoutUpdatedSize(_ size: CGSize, intrinsicInsets: UIEdgeInsets, safeInsets: UIEdgeInsets, statusBarHeight: CGFloat, inputHeight: CGFloat, orientation: UIInterfaceOrientation, isRegular: Bool, animated: Bool) {
+        let reservedCorners = reservedCornersForHostedLayout(size: size, orientation: orientation)
+        var statusBarHeight = statusBarHeight
+        if let island = reservedCorners.topRight, safeInsets.left.isZero, safeInsets.right.isZero {
+            // iPhone Duo unfolded portrait: the host reports the system's 2pt status sliver beside the status island,
+            // while the window takes the island's height as the status height. Taking it here too puts the top row on
+            // the island's clock line, as when the screen is presented directly.
+            statusBarHeight = max(statusBarHeight, island.height)
+        }
         var intrinsicInsets = intrinsicInsets
         if intrinsicInsets.top.isZero {
             intrinsicInsets.top = statusBarHeight
@@ -2936,11 +3009,16 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
             deviceMetrics: DeviceMetrics(screenSize: size, scale: UIScreen.main.scale, statusBarHeight: statusBarHeight, onScreenNavigationHeight: nil),
             intrinsicInsets: intrinsicInsets,
             safeInsets: safeInsets,
+            // The host's screen corners (iPhone Duo's status corner or island; `.none` elsewhere), so the screen keeps its
+            // top row beside the island as it does when presented directly.
+            reservedCorners: reservedCorners,
+            division: nil,
             additionalInsets: .zero,
             statusBarHeight: statusBarHeight,
             inputHeight: inputHeight,
             inputHeightIsInteractivellyChanging: false,
-            inVoiceOver: false
+            inVoiceOver: false,
+            presentedInFormSheet: false
         )
         self.orientation = orientation
         self.containerLayoutUpdated(layout, transition: animated ? .animated(duration: 0.3, curve: .easeInOut) : .immediate)
@@ -2948,7 +3026,7 @@ public class DrawingScreen: ViewController, TGPhotoDrawingInterfaceController, U
     
     @available(iOSApplicationExtension 11.0, iOS 11.0, *)
     public func dropInteraction(_ interaction: UIDropInteraction, canHandle session: UIDropSession) -> Bool {
-        return session.hasItemsConforming(toTypeIdentifiers: [kUTTypeImage as String])
+        return session.hasItemsConforming(toTypeIdentifiers: [UTType.image.identifier])
     }
     
     @available(iOSApplicationExtension 11.0, iOS 11.0, *)
@@ -3302,6 +3380,29 @@ public final class DrawingToolsInteraction {
     }
     
     func presentEyedropper(retryLaterForVideo: Bool = true, dismissed: @escaping () -> Void) {
+        guard var contentWrapperView = self.contentWrapperView, let controllerView = self.getControllerNode()?.view else {
+            return
+        }
+
+        if contentWrapperView.frame.width.isZero {
+            guard let fallbackContentWrapperView = self.entitiesView.superview else {
+                return
+            }
+            contentWrapperView = fallbackContentWrapperView
+        }
+
+        var visibleFrame = contentWrapperView.convert(contentWrapperView.bounds, to: controllerView).intersection(controllerView.bounds)
+        var ancestorView = contentWrapperView.superview
+        while let view = ancestorView {
+            if view.clipsToBounds {
+                visibleFrame = visibleFrame.intersection(view.convert(view.bounds, to: controllerView))
+            }
+            ancestorView = view.superview
+        }
+        guard !visibleFrame.isEmpty else {
+            return
+        }
+
         self.entitiesView.pause()
         
         if self.isVideo && retryLaterForVideo {
@@ -3330,15 +3431,11 @@ public final class DrawingToolsInteraction {
             self.entitiesView.layer.render(in: context)
         }, opaque: true, scale: 1.0)
         
-        guard let sourceImage, var contentWrapperView = self.contentWrapperView, let controllerView = self.getControllerNode()?.view else {
+        guard let sourceImage else {
             return
         }
         
-        if contentWrapperView.frame.width.isZero {
-            contentWrapperView = self.entitiesView.superview!
-        }
-        
-        let eyedropperView = EyedropperView(containerSize: contentWrapperView.frame.size, drawingView: self.drawingView, sourceImage: sourceImage)
+        let eyedropperView = EyedropperView(containerSize: visibleFrame.size, drawingView: self.drawingView, sourceImage: sourceImage)
         eyedropperView.completed = { [weak self] color in
             if let self {
                 self.updateColor(color)
@@ -3354,7 +3451,7 @@ public final class DrawingToolsInteraction {
                 self.updateVideoPlayback(true)
             }
         }
-        eyedropperView.frame = contentWrapperView.convert(contentWrapperView.bounds, to: controllerView)
+        eyedropperView.frame = visibleFrame
         self.addSubview(eyedropperView)
         self.currentEyedropperView = eyedropperView
     }

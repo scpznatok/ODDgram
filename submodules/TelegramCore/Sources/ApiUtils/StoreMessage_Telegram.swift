@@ -1,12 +1,13 @@
 import Foundation
 import Postbox
-import TelegramApi
+internal import TelegramApi
 
 
 public func tagsForStoreMessage(incoming: Bool, attributes: [MessageAttribute], media: [Media], textEntities: [MessageTextEntity]?, isPinned: Bool) -> (MessageTags, GlobalMessageTags) {
     var isSecret = false
     var isUnconsumedPersonalMention = false
     var hasUnseenReactions = false
+    var richText: RichTextMessageAttribute?
     for attribute in attributes {
         if let timerAttribute = attribute as? AutoclearTimeoutMessageAttribute {
             if timerAttribute.timeout > 0 && (timerAttribute.timeout <= 60 || timerAttribute.timeout == viewOnceTimeout) {
@@ -22,6 +23,8 @@ public func tagsForStoreMessage(incoming: Bool, attributes: [MessageAttribute], 
             }
         } else if let attribute = attribute as? ReactionsMessageAttribute, attribute.hasUnseen {
             hasUnseenReactions = true
+        } else if let attribute = attribute as? RichTextMessageAttribute {
+            richText = attribute
         }
     }
     
@@ -38,6 +41,8 @@ public func tagsForStoreMessage(incoming: Bool, attributes: [MessageAttribute], 
     if isPinned {
         tags.insert(.pinned)
     }
+    
+    var hasUnseenPollVotes: Bool = false
     
     for attachment in media {
         if let _ = attachment as? TelegramMediaImage {
@@ -109,6 +114,11 @@ public func tagsForStoreMessage(incoming: Bool, attributes: [MessageAttribute], 
             }
         } else if let location = attachment as? TelegramMediaMap, location.liveBroadcastingTimeout != nil {
             tags.insert(.liveLocation)
+        } else if let poll = attachment as? TelegramMediaPoll {
+            tags.insert(.polls)
+            if poll.results.hasUnseenVotes == true {
+                hasUnseenPollVotes = true
+            }
         }
     }
     if let textEntities = textEntities, !textEntities.isEmpty && !tags.contains(.webPage) {
@@ -120,6 +130,67 @@ public func tagsForStoreMessage(incoming: Bool, attributes: [MessageAttribute], 
                     }
                 default:
                     break
+            }
+        }
+    }
+    
+    if hasUnseenPollVotes {
+        tags.insert(.unseenPollVote)
+    }
+    
+    if let attribute = richText {
+        //TODO:rewrite to take all media
+        for media in attribute.instantPage.allMedia() {
+            switch media {
+            case _ as TelegramMediaImage:
+                tags.insert(.photo)
+                tags.insert(.photoOrVideo)
+            case let file as TelegramMediaFile:
+                var refinedTag: MessageTags? = .file
+                var isAnimated = false
+                inner: for attribute in file.attributes {
+                    switch attribute {
+                        case let .Video(_, _, flags, _, _, _):
+                            if flags.contains(.instantRoundVideo) {
+                                refinedTag = .voiceOrInstantVideo
+                            } else {
+                                if !isSecret {
+                                    refinedTag = [.photoOrVideo, .video]
+                                } else {
+                                    refinedTag = nil
+                                }
+                            }
+                        case let .Audio(isVoice, _, _, _, _):
+                            if isVoice {
+                                refinedTag = .voiceOrInstantVideo
+                            } else {
+                                if file.isInstantVideo {
+                                    refinedTag = .voiceOrInstantVideo
+                                } else {
+                                    refinedTag = .music
+                                }
+                            }
+                            break inner
+                        case .Sticker:
+                            refinedTag = nil
+                            break inner
+                        case .Animated:
+                            isAnimated = true
+                        default:
+                            break
+                    }
+                }
+                if isAnimated {
+                    refinedTag = .gif
+                }
+                if file.isAnimatedSticker {
+                    refinedTag = nil
+                }
+                if let refinedTag {
+                    tags.insert(refinedTag)
+                }
+            default:
+                break
             }
         }
     }
@@ -241,8 +312,11 @@ func apiMessagePeerIds(_ message: Api.Message) -> [PeerId] {
             }
             
             switch action {
-            case .messageActionChannelCreate, .messageActionChatDeletePhoto, .messageActionChatEditPhoto, .messageActionChatEditTitle, .messageActionEmpty, .messageActionPinMessage, .messageActionHistoryClear, .messageActionGameScore, .messageActionPaymentSent, .messageActionPaymentSentMe, .messageActionPhoneCall, .messageActionScreenshotTaken, .messageActionCustomAction, .messageActionBotAllowed, .messageActionSecureValuesSent, .messageActionSecureValuesSentMe, .messageActionContactSignUp, .messageActionGroupCall, .messageActionSetMessagesTTL, .messageActionGroupCallScheduled, .messageActionSetChatTheme, .messageActionChatJoinedByRequest, .messageActionWebViewDataSent, .messageActionWebViewDataSentMe, .messageActionGiftPremium, .messageActionGiftStars, .messageActionTopicCreate, .messageActionTopicEdit, .messageActionSuggestProfilePhoto, .messageActionSetChatWallPaper, .messageActionGiveawayLaunch, .messageActionGiveawayResults, .messageActionBoostApply, .messageActionRequestedPeerSentMe, .messageActionStarGift, .messageActionStarGiftUnique, .messageActionPaidMessagesRefunded, .messageActionPaidMessagesPrice, .messageActionTodoCompletions, .messageActionTodoAppendTasks, .messageActionSuggestedPostApproval, .messageActionGiftTon, .messageActionSuggestedPostSuccess, .messageActionSuggestedPostRefund, .messageActionSuggestBirthday, .messageActionStarGiftPurchaseOffer, .messageActionStarGiftPurchaseOfferDeclined, .messageActionNoForwardsToggle, .messageActionNoForwardsRequest:
+            case .messageActionChannelCreate, .messageActionChatDeletePhoto, .messageActionChatEditPhoto, .messageActionChatEditTitle, .messageActionEmpty, .messageActionPinMessage, .messageActionHistoryClear, .messageActionGameScore, .messageActionPaymentSent, .messageActionPaymentSentMe, .messageActionPhoneCall, .messageActionScreenshotTaken, .messageActionCustomAction, .messageActionBotAllowed, .messageActionSecureValuesSent, .messageActionSecureValuesSentMe, .messageActionContactSignUp, .messageActionGroupCall, .messageActionSetMessagesTTL, .messageActionGroupCallScheduled, .messageActionSetChatTheme, .messageActionChatJoinedByRequest, .messageActionWebViewDataSent, .messageActionWebViewDataSentMe, .messageActionGiftPremium, .messageActionGiftStars, .messageActionTopicCreate, .messageActionTopicEdit, .messageActionSuggestProfilePhoto, .messageActionSetChatWallPaper, .messageActionGiveawayLaunch, .messageActionGiveawayResults, .messageActionBoostApply, .messageActionRequestedPeerSentMe, .messageActionStarGift, .messageActionStarGiftUnique, .messageActionPaidMessagesRefunded, .messageActionPaidMessagesPrice, .messageActionTodoCompletions, .messageActionTodoAppendTasks, .messageActionSuggestedPostApproval, .messageActionGiftTon, .messageActionGramTransfer, .messageActionWalletTonConnectRequest, .messageActionSuggestedPostSuccess, .messageActionSuggestedPostRefund, .messageActionSuggestBirthday, .messageActionStarGiftPurchaseOffer, .messageActionStarGiftPurchaseOfferDeclined, .messageActionNoForwardsToggle, .messageActionNoForwardsRequest, .messageActionPollAppendAnswer, .messageActionPollDeleteAnswer, .messageActionNoPaidMessagesTokenUsed:
                     break
+                case let .messageActionManagedBotCreated(messageActionManagedBotCreated):
+                    let botId = messageActionManagedBotCreated.botId
+                    result.append(PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(botId)))
                 case let .messageActionChannelMigrateFrom(messageActionChannelMigrateFromData):
                     let chatId = messageActionChannelMigrateFromData.chatId
                     result.append(PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(chatId)))
@@ -293,13 +367,66 @@ func apiMessagePeerIds(_ message: Api.Message) -> [PeerId] {
                     if let otherParticipants {
                         result.append(contentsOf: otherParticipants.map(\.peerId))
                     }
-                case let .messageActionNewCreatorPending(messageActionNewCreatorPending):
-                    result.append(PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(messageActionNewCreatorPending.newCreatorId)))
-                case let .messageActionChangeCreator(messageActionChangeCreator):
-                    result.append(PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(messageActionChangeCreator.newCreatorId)))
+                case let .messageActionNewCreatorPending(messageActionNewCreatorPendingData):
+                    result.append(PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(messageActionNewCreatorPendingData.newCreatorId)))
+                case let .messageActionChangeCreator(messageActionChangeCreatorData):
+                    result.append(PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(messageActionChangeCreatorData.newCreatorId)))
+                case let .messageActionChangeCommunity(messageActionChangeCommunityData):
+                    if let communityId = messageActionChangeCommunityData.communityId {
+                        result.append(PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(communityId)))
+                    }
+                case let .messageActionChatJoinedViaCommunity(messageActionChatJoinedViaCommunityData):
+                    result.append(PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(messageActionChatJoinedViaCommunityData.communityId)))
             }
         
             return result
+    }
+}
+
+func apiEphemeralMessagePeerIds(_ message: Api.EphemeralMessage) -> [PeerId] {
+    switch message {
+    case let .ephemeralMessage(messageData):
+        let (_, _, fromId, peerId, receiverId, _, _, _, _, _, _, replyTo) = (messageData.flags, messageData.id, messageData.fromId, messageData.peerId, messageData.receiverId, messageData.topMsgId, messageData.date, messageData.message, messageData.entities, messageData.media, messageData.replyMarkup, messageData.replyTo)
+        var result: [PeerId] = []
+
+        func appendUnique(_ peerId: PeerId) {
+            if !result.contains(peerId) {
+                result.append(peerId)
+            }
+        }
+
+        if let peerId {
+            appendUnique(peerId.peerId)
+        }
+        appendUnique(fromId.peerId)
+        if receiverId != 0 {
+            appendUnique(PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(receiverId)))
+        }
+        if let replyTo {
+            switch replyTo {
+            case let .messageReplyHeader(messageReplyHeaderData):
+                if let replyToPeerId = messageReplyHeaderData.replyToPeerId {
+                    appendUnique(replyToPeerId.peerId)
+                }
+                if let replyFrom = messageReplyHeaderData.replyFrom {
+                    switch replyFrom {
+                    case let .messageFwdHeader(messageFwdHeaderData):
+                        if let fromId = messageFwdHeaderData.fromId {
+                            appendUnique(fromId.peerId)
+                        }
+                        if let savedFromPeer = messageFwdHeaderData.savedFromPeer {
+                            appendUnique(savedFromPeer.peerId)
+                        }
+                        if let savedFromId = messageFwdHeaderData.savedFromId {
+                            appendUnique(savedFromId.peerId)
+                        }
+                    }
+                }
+            case let .messageReplyStoryHeader(messageReplyStoryHeaderData):
+                appendUnique(messageReplyStoryHeaderData.peer.peerId)
+            }
+        }
+        return result
     }
 }
 
@@ -361,6 +488,137 @@ func apiMessageAssociatedMessageIds(_ message: Api.Message) -> (replyIds: Refere
     return nil
 }
 
+extension StoreMessage {
+    convenience init?(apiEphemeralMessage: Api.EphemeralMessage, namespace: MessageId.Namespace? = nil) {
+        switch apiEphemeralMessage {
+        case let .ephemeralMessage(messageData):
+            let (flags, id, fromId, receiverId, topMsgId, text, entities, media, replyMarkup, replyTo, richMessage, anchorMsgId) = (messageData.flags, messageData.id, messageData.fromId, messageData.receiverId, messageData.topMsgId, messageData.message, messageData.entities, messageData.media, messageData.replyMarkup, messageData.replyTo, messageData.richMessage, messageData.anchorMsgId)
+            guard let peerId = apiEphemeralMessage.peerId else {
+                return nil
+            }
+            let isWelcomeTemplate = (flags & (1 << 5)) != 0
+            let authorId = isWelcomeTemplate ? peerId : fromId.peerId
+            let isForwardingDisabled = (flags & (1 << 12)) != 0
+            let anchorMessageId = anchorMsgId.flatMap { id -> MessageId? in
+                guard !isWelcomeTemplate else {
+                    return nil
+                }
+                return MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: id)
+            }
+
+            var attributes: [MessageAttribute] = [
+                EphemeralMessageAttribute(receiverId: receiverId, isWelcomeTemplate: isWelcomeTemplate, anchorMessageId: anchorMessageId, isForwardingDisabled: isForwardingDisabled)
+            ]
+            var medias: [Media] = []
+
+            if let media {
+                let (mediaValue, expirationTimer, nonPremium, hasSpoiler, webpageAttributes, videoTimestamp) = textMediaAndExpirationTimerFromApiMedia(media, peerId)
+                if let mediaValue {
+                    medias.append(mediaValue)
+
+                    if let expirationTimer, expirationTimer > 0 {
+                        attributes.append(AutoclearTimeoutMessageAttribute(timeout: expirationTimer, countdownBeginTime: nil))
+                    }
+
+                    if let nonPremium, nonPremium {
+                        attributes.append(NonPremiumMessageAttribute())
+                    }
+
+                    if let hasSpoiler, hasSpoiler {
+                        attributes.append(MediaSpoilerMessageAttribute())
+                    }
+
+                    if let videoTimestamp {
+                        attributes.append(ForwardVideoTimestampAttribute(timestamp: videoTimestamp))
+                    }
+
+                    if mediaValue is TelegramMediaWebpage, let webpageAttributes {
+                        attributes.append(WebpagePreviewMessageAttribute(leadingPreview: false, forceLargeMedia: webpageAttributes.forceLargeMedia, isManuallyAdded: webpageAttributes.isManuallyAdded, isSafe: webpageAttributes.isSafe))
+                    }
+                }
+            }
+
+            if let replyTo {
+                switch replyTo {
+                case let .messageReplyHeader(messageReplyHeaderData):
+                    let (innerFlags, replyToMsgId, replyToPeerId, replyHeader, replyMedia, replyToTopId, quoteText, quoteEntities, quoteOffset, todoItemId, pollOption, quoteRich) = (messageReplyHeaderData.flags, messageReplyHeaderData.replyToMsgId, messageReplyHeaderData.replyToPeerId, messageReplyHeaderData.replyFrom, messageReplyHeaderData.replyMedia, messageReplyHeaderData.replyToTopId, messageReplyHeaderData.quoteText, messageReplyHeaderData.quoteEntities, messageReplyHeaderData.quoteOffset, messageReplyHeaderData.todoItemId, messageReplyHeaderData.pollOption, messageReplyHeaderData.quoteRich)
+                    let isQuote = (innerFlags & (1 << 9)) != 0
+                    let replyNamespace: MessageId.Namespace = (innerFlags & (1 << 13)) != 0 ? Namespaces.Message.EphemeralLocal : Namespaces.Message.Cloud
+
+                    let quote = engineReplyQuote(text: quoteText, entities: quoteEntities, offset: quoteOffset, rich: quoteRich, media: textMediaAndExpirationTimerFromApiMedia(replyMedia, peerId).media)
+
+                    if let replyToMsgId {
+                        let replyPeerId = replyToPeerId?.peerId ?? peerId
+                        let threadMessageId = replyToTopId.flatMap { MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: $0) }
+                        var innerSubject: EngineMessageReplyInnerSubject?
+                        if let todoItemId {
+                            innerSubject = .todoItem(todoItemId)
+                        } else if let pollOption {
+                            innerSubject = .pollOption(pollOption.makeData())
+                        }
+                        attributes.append(ReplyMessageAttribute(messageId: MessageId(peerId: replyPeerId, namespace: replyNamespace, id: replyToMsgId), threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, innerSubject: innerSubject))
+                    }
+                    if let replyHeader {
+                        attributes.append(QuotedReplyMessageAttribute(apiHeader: replyHeader, quote: quote, isQuote: isQuote))
+                    }
+                case let .messageReplyStoryHeader(messageReplyStoryHeaderData):
+                    let (peer, storyId) = (messageReplyStoryHeaderData.peer, messageReplyStoryHeaderData.storyId)
+                    attributes.append(ReplyStoryAttribute(storyId: StoryId(peerId: peer.peerId, id: storyId)))
+                }
+            }
+
+            let parsedEntities = messageTextEntitiesFromApiEntities(entities ?? [])
+            attributes.append(TextEntitiesMessageAttribute(entities: parsedEntities))
+
+            if let replyMarkup {
+                attributes.append(ReplyMarkupMessageAttribute(apiMarkup: replyMarkup))
+            }
+            if let richMessage {
+                attributes.append(RichTextMessageAttribute(apiRichMessage: richMessage))
+            }
+            if (flags & (1 << 7)) != 0 {
+                attributes.append(InvertMediaMessageAttribute())
+            }
+
+            var date = messageData.date
+            var storeFlags = StoreMessageFlags()
+            if isWelcomeTemplate || (flags & (1 << 0)) == 0 {
+                storeFlags.insert(.Incoming)
+                date += 1
+            }
+
+            let messageNamespace: MessageId.Namespace
+            if let namespace {
+                messageNamespace = namespace
+            } else if anchorMessageId != nil {
+                messageNamespace = Namespaces.Message.EphemeralAnchored
+            } else if isWelcomeTemplate {
+                messageNamespace = Namespaces.Message.WelcomeMessageCloud
+            } else {
+                messageNamespace = Namespaces.Message.EphemeralLocal
+            }
+
+            self.init(
+                id: MessageId(peerId: peerId, namespace: messageNamespace, id: id),
+                customStableId: nil,
+                globallyUniqueId: nil,
+                groupingKey: nil,
+                threadId: topMsgId.flatMap { Int64($0) },
+                timestamp: date,
+                flags: storeFlags,
+                tags: [],
+                globalTags: [],
+                localTags: [],
+                forwardInfo: nil,
+                authorId: authorId,
+                text: text,
+                attributes: attributes,
+                media: medias
+            )
+        }
+    }
+}
+
 struct ParsedMessageWebpageAttributes {
     var forceLargeMedia: Bool?
     var isManuallyAdded: Bool
@@ -373,7 +631,7 @@ func textMediaAndExpirationTimerFromApiMedia(_ media: Api.MessageMedia?, _ peerI
         case let .messageMediaPhoto(messageMediaPhotoData):
             let (flags, photo, ttlSeconds) = (messageMediaPhotoData.flags, messageMediaPhotoData.photo, messageMediaPhotoData.ttlSeconds)
             if let photo = photo {
-                if let mediaImage = telegramMediaImageFromApiPhoto(photo) {
+                if let mediaImage = telegramMediaImageFromApiPhoto(photo, video: messageMediaPhotoData.video) {
                     return (mediaImage, ttlSeconds, nil, (flags & (1 << 3)) != 0, nil, nil)
                 }
             } else {
@@ -399,7 +657,7 @@ func textMediaAndExpirationTimerFromApiMedia(_ media: Api.MessageMedia?, _ peerI
         case let .messageMediaDocument(messageMediaDocumentData):
             let (flags, document, altDocuments, coverPhoto, videoTimestamp, ttlSeconds) = (messageMediaDocumentData.flags, messageMediaDocumentData.document, messageMediaDocumentData.altDocuments, messageMediaDocumentData.videoCover, messageMediaDocumentData.videoTimestamp, messageMediaDocumentData.ttlSeconds)
             if let document = document {
-                if let mediaFile = telegramMediaFileFromApiDocument(document, altDocuments: altDocuments, videoCover: coverPhoto, isLivePhoto: (flags & (1 << 11)) != 0) {
+                if let mediaFile = telegramMediaFileFromApiDocument(document, altDocuments: altDocuments, videoCover: coverPhoto) {
                     return (mediaFile, ttlSeconds, (flags & (1 << 3)) != 0, (flags & (1 << 4)) != 0, nil, videoTimestamp)
                 }
             } else {
@@ -450,7 +708,7 @@ func textMediaAndExpirationTimerFromApiMedia(_ media: Api.MessageMedia?, _ peerI
             let (poll, results) = (messageMediaPollData.poll, messageMediaPollData.results)
             switch poll {
             case let .poll(pollData):
-                let (id, flags, question, answers, closePeriod, _) = (pollData.id, pollData.flags, pollData.question, pollData.answers, pollData.closePeriod, pollData.closeDate)
+                let (id, flags, question, answers, closePeriod, closeDate, pollHash, countries) = (pollData.id, pollData.flags, pollData.question, pollData.answers, pollData.closePeriod, pollData.closeDate, pollData.hash, pollData.countriesIso2)
                 let publicity: TelegramMediaPollPublicity
                 if (flags & (1 << 1)) != 0 {
                     publicity = .public
@@ -459,10 +717,17 @@ func textMediaAndExpirationTimerFromApiMedia(_ media: Api.MessageMedia?, _ peerI
                 }
                 let kind: TelegramMediaPollKind
                 if (flags & (1 << 3)) != 0 {
-                    kind = .quiz
+                    kind = .quiz(multipleAnswers: (flags & (1 << 2)) != 0)
                 } else {
                     kind = .poll(multipleAnswers: (flags & (1 << 2)) != 0)
                 }
+
+                let openAnswers = (flags & (1 << 6)) != 0
+                let revotingDisabled = (flags & (1 << 7)) != 0
+                let shuffleAnswers = (flags & (1 << 8)) != 0
+                let hideResultsUntilClose = (flags & (1 << 9)) != 0
+                let isCreator = (flags & (1 << 10)) != 0
+                let restrictToSubscribers = (flags & (1 << 11)) != 0
                 
                 let questionText: String
                 let questionEntities: [MessageTextEntity]
@@ -472,8 +737,12 @@ func textMediaAndExpirationTimerFromApiMedia(_ media: Api.MessageMedia?, _ peerI
                     questionText = text
                     questionEntities = messageTextEntitiesFromApiEntities(entities)
                 }
-                
-                return (TelegramMediaPoll(pollId: MediaId(namespace: Namespaces.Media.CloudPoll, id: id), publicity: publicity, kind: kind, text: questionText, textEntities: questionEntities, options: answers.map(TelegramMediaPollOption.init(apiOption:)), correctAnswers: nil, results: TelegramMediaPollResults(apiResults: results), isClosed: (flags & (1 << 0)) != 0, deadlineTimeout: closePeriod), nil, nil, nil, nil, nil)
+
+                var parsedAttachedMedia: Media?
+                if let apiAttachedMedia = messageMediaPollData.attachedMedia {
+                    parsedAttachedMedia = textMediaAndExpirationTimerFromApiMedia(apiAttachedMedia, peerId).media
+                }
+                return (TelegramMediaPoll(pollId: MediaId(namespace: Namespaces.Media.CloudPoll, id: id), publicity: publicity, kind: kind, text: questionText, textEntities: questionEntities, options: answers.map(TelegramMediaPollOption.init(apiOption:)), correctAnswers: nil, results: TelegramMediaPollResults(apiResults: results), isClosed: (flags & (1 << 0)) != 0, deadlineTimeout: closePeriod, deadlineDate: closeDate, pollHash: pollHash, openAnswers: openAnswers, revotingDisabled: revotingDisabled, shuffleAnswers: shuffleAnswers, hideResultsUntilClose: hideResultsUntilClose, isCreator: isCreator, attachedMedia: parsedAttachedMedia, restrictToSubscribers: restrictToSubscribers, countries: countries ?? []), nil, nil, nil, nil, nil)
             }
         case let .messageMediaToDo(messageMediaToDoData):
             let (todo, completions) = (messageMediaToDoData.todo, messageMediaToDoData.completions)
@@ -780,6 +1049,12 @@ func messageTextEntitiesFromApiEntities(_ entities: [Api.MessageEntity]) -> [Mes
         case let .messageEntityBankCard(messageEntityBankCardData):
             let (offset, length) = (messageEntityBankCardData.offset, messageEntityBankCardData.length)
             result.append(MessageTextEntity(range: Int(offset) ..< Int(offset + length), type: .BankCard))
+        case let .messageEntityTonAddress(data):
+            let upperBound = Int(data.offset) + Int(data.length)
+            guard data.offset >= 0, data.length > 0, upperBound <= Int(Int32.max) else {
+                continue
+            }
+            result.append(MessageTextEntity(range: Int(data.offset) ..< upperBound, type: .TonAddress))
         case let .messageEntitySpoiler(messageEntitySpoilerData):
             let (offset, length) = (messageEntitySpoilerData.offset, messageEntitySpoilerData.length)
             result.append(MessageTextEntity(range: Int(offset) ..< Int(offset + length), type: .Spoiler))
@@ -813,6 +1088,8 @@ func messageTextEntitiesFromApiEntities(_ entities: [Api.MessageEntity]) -> [Mes
                 format = .full(timeFormat: timeFormat, dateFormat: dateFormat, dayOfWeek: (flags & (1 << 5)) != 0)
             }
             result.append(MessageTextEntity(range: Int(offset) ..< Int(offset + length), type: .FormattedDate(format: format, date: date)))
+        case .messageEntityDiffDelete, .messageEntityDiffInsert, .messageEntityDiffReplace:
+            break
         }
     }
     return result
@@ -822,7 +1099,7 @@ extension StoreMessage {
     convenience init?(apiMessage: Api.Message, accountPeerId: PeerId, peerIsForum: Bool, namespace: MessageId.Namespace = Namespaces.Message.Cloud) {
         switch apiMessage {
             case let .message(messageData):
-                let (flags, flags2, id, fromId, boosts, rank, chatPeerId, savedPeerId, fwdFrom, viaBotId, viaBusinessBotId, replyTo, date, message, media, replyMarkup, entities, views, forwards, replies, editDate, postAuthor, groupingId, reactions, restrictionReason, ttlPeriod, quickReplyShortcutId, messageEffectId, factCheck, reportDeliveryUntilDate, paidMessageStars, suggestedPost, scheduledRepeatPeriod, summaryFromLanguage) = (messageData.flags, messageData.flags2, messageData.id, messageData.fromId, messageData.fromBoostsApplied, messageData.fromRank, messageData.peerId, messageData.savedPeerId, messageData.fwdFrom, messageData.viaBotId, messageData.viaBusinessBotId, messageData.replyTo, messageData.date, messageData.message, messageData.media, messageData.replyMarkup, messageData.entities, messageData.views, messageData.forwards, messageData.replies, messageData.editDate, messageData.postAuthor, messageData.groupedId, messageData.reactions, messageData.restrictionReason, messageData.ttlPeriod, messageData.quickReplyShortcutId, messageData.effect, messageData.factcheck, messageData.reportDeliveryUntilDate, messageData.paidMessageStars, messageData.suggestedPost, messageData.scheduleRepeatPeriod, messageData.summaryFromLanguage)
+                let (flags, flags2, id, fromId, boosts, rank, chatPeerId, savedPeerId, fwdFrom, viaBotId, viaBusinessBotId, guestChatViaFrom, replyTo, date, message, media, replyMarkup, entities, views, forwards, replies, editDate, postAuthor, groupingId, reactions, restrictionReason, ttlPeriod, quickReplyShortcutId, messageEffectId, factCheck, reportDeliveryUntilDate, paidMessageStars, suggestedPost, scheduledRepeatPeriod, summaryFromLanguage) = (messageData.flags, messageData.flags2, messageData.id, messageData.fromId, messageData.fromBoostsApplied, messageData.fromRank, messageData.peerId, messageData.savedPeerId, messageData.fwdFrom, messageData.viaBotId, messageData.viaBusinessBotId, messageData.guestchatViaFrom, messageData.replyTo, messageData.date, messageData.message, messageData.media, messageData.replyMarkup, messageData.entities, messageData.views, messageData.forwards, messageData.replies, messageData.editDate, messageData.postAuthor, messageData.groupedId, messageData.reactions, messageData.restrictionReason, messageData.ttlPeriod, messageData.quickReplyShortcutId, messageData.effect, messageData.factcheck, messageData.reportDeliveryUntilDate, messageData.paidMessageStars, messageData.suggestedPost, messageData.scheduleRepeatPeriod, messageData.summaryFromLanguage)
                 var attributes: [MessageAttribute] = []
 
                 if (flags2 & (1 << 4)) != 0 {
@@ -857,15 +1134,12 @@ extension StoreMessage {
                     var threadMessageId: MessageId?
                     switch replyTo {
                     case let .messageReplyHeader(messageReplyHeaderData):
-                        let (innerFlags, replyToMsgId, replyToPeerId, replyHeader, replyMedia, replyToTopId, quoteText, quoteEntities, quoteOffset, todoItemId) = (messageReplyHeaderData.flags, messageReplyHeaderData.replyToMsgId, messageReplyHeaderData.replyToPeerId, messageReplyHeaderData.replyFrom, messageReplyHeaderData.replyMedia, messageReplyHeaderData.replyToTopId, messageReplyHeaderData.quoteText, messageReplyHeaderData.quoteEntities, messageReplyHeaderData.quoteOffset, messageReplyHeaderData.todoItemId)
+                        let (innerFlags, replyToMsgId, replyToPeerId, replyHeader, replyMedia, replyToTopId, quoteText, quoteEntities, quoteOffset, todoItemId, pollOption, quoteRich) = (messageReplyHeaderData.flags, messageReplyHeaderData.replyToMsgId, messageReplyHeaderData.replyToPeerId, messageReplyHeaderData.replyFrom, messageReplyHeaderData.replyMedia, messageReplyHeaderData.replyToTopId, messageReplyHeaderData.quoteText, messageReplyHeaderData.quoteEntities, messageReplyHeaderData.quoteOffset, messageReplyHeaderData.todoItemId, messageReplyHeaderData.pollOption, messageReplyHeaderData.quoteRich)
                         let isForumTopic = (innerFlags & (1 << 3)) != 0
                         
-                        var quote: EngineMessageReplyQuote?
                         let isQuote = (innerFlags & (1 << 9)) != 0
                         
-                        if quoteText != nil || replyMedia != nil {
-                            quote = EngineMessageReplyQuote(text: quoteText ?? "", offset: quoteOffset.flatMap(Int.init), entities: messageTextEntitiesFromApiEntities(quoteEntities ?? []), media: textMediaAndExpirationTimerFromApiMedia(replyMedia, peerId).media)
-                        }
+                        let quote = engineReplyQuote(text: quoteText, entities: quoteEntities, offset: quoteOffset, rich: quoteRich, media: textMediaAndExpirationTimerFromApiMedia(replyMedia, peerId).media)
                         
                         if let replyToMsgId = replyToMsgId {
                             let replyPeerId = replyToPeerId?.peerId ?? peerId
@@ -908,7 +1182,13 @@ extension StoreMessage {
                                     threadId = Int64(threadIdValue.id)
                                 }
                             }
-                            attributes.append(ReplyMessageAttribute(messageId: MessageId(peerId: replyPeerId, namespace: Namespaces.Message.Cloud, id: replyToMsgId), threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, todoItemId: todoItemId))
+                            var innerSubject: EngineMessageReplyInnerSubject?
+                            if let todoItemId {
+                                innerSubject = .todoItem(todoItemId)
+                            } else if let pollOption {
+                                innerSubject = .pollOption(pollOption.makeData())
+                            }
+                            attributes.append(ReplyMessageAttribute(messageId: MessageId(peerId: replyPeerId, namespace: Namespaces.Message.Cloud, id: replyToMsgId), threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, innerSubject: innerSubject))
                         }
                         if let replyHeader = replyHeader {
                             attributes.append(QuotedReplyMessageAttribute(apiHeader: replyHeader, quote: quote, isQuote: isQuote))
@@ -1055,6 +1335,10 @@ extension StoreMessage {
                 if let viaBusinessBotId {
                     attributes.append(InlineBusinessBotMessageAttribute(peerId: PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(viaBusinessBotId)), title: nil))
                 }
+            
+                if let guestChatViaFrom {
+                    attributes.append(GuestChatMessageAttribute(peerId: guestChatViaFrom.peerId))
+                }
                 
                 if !Namespaces.Message.allNonRegular.contains(namespace) {
                     if let views = views {
@@ -1097,7 +1381,7 @@ extension StoreMessage {
                 }
             
                 var entitiesAttribute: TextEntitiesMessageAttribute?
-                if let entities = entities, !entities.isEmpty {
+                if let entities, !entities.isEmpty {
                     let attribute = TextEntitiesMessageAttribute(entities: messageTextEntitiesFromApiEntities(entities))
                     entitiesAttribute = attribute
                     attributes.append(attribute)
@@ -1118,6 +1402,10 @@ extension StoreMessage {
                         entitiesAttribute = attribute
                         attributes.append(attribute)
                     }
+                }
+            
+                if let richMessage = messageData.richMessage {
+                    attributes.append(RichTextMessageAttribute(apiRichMessage: richMessage))
                 }
                 
                 if (flags & (1 << 19)) != 0 {
@@ -1245,16 +1533,21 @@ extension StoreMessage {
                     if chatPeerId.peerId.namespace == Namespaces.Peer.CloudChannel, let replyTo {
                         switch replyTo {
                         case let .messageReplyHeader(messageReplyHeaderData):
-                            let (innerFlags, replyToMsgId, replyToPeerId, replyHeader, replyMedia, quoteText, quoteEntities, quoteOffset, todoItemId) = (messageReplyHeaderData.flags, messageReplyHeaderData.replyToMsgId, messageReplyHeaderData.replyToPeerId, messageReplyHeaderData.replyFrom, messageReplyHeaderData.replyMedia, messageReplyHeaderData.quoteText, messageReplyHeaderData.quoteEntities, messageReplyHeaderData.quoteOffset, messageReplyHeaderData.todoItemId)
-                            var quote: EngineMessageReplyQuote?
+                            let (innerFlags, replyToMsgId, replyToPeerId, replyHeader, replyMedia, quoteText, quoteEntities, quoteOffset, todoItemId, pollOption, quoteRich) = (messageReplyHeaderData.flags, messageReplyHeaderData.replyToMsgId, messageReplyHeaderData.replyToPeerId, messageReplyHeaderData.replyFrom, messageReplyHeaderData.replyMedia, messageReplyHeaderData.quoteText, messageReplyHeaderData.quoteEntities, messageReplyHeaderData.quoteOffset, messageReplyHeaderData.todoItemId, messageReplyHeaderData.pollOption, messageReplyHeaderData.quoteRich)
                             let isQuote = (innerFlags & (1 << 9)) != 0
-                            if quoteText != nil || replyMedia != nil {
-                                quote = EngineMessageReplyQuote(text: quoteText ?? "", offset: quoteOffset.flatMap(Int.init), entities: messageTextEntitiesFromApiEntities(quoteEntities ?? []), media: textMediaAndExpirationTimerFromApiMedia(replyMedia, peerId).media)
-                            }
+                            let quote = engineReplyQuote(text: quoteText, entities: quoteEntities, offset: quoteOffset, rich: quoteRich, media: textMediaAndExpirationTimerFromApiMedia(replyMedia, peerId).media)
 
                             if let replyToMsgId = replyToMsgId {
                                 let replyPeerId = replyToPeerId?.peerId ?? peerId
-                                attributes.append(ReplyMessageAttribute(messageId: MessageId(peerId: replyPeerId, namespace: Namespaces.Message.Cloud, id: replyToMsgId), threadMessageId: nil, quote: quote, isQuote: isQuote, todoItemId: todoItemId))
+                                
+                                var innerSubject: EngineMessageReplyInnerSubject?
+                                if let todoItemId {
+                                    innerSubject = .todoItem(todoItemId)
+                                } else if let pollOption {
+                                    innerSubject = .pollOption(pollOption.makeData())
+                                }
+                                
+                                attributes.append(ReplyMessageAttribute(messageId: MessageId(peerId: replyPeerId, namespace: Namespaces.Message.Cloud, id: replyToMsgId), threadMessageId: nil, quote: quote, isQuote: isQuote, innerSubject: innerSubject))
                             } else if let replyHeader = replyHeader {
                                 attributes.append(QuotedReplyMessageAttribute(apiHeader: replyHeader, quote: quote, isQuote: isQuote))
                             }
@@ -1267,12 +1560,9 @@ extension StoreMessage {
                     var threadMessageId: MessageId?
                     switch replyTo {
                     case let .messageReplyHeader(messageReplyHeaderData):
-                        let (innerFlags, replyToMsgId, replyToPeerId, replyHeader, replyMedia, replyToTopId, quoteText, quoteEntities, quoteOffset, todoItemId) = (messageReplyHeaderData.flags, messageReplyHeaderData.replyToMsgId, messageReplyHeaderData.replyToPeerId, messageReplyHeaderData.replyFrom, messageReplyHeaderData.replyMedia, messageReplyHeaderData.replyToTopId, messageReplyHeaderData.quoteText, messageReplyHeaderData.quoteEntities, messageReplyHeaderData.quoteOffset, messageReplyHeaderData.todoItemId)
-                        var quote: EngineMessageReplyQuote?
+                        let (innerFlags, replyToMsgId, replyToPeerId, replyHeader, replyMedia, replyToTopId, quoteText, quoteEntities, quoteOffset, todoItemId, pollOption, quoteRich) = (messageReplyHeaderData.flags, messageReplyHeaderData.replyToMsgId, messageReplyHeaderData.replyToPeerId, messageReplyHeaderData.replyFrom, messageReplyHeaderData.replyMedia, messageReplyHeaderData.replyToTopId, messageReplyHeaderData.quoteText, messageReplyHeaderData.quoteEntities, messageReplyHeaderData.quoteOffset, messageReplyHeaderData.todoItemId, messageReplyHeaderData.pollOption, messageReplyHeaderData.quoteRich)
                         let isQuote = (innerFlags & (1 << 9)) != 0
-                        if quoteText != nil || replyMedia != nil {
-                            quote = EngineMessageReplyQuote(text: quoteText ?? "", offset: quoteOffset.flatMap(Int.init), entities: messageTextEntitiesFromApiEntities(quoteEntities ?? []), media: textMediaAndExpirationTimerFromApiMedia(replyMedia, peerId).media)
-                        }
+                        let quote = engineReplyQuote(text: quoteText, entities: quoteEntities, offset: quoteOffset, rich: quoteRich, media: textMediaAndExpirationTimerFromApiMedia(replyMedia, peerId).media)
                         
                         if let replyToMsgId = replyToMsgId {
                             let replyPeerId = replyToPeerId?.peerId ?? peerId
@@ -1293,9 +1583,17 @@ extension StoreMessage {
                             default:
                                 break
                             }
-                            attributes.append(ReplyMessageAttribute(messageId: MessageId(peerId: replyPeerId, namespace: Namespaces.Message.Cloud, id: replyToMsgId), threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, todoItemId: todoItemId))
+                            var innerSubject: EngineMessageReplyInnerSubject?
+                            if let todoItemId {
+                                innerSubject = .todoItem(todoItemId)
+                            } else if let pollOption {
+                                innerSubject = .pollOption(pollOption.makeData())
+                            }
+                            attributes.append(ReplyMessageAttribute(messageId: MessageId(peerId: replyPeerId, namespace: Namespaces.Message.Cloud, id: replyToMsgId), threadMessageId: threadMessageId, quote: quote, isQuote: isQuote, innerSubject: innerSubject))
                         } else if let replyHeader = replyHeader {
                             attributes.append(QuotedReplyMessageAttribute(apiHeader: replyHeader, quote: quote, isQuote: isQuote))
+                        } else if let replyToTopId, peerIsForum {
+                            threadId = Int64(replyToTopId)
                         }
                     case let .messageReplyStoryHeader(messageReplyStoryHeaderData):
                         let (peer, storyId) = (messageReplyStoryHeaderData.peer, messageReplyStoryHeaderData.storyId)

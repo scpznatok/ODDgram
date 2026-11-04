@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -115,8 +116,8 @@ private class MediaHeaderItemNode: ASDisplayNode {
         
         let minimizedTitleOffset: CGFloat = subtitleString == nil ? 6.0 : 0.0
         
-        let minimizedTitleFrame = CGRect(origin: CGPoint(x: floor((size.width - titleLayout.size.width) / 2.0), y: 4.0 + minimizedTitleOffset), size: titleLayout.size)
-        let minimizedSubtitleFrame = CGRect(origin: CGPoint(x: floor((size.width - subtitleLayout.size.width) / 2.0), y: 20.0), size: subtitleLayout.size)
+        let minimizedTitleFrame = CGRect(origin: CGPoint(x: floor((size.width - titleLayout.size.width) / 2.0), y: 5.0 + minimizedTitleOffset), size: titleLayout.size)
+        let minimizedSubtitleFrame = CGRect(origin: CGPoint(x: floor((size.width - subtitleLayout.size.width) / 2.0), y: 21.0), size: subtitleLayout.size)
         
         transition.updateFrame(node: self.titleNode, frame: minimizedTitleFrame)
         transition.updateFrame(node: self.subtitleNode, frame: minimizedSubtitleFrame)
@@ -194,7 +195,7 @@ public final class MediaNavigationAccessoryHeaderNode: ASDisplayNode, ASScrollVi
             self.rateButton.accessibilityHint = self.strings.VoiceOver_Media_PlaybackRateChange
             self.rateButton.accessibilityValue = playbackBaseRate.stringValue
             
-             self.rateButton.setContent(.image(optionsRateImage(rate: playbackBaseRate.stringValue.uppercased(), color: self.theme.rootController.navigationBar.controlColor)))
+             self.rateButton.setContent(.image(optionsRateImage(rate: playbackBaseRate.stringValue.uppercased(), color: self.theme.rootController.navigationBar.secondaryTextColor)))
         }
     }
     
@@ -257,7 +258,7 @@ public final class MediaNavigationAccessoryHeaderNode: ASDisplayNode, ASScrollVi
         self.closeButton.displaysAsynchronously = false
         
         self.rateButton = AudioRateButton()
-        self.rateButton.hitTestSlop = UIEdgeInsets(top: -8.0, left: -4.0, bottom: -8.0, right: -4.0)
+        self.rateButton.hitTestSlop = UIEdgeInsets(top: -8.0, left: -4.0, bottom: -8.0, right: -8.0)
         self.rateButton.displaysAsynchronously = false
         
         self.accessibilityAreaNode = AccessibilityAreaNode()
@@ -266,7 +267,7 @@ public final class MediaNavigationAccessoryHeaderNode: ASDisplayNode, ASScrollVi
         self.actionButton.hitTestSlop = UIEdgeInsets(top: -8.0, left: -8.0, bottom: -8.0, right: -8.0)
         self.actionButton.displaysAsynchronously = false
         
-        self.playPauseIconNode = PlayPauseIconNode()
+        self.playPauseIconNode = PlayPauseIconNode(lottieSettings: context.lottieRenderingSettings)
         self.playPauseIconNode.customColor = self.theme.chat.inputPanel.panelControlColor
         
         self.scrubbingNode = MediaPlayerScrubbingNode(content: .standard(lineHeight: 2.0, lineCap: .square, scrubberHandle: .none, backgroundColor: .clear, foregroundColor: self.theme.chat.inputPanel.panelControlColor, bufferingColor: self.theme.chat.inputPanel.panelControlColor.withAlphaComponent(0.5), chapters: []))
@@ -280,12 +281,9 @@ public final class MediaNavigationAccessoryHeaderNode: ASDisplayNode, ASScrollVi
         self.scrollNode.addSubnode(self.previousItemNode)
         self.scrollNode.addSubnode(self.nextItemNode)
         
-        self.addSubnode(self.closeButton)
-        self.addSubnode(self.rateButton)
         self.addSubnode(self.accessibilityAreaNode)
         
         self.actionButton.addSubnode(self.playPauseIconNode)
-        self.addSubnode(self.actionButton)
         
         self.closeButton.addTarget(self, action: #selector(self.closeButtonPressed), forControlEvents: .touchUpInside)
         self.actionButton.addTarget(self, action: #selector(self.actionButtonPressed), forControlEvents: .touchUpInside)
@@ -296,6 +294,10 @@ public final class MediaNavigationAccessoryHeaderNode: ASDisplayNode, ASScrollVi
         }
         
         self.addSubnode(self.scrubbingNode)
+        
+        self.addSubnode(self.actionButton)
+        self.addSubnode(self.closeButton)
+        self.addSubnode(self.rateButton)
         
         self.actionButton.highligthedChanged = { [weak self] highlighted in
             if let strongSelf = self {
@@ -350,6 +352,7 @@ public final class MediaNavigationAccessoryHeaderNode: ASDisplayNode, ASScrollVi
         self.scrollNode.view.isPagingEnabled = true
         self.scrollNode.view.showsHorizontalScrollIndicator = false
         self.scrollNode.view.showsVerticalScrollIndicator = false
+        self.scrollNode.view.scrollsToTop = false
         
         let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(self.tapGesture(_:)))
         self.tapRecognizer = tapRecognizer
@@ -382,7 +385,7 @@ public final class MediaNavigationAccessoryHeaderNode: ASDisplayNode, ASScrollVi
         self.scrubbingNode.updateContent(.standard(lineHeight: 2.0, lineCap: .square, scrubberHandle: .none, backgroundColor: .clear, foregroundColor: self.theme.chat.inputPanel.panelControlColor, bufferingColor: self.theme.chat.inputPanel.panelControlColor.withAlphaComponent(0.5), chapters: []))
         
         if let playbackBaseRate = self.playbackBaseRate {
-            self.rateButton.setContent(.image(optionsRateImage(rate: playbackBaseRate.stringValue.uppercased(), color: self.theme.rootController.navigationBar.controlColor)))
+            self.rateButton.setContent(.image(optionsRateImage(rate: playbackBaseRate.stringValue.uppercased(), color: self.theme.rootController.navigationBar.secondaryTextColor)))
         }
         if let (size, leftInset, rightInset) = self.validLayout {
             self.updateLayout(size: size, leftInset: leftInset, rightInset: rightInset, transition: .immediate)
@@ -615,8 +618,8 @@ private final class PlayPauseIconNode: ManagedAnimationNode {
     private let duration: Double = 0.35
     private var iconState: PlayPauseIconNodeState = .pause
     
-    init() {
-        super.init(size: CGSize(width: 28.0, height: 28.0))
+    init(lottieSettings: LottieRenderingSettings) {
+        super.init(size: CGSize(width: 28.0, height: 28.0), lottieSettings: lottieSettings)
         
         self.trackTo(item: ManagedAnimationItem(source: .local("anim_playpause"), frames: .range(startFrame: 41, endFrame: 41), duration: 0.01))
     }
@@ -812,6 +815,6 @@ private final class HeaderContextReferenceContentSource: ContextReferenceContent
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }

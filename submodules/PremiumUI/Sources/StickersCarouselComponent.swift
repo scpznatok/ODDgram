@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
@@ -108,15 +109,15 @@ private class StickerNode: ASDisplayNode {
         self.imageNode = TransformImageNode()
     
         if file.isPremiumSticker || forceIsPremium {
-            let animationNode = DefaultAnimatedStickerNodeImpl()
-            //let animationNode = DirectAnimatedStickerNode()
+            let animationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: self.context.lottieRenderingSettings)
+            //let animationNode = DirectAnimatedStickerNode(lottieSettings: self.context.lottieRenderingSettings)
             animationNode.automaticallyLoadFirstFrame = true
             self.animationNode = animationNode
             
             let dimensions = file.dimensions ?? PixelDimensions(width: 512, height: 512)
             let fittedDimensions = dimensions.cgSize.aspectFitted(CGSize(width: 240.0, height: 240.0))
             
-            let pathPrefix = context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(file.resource.id)
+            let pathPrefix = context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(file.resource.id))
             animationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: file.resource, isVideo: file.isVideoSticker), width: Int(fittedDimensions.width * 1.6), height: Int(fittedDimensions.height * 1.6), playbackMode: .loop, mode: .direct(cachePathPrefix: pathPrefix))
             
             self.imageNode.setSignal(chatMessageAnimatedSticker(postbox: context.account.postbox, userLocation: .other, file: file, small: false, size: fittedDimensions))
@@ -130,10 +131,10 @@ private class StickerNode: ASDisplayNode {
                 
                 let additionalAnimationNode: AnimatedStickerNode
                 
-                additionalAnimationNode = DirectAnimatedStickerNode()
+                additionalAnimationNode = DirectAnimatedStickerNode(lottieSettings: self.context.lottieRenderingSettings)
                 
                 var pathPrefix: String?
-                pathPrefix = context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(effect.resource.id)
+                pathPrefix = context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(effect.resource.id))
                 pathPrefix = nil
                 
                 additionalAnimationNode.setup(source: source, width: Int(fittedDimensions.width * 1.5), height: Int(fittedDimensions.height * 1.5), playbackMode: .loop, mode: .direct(cachePathPrefix: pathPrefix))
@@ -335,6 +336,7 @@ private class StickersCarouselNode: ASDisplayNode, ASScrollViewDelegate {
         self.scrollNode.view.showsHorizontalScrollIndicator = false
         self.scrollNode.view.showsVerticalScrollIndicator = false
         self.scrollNode.view.canCancelContentTouches = true
+        self.scrollNode.view.scrollsToTop = false
         
         self.tapNode.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.stickerTapped(_:))))
     }

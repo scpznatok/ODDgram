@@ -3,7 +3,8 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import TelegramCore
-import RLottieBinding
+import LottieBinding
+import LottieSettings
 import AppBundle
 import GZip
 import SwiftSignalKit
@@ -29,7 +30,7 @@ public final class ManagedAnimationState {
     
     public var executedCallbacks = Set<Int>()
     
-    public init?(displaySize: CGSize, item: ManagedAnimationItem, current: ManagedAnimationState?) {
+    public init?(displaySize: CGSize, item: ManagedAnimationItem, current: ManagedAnimationState?, lottieSettings: LottieRenderingSettings) {
         let resolvedInstance: LottieInstance
         
         if let current = current {
@@ -46,7 +47,7 @@ public final class ManagedAnimationState {
             } else if let unpackedData = TGGUnzipData(data, 5 * 1024 * 1024) {
                 data = unpackedData
             }
-            guard let instance = LottieInstance(data: data, fitzModifier: .none, colorReplacements: item.replaceColors, cacheKey: "") else {
+            guard let instance = makeLottieInstance(data: data, fitzModifier: .none, colorReplacements: item.replaceColors, cacheKey: "", settings: lottieSettings) else {
                 return nil
             }
             resolvedInstance = instance
@@ -101,7 +102,7 @@ public enum ManagedAnimationSource: Equatable {
                 }
                 return getAppBundle().path(forResource: name, ofType: "json")
             case let .resource(account, resource):
-                return account.postbox.mediaBox.completedResourcePath(resource._asResource())
+                return TelegramEngine(account: account).resources.completedResourcePath(id: resource.id)
         }
     }
     
@@ -173,7 +174,10 @@ open class ManagedAnimationNode: ASDisplayNode {
         }
     }
     
-    public init(size: CGSize) {
+    public let lottieSettings: LottieRenderingSettings
+
+    public init(size: CGSize, lottieSettings: LottieRenderingSettings) {
+        self.lottieSettings = lottieSettings
         self.intrinsicSize = size
         
         self.imageNode = ASImageNode()
@@ -215,9 +219,9 @@ open class ManagedAnimationNode: ASDisplayNode {
         let item = self.trackStack.removeFirst()
         
         if let state = self.state, state.item.source == item.source {
-            self.state = ManagedAnimationState(displaySize: self.intrinsicSize, item: item, current: state)
+            self.state = ManagedAnimationState(displaySize: self.intrinsicSize, item: item, current: state, lottieSettings: self.lottieSettings)
         } else {
-            self.state = ManagedAnimationState(displaySize: self.intrinsicSize, item: item, current: nil)
+            self.state = ManagedAnimationState(displaySize: self.intrinsicSize, item: item, current: nil, lottieSettings: self.lottieSettings)
         }
         
         self.didTryAdvancingState = false
@@ -311,6 +315,17 @@ open class ManagedAnimationNode: ASDisplayNode {
     public func trackTo(item: ManagedAnimationItem, immediately: Bool = false) {
         if immediately {
             self.trackStack.removeAll()
+            if let state = self.state, state.item.source == item.source {
+                self.state = ManagedAnimationState(displaySize: self.intrinsicSize, item: item, current: state, lottieSettings: self.lottieSettings)
+            } else {
+                self.state = ManagedAnimationState(displaySize: self.intrinsicSize, item: item, current: nil, lottieSettings: self.lottieSettings)
+            }
+            self.didTryAdvancingState = false
+            self.previousTimestamp = CACurrentMediaTime()
+            self.delta = 0.0
+            self.displayLink.isPaused = false
+            self.updateAnimation()
+            return
         }
         self.trackStack.append(item)
         self.didTryAdvancingState = false
@@ -328,38 +343,50 @@ open class ManagedAnimationNode: ASDisplayNode {
 public final class SimpleAnimationNode: ManagedAnimationNode {
     private let stillItem: ManagedAnimationItem
     private let stillEndItem: ManagedAnimationItem
-    private let animationItem: ManagedAnimationItem
+    private var animationItem: ManagedAnimationItem
     
     public let size: CGSize
     private let playOnce: Bool
     public private(set) var didPlay = false
     
-    public init(animationName: String, replaceColors: [UInt32: UInt32]? = nil, size: CGSize, playOnce: Bool = false) {
+    public init(animationName: String, replaceColors: [UInt32: UInt32]? = nil, size: CGSize, playOnce: Bool = false, startFrame: Int = 0, lottieSettings: LottieRenderingSettings) {
+        let startFrame = max(0, startFrame)
+        let source = ManagedAnimationSource.local(animationName)
         self.size = size
         self.playOnce = playOnce
-        self.stillItem = ManagedAnimationItem(source: .local(animationName), replaceColors: replaceColors, frames: .range(startFrame: 0, endFrame: 0), duration: 0.01)
-        self.stillEndItem = ManagedAnimationItem(source: .local(animationName), replaceColors: replaceColors, frames: .still(.end), duration: 0.01)
-        self.animationItem = ManagedAnimationItem(source: .local(animationName), replaceColors: replaceColors)
+        self.stillItem = ManagedAnimationItem(source: source, replaceColors: replaceColors, frames: .range(startFrame: startFrame, endFrame: startFrame), duration: 0.01)
+        self.stillEndItem = ManagedAnimationItem(source: source, replaceColors: replaceColors, frames: .still(.end), duration: 0.01)
+        self.animationItem = ManagedAnimationItem(source: source, replaceColors: replaceColors)
 
-        super.init(size: size)
+        super.init(size: size, lottieSettings: lottieSettings)
         
         self.trackTo(item: self.stillItem)
-    }
-    
-    public func play() {
-        if !self.playOnce || !self.didPlay {
-            self.didPlay = true
-            self.trackTo(item: self.animationItem)
+        if startFrame > 0, let state = self.state {
+            let clampedStartFrame = min(startFrame, max(0, state.frameCount - 1))
+            let fps = state.fps > 0.0 ? state.fps : 60.0
+            self.animationItem = ManagedAnimationItem(
+                source: source,
+                replaceColors: replaceColors,
+                frames: .range(startFrame: clampedStartFrame, endFrame: state.frameCount),
+                duration: Double(max(1, state.frameCount - clampedStartFrame)) / fps
+            )
         }
     }
     
-    public func reset() {
-        self.didPlay = false
-        self.trackTo(item: self.stillItem)
+    public func play(immediately: Bool = false) {
+        if !self.playOnce || !self.didPlay {
+            self.didPlay = true
+            self.trackTo(item: self.animationItem, immediately: immediately)
+        }
     }
     
-    public func seekToEnd() {
+    public func reset(immediately: Bool = false) {
         self.didPlay = false
-        self.trackTo(item: self.stillEndItem)
+        self.trackTo(item: self.stillItem, immediately: immediately)
+    }
+    
+    public func seekToEnd(immediately: Bool = false) {
+        self.didPlay = false
+        self.trackTo(item: self.stillEndItem, immediately: immediately)
     }
 }

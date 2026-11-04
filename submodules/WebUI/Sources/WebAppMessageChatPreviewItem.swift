@@ -4,7 +4,6 @@ import Display
 import AsyncDisplayKit
 import SwiftSignalKit
 import TelegramCore
-import Postbox
 import TelegramPresentationData
 import TelegramUIPreferences
 import ItemListUI
@@ -20,8 +19,19 @@ final class PeerNameColorChatPreviewItem: ListViewItem, ItemListItem, ListItemCo
             if lhs.text != rhs.text {
                 return false
             }
-            if areMediaArraysEqual(lhs.media, rhs.media) {
+            if lhs.entities != rhs.entities {
                 return false
+            }
+            if lhs.richText != rhs.richText {
+                return false
+            }
+            if lhs.media.count != rhs.media.count {
+                return false
+            }
+            for i in 0 ..< lhs.media.count {
+                if !lhs.media[i].isEqual(to: rhs.media[i]) {
+                    return false
+                }
             }
             if lhs.botAddress != rhs.botAddress {
                 return false
@@ -31,7 +41,8 @@ final class PeerNameColorChatPreviewItem: ListViewItem, ItemListItem, ListItemCo
         
         let text: String
         let entities: TextEntitiesMessageAttribute?
-        let media: [Media]
+        let richText: RichTextMessageAttribute?
+        let media: [EngineRawMedia]
         let replyMarkup: ReplyMarkupMessageAttribute?
         let botAddress: String
     }
@@ -62,35 +73,29 @@ final class PeerNameColorChatPreviewItem: ListViewItem, ItemListItem, ListItemCo
         self.messageItems = messageItems
     }
     
-    func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
-        async {
+    func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+        Queue.mainQueue().async {
             let node = PeerNameColorChatPreviewItemNode()
-            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
             
             node.contentSize = layout.contentSize
             node.insets = layout.insets
             
-            Queue.mainQueue().async {
-                completion(node, {
-                    return (nil, { _ in apply() })
-                })
-            }
+            completion(node, {
+                return (nil, { _ in apply() })
+            })
         }
     }
     
-    func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? PeerNameColorChatPreviewItemNode {
                 let makeLayout = nodeValue.asyncLayout()
                 
-                async {
-                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
-                    Queue.mainQueue().async {
-                        completion(layout, { _ in
-                            apply()
-                        })
-                    }
-                }
+                let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
+                completion(layout, { _ in
+                    apply()
+                })
             }
         }
     }
@@ -177,7 +182,7 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
 
         var currentBackgroundNode = self.backgroundNode
                 
-        return { item, params, neighbors in
+        return { [weak self] item, params, neighbors in
             if currentBackgroundNode == nil {
                 currentBackgroundNode = createWallpaperBackgroundNode(context: item.context, forChatDisplay: false)
                 currentBackgroundNode?.update(wallpaper: item.wallpaper, animated: false)
@@ -189,19 +194,22 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
                         
             var items: [ListViewItem] = []
             for messageItem in item.messageItems.reversed() {
-                let authorPeerId = EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(0))
-                let botPeerId = EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(1))
-                
-                var peers = SimpleDictionary<PeerId, Peer>()
-                let messages = SimpleDictionary<MessageId, Message>()
+                let authorPeerId = EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(0))
+                let botPeerId = EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(1))
+
+                var peers = EngineSimpleDictionary<EnginePeer.Id, EngineRawPeer>()
+                let messages = EngineSimpleDictionary<EngineMessage.Id, EngineRawMessage>()
                 
                 peers[authorPeerId] = TelegramUser(id: authorPeerId, accessHash: nil, firstName: nil, lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil)
                 peers[botPeerId] = TelegramUser(id: botPeerId, accessHash: nil, firstName: messageItem.botAddress, lastName: "", username: messageItem.botAddress, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil)
                 
                 let media = messageItem.media
-                var attributes: [MessageAttribute] = []
+                var attributes: [EngineMessage.Attribute] = []
                 if let entities = messageItem.entities {
                     attributes.append(entities)
+                }
+                if let richText = messageItem.richText {
+                    attributes.append(richText)
                 }
                 if let replyMarkup = messageItem.replyMarkup {
                     attributes.append(replyMarkup)
@@ -209,8 +217,8 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
                 
                 attributes.append(InlineBotMessageAttribute(peerId: botPeerId, title: nil))
                                 
-                let message = Message(stableId: 1, stableVersion: 0, id: MessageId(peerId: authorPeerId, namespace: 0, id: 1), globallyUniqueId: nil, groupingKey: nil, groupInfo: nil, threadId: nil, timestamp: 66000, flags: [.Incoming], tags: [], globalTags: [], localTags: [], customTags: [], forwardInfo: nil, author: peers[authorPeerId], text: messageItem.text, attributes: attributes, media: media, peers: peers, associatedMessages: messages, associatedMessageIds: [], associatedMedia: [:], associatedThreadInfo: nil, associatedStories: [:])
-                items.append(item.context.sharedContext.makeChatMessagePreviewItem(context: item.context, messages: [message], theme: item.componentTheme, strings: item.strings, wallpaper: item.wallpaper, fontSize: item.fontSize, chatBubbleCorners: item.chatBubbleCorners, dateTimeFormat: item.dateTimeFormat, nameOrder: item.nameDisplayOrder, forcedResourceStatus: nil, tapMessage: nil, clickThroughMessage: nil, backgroundNode: currentBackgroundNode, availableReactions: nil, accountPeer: nil, isCentered: false, isPreview: true, isStandalone: false, rank: nil, rankRole: nil))
+                let message = EngineRawMessage(stableId: 1, stableVersion: 0, id: EngineMessage.Id(peerId: authorPeerId, namespace: 0, id: 1), globallyUniqueId: nil, groupingKey: nil, groupInfo: nil, threadId: nil, timestamp: 66000, flags: [.Incoming], tags: [], globalTags: [], localTags: [], customTags: [], forwardInfo: nil, author: peers[authorPeerId], text: messageItem.text, attributes: attributes, media: media, peers: peers, associatedMessages: messages, associatedMessageIds: [], associatedMedia: [:], associatedThreadInfo: nil, associatedStories: [:])
+                items.append(item.context.sharedContext.makeChatMessagePreviewItem(context: item.context, messages: [EngineMessage(message)], theme: item.componentTheme, strings: item.strings, wallpaper: item.wallpaper, fontSize: item.fontSize, chatBubbleCorners: item.chatBubbleCorners, dateTimeFormat: item.dateTimeFormat, nameOrder: item.nameDisplayOrder, forcedResourceStatus: nil, tapMessage: nil, clickThroughMessage: nil, backgroundNode: currentBackgroundNode, availableReactions: nil, accountPeer: nil, isCentered: false, isPreview: true, isStandalone: false, rank: nil, rankRole: nil, isGiftMessageComposerPreview: false, activateGiftMessageInput: nil))
             }
             
             var nodes: [ListViewItemNode] = []
@@ -220,7 +228,7 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
                     let itemNode = messageNodes[i]
                     items[i].updateNode(async: { $0() }, node: {
                         return itemNode
-                    }, params: params, previousItem: i == 0 ? nil : items[i - 1], nextItem: i == (items.count - 1) ? nil : items[i + 1], animation: .None, completion: { (layout, apply) in
+                    }, params: params, neighbors: ListViewItemNeighbors(previous: i == 0 ? nil : items[i - 1].neighborDescriptor, next: i == (items.count - 1) ? nil : items[i + 1].neighborDescriptor), animation: .None, completion: { (layout, apply) in
                         let nodeFrame = CGRect(origin: itemNode.frame.origin, size: CGSize(width: layout.size.width, height: layout.size.height))
                         
                         itemNode.contentSize = layout.contentSize
@@ -229,7 +237,7 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
                         itemNode.isUserInteractionEnabled = false
                         
                         Queue.mainQueue().after(0.01) {
-                            apply(ListViewItemApply(isOnScreen: true))
+                            apply(ListViewItemApply())
                         }
                     })
                 }
@@ -237,9 +245,9 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
                 var messageNodes: [ListViewItemNode] = []
                 for i in 0 ..< items.count {
                     var itemNode: ListViewItemNode?
-                    items[i].nodeConfiguredForParams(async: { $0() }, params: params, synchronousLoads: false, previousItem: i == 0 ? nil : items[i - 1], nextItem: i == (items.count - 1) ? nil : items[i + 1], completion: { node, apply in
+                    items[i].nodeConfiguredForParams(async: { $0() }, params: params, synchronousLoads: false, neighbors: ListViewItemNeighbors(previous: i == 0 ? nil : items[i - 1].neighborDescriptor, next: i == (items.count - 1) ? nil : items[i + 1].neighborDescriptor), completion: { node, apply in
                         itemNode = node
-                        apply().1(ListViewItemApply(isOnScreen: true))
+                        apply().1(ListViewItemApply())
                     })
                     itemNode!.isUserInteractionEnabled = false
                     messageNodes.append(itemNode!)
@@ -260,7 +268,7 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
             let layoutSize = layout.size
             
             let leftInset = params.leftInset
-            let rightInset = params.leftInset
+            let rightInset = params.rightInset
             
             return (layout, { [weak self] in
                 if let strongSelf = self {
@@ -390,7 +398,7 @@ final class PeerNameColorChatPreviewItemNode: ListViewItemNode {
                         backgroundNode.frame = backgroundFrame
                         backgroundNode.updateLayout(size: backgroundNode.bounds.size, displayMode: displayMode, transition: .immediate)
                     }
-                    strongSelf.maskNode.frame = backgroundFrame.insetBy(dx: params.leftInset, dy: 0.0)
+                    strongSelf.maskNode.frame = backgroundFrame.inset(by: UIEdgeInsets(top: 0.0, left: params.leftInset, bottom: 0.0, right: params.rightInset))
                 }
             })
         }

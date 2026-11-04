@@ -3,7 +3,7 @@ import UIKit
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
-import Postbox
+import TelegramCore
 import ComponentFlow
 import ComponentDisplayAdapters
 
@@ -12,11 +12,11 @@ public final class GalleryControllerInteraction {
     public let pushController: (ViewController) -> Void
     public let dismissController: () -> Void
     public let replaceRootController: (ViewController, Promise<Bool>?) -> Void
-    public let editMedia: (MessageId) -> Void
+    public let editMedia: (EngineMessage.Id) -> Void
     public let controller: () -> ViewController?
     public let currentItemNode: () -> GalleryItemNode?
     
-    public init(presentController: @escaping (ViewController, ViewControllerPresentationArguments?) -> Void, pushController: @escaping (ViewController) -> Void, dismissController: @escaping () -> Void, replaceRootController: @escaping (ViewController, Promise<Bool>?) -> Void, editMedia: @escaping (MessageId) -> Void, controller: @escaping () -> ViewController?, currentItemNode: @escaping () -> GalleryItemNode?) {
+    public init(presentController: @escaping (ViewController, ViewControllerPresentationArguments?) -> Void, pushController: @escaping (ViewController) -> Void, dismissController: @escaping () -> Void, replaceRootController: @escaping (ViewController, Promise<Bool>?) -> Void, editMedia: @escaping (EngineMessage.Id) -> Void, controller: @escaping () -> ViewController?, currentItemNode: @escaping () -> GalleryItemNode?) {
         self.presentController = presentController
         self.pushController = pushController
         self.dismissController = dismissController
@@ -40,6 +40,10 @@ open class GalleryFooterContentNode: ASDisplayNode {
     
     public var requestLayout: ((ContainedViewLayoutTransition) -> Void)?
     public var controllerInteraction: GalleryControllerInteraction?
+    /// The screen's side safe insets. `updateLayout`'s `leftInset`/`rightInset` are the bottom edge's
+    /// (`bottomEdgeSideInsets()`), which leave out iPhone Duo's side strip; content that can rise to the strip's corner
+    /// block (an expanded caption) keeps to these. nil: use `leftInset`/`rightInset`.
+    public var screenSideInsets: (left: CGFloat, right: CGFloat)?
     
     var visibilityAlpha: CGFloat = 1.0
     open func setVisibilityAlpha(_ alpha: CGFloat, animated: Bool) {

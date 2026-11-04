@@ -12,7 +12,6 @@ import UniversalMediaPlayer
 import UndoUI
 import OverlayStatusController
 import TelegramUIPreferences
-import Postbox
 import PresentationDataUtils
 
 public final class MediaPlaybackHeaderPanelComponent: Component {
@@ -21,19 +20,22 @@ public final class MediaPlaybackHeaderPanelComponent: Component {
     public let strings: PresentationStrings
     public let data: GlobalControlPanelsContext.MediaPlayback
     public let controller: () -> ViewController?
+    public let shouldPerformAction: ((@escaping () -> Void) -> Void)?
     
     public init(
         context: AccountContext,
         theme: PresentationTheme,
         strings: PresentationStrings,
         data: GlobalControlPanelsContext.MediaPlayback,
-        controller: @escaping () -> ViewController?
+        controller: @escaping () -> ViewController?,
+        shouldPerformAction: ((@escaping () -> Void) -> Void)? = nil
     ) {
         self.context = context
         self.theme = theme
         self.strings = strings
         self.data = data
         self.controller = controller
+        self.shouldPerformAction = shouldPerformAction
     }
     
     public static func ==(lhs: MediaPlaybackHeaderPanelComponent, rhs: MediaPlaybackHeaderPanelComponent) -> Bool {
@@ -71,6 +73,17 @@ public final class MediaPlaybackHeaderPanelComponent: Component {
         deinit {
             self.playlistPreloadDisposable?.dispose()
         }
+
+        private func performAction(_ action: @escaping () -> Void) {
+            guard let component = self.component else {
+                return
+            }
+            if let shouldPerformAction = component.shouldPerformAction {
+                shouldPerformAction(action)
+            } else {
+                action()
+            }
+        }
         
         func update(component: MediaPlaybackHeaderPanelComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
             let themeUpdated = self.component?.theme !== component.theme
@@ -102,7 +115,7 @@ public final class MediaPlaybackHeaderPanelComponent: Component {
                 let delayedStatus = component.context.sharedContext.mediaManager.globalMediaPlayerState
                 |> mapToSignal { value -> Signal<(Account, SharedMediaPlayerItemPlaybackStateOrLoading, MediaManagerPlayerType)?, NoError> in
                     guard let value = value else {
-                        return .single(nil)
+                        return .complete()
                     }
                     switch value.1 {
                     case .state:
@@ -148,7 +161,7 @@ public final class MediaPlaybackHeaderPanelComponent: Component {
                         let settings = transaction.getSharedData(ApplicationSpecificSharedDataKeys.musicPlaybackSettings)?.get(MusicPlaybackSettings.self) ?? MusicPlaybackSettings.defaultSettings
                         
                         transaction.updateSharedData(ApplicationSpecificSharedDataKeys.musicPlaybackSettings, { _ in
-                            return PreferencesEntry(settings.withUpdatedVoicePlaybackRate(rate))
+                            return EnginePreferencesEntry(settings.withUpdatedVoicePlaybackRate(rate))
                         })
                         return rate
                     }
@@ -220,100 +233,147 @@ public final class MediaPlaybackHeaderPanelComponent: Component {
                     })
                 }
                 panel.togglePlayPause = { [weak self] in
-                    guard let self, let component = self.component else {
-                        return
-                    }
-                    component.context.sharedContext.mediaManager.playlistControl(.playback(.togglePlayPause), type: component.data.kind)
+                    self?.performAction({ [weak self] in
+                        guard let self, let component = self.component else {
+                            return
+                        }
+                        component.context.sharedContext.mediaManager.playlistControl(.playback(.togglePlayPause), type: component.data.kind)
+                    })
                 }
                 panel.playPrevious = { [weak self] in
-                    guard let self, let component = self.component else {
-                        return
-                    }
-                    component.context.sharedContext.mediaManager.playlistControl(.next, type: component.data.kind)
+                    self?.performAction({ [weak self] in
+                        guard let self, let component = self.component else {
+                            return
+                        }
+                        component.context.sharedContext.mediaManager.playlistControl(.next, type: component.data.kind)
+                    })
                 }
                 panel.playNext = { [weak self] in
-                    guard let self, let component = self.component else {
-                        return
-                    }
-                    component.context.sharedContext.mediaManager.playlistControl(.previous, type: component.data.kind)
+                    self?.performAction({ [weak self] in
+                        guard let self, let component = self.component else {
+                            return
+                        }
+                        component.context.sharedContext.mediaManager.playlistControl(.previous, type: component.data.kind)
+                    })
                 }
                 panel.tapAction = { [weak self] in
-                    guard let self, let component = self.component, let controller = component.controller(), let navigationController = controller.navigationController as? NavigationController else {
-                        return
-                    }
-                    
-                    if let id = component.data.item.id as? PeerMessagesMediaPlaylistItemId, let playlistLocation = component.data.playlistLocation as? PeerMessagesPlaylistLocation {
-                        if case .music = component.data.kind {
-                            switch playlistLocation {
-                            case .custom, .savedMusic:
-                                let controllerContext: AccountContext
-                                if component.data.account.id == component.context.account.id {
-                                    controllerContext = component.context
-                                } else {
-                                    controllerContext = component.context.sharedContext.makeTempAccountContext(account: component.data.account)
-                                }
-                                let playerController = component.context.sharedContext.makeOverlayAudioPlayerController(context: controllerContext, chatLocation: .peer(id: id.messageId.peerId), type: component.data.kind, initialMessageId: id.messageId, initialOrder: component.data.playbackOrder, playlistLocation: playlistLocation, parentNavigationController: navigationController)
-                                self.window?.endEditing(true)
-                                controller.present(playerController, in: .window(.root))
-                            case let .messages(chatLocation, _, _):
-                                let signal = component.context.sharedContext.messageFromPreloadedChatHistoryViewForLocation(id: id.messageId, location: ChatHistoryLocationInput(content: .InitialSearch(subject: MessageHistoryInitialSearchSubject(location: .id(id.messageId)), count: 60, highlight: true, setupReply: false), id: 0), context: component.context, chatLocation: chatLocation, subject: nil, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>(value: nil), tag: .tag(MessageTags.music))
-                                
-                                var cancelImpl: (() -> Void)?
-                                let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }
-                                let progressSignal = Signal<Never, NoError> { [weak self] subscriber in
-                                    let controller = OverlayStatusController(theme: presentationData.theme, type: .loading(cancelled: {
-                                        cancelImpl?()
-                                    }))
-                                    self?.component?.controller()?.present(controller, in: .window(.root))
-                                    return ActionDisposable { [weak controller] in
-                                        Queue.mainQueue().async() {
-                                            controller?.dismiss()
-                                        }
-                                    }
-                                }
-                                |> runOn(Queue.mainQueue())
-                                |> delay(0.15, queue: Queue.mainQueue())
-                                let progressDisposable = MetaDisposable()
-                                var progressStarted = false
-                                self.playlistPreloadDisposable?.dispose()
-                                self.playlistPreloadDisposable = (signal
-                                |> afterDisposed {
-                                    Queue.mainQueue().async {
-                                        progressDisposable.dispose()
-                                    }
-                                }
-                                |> deliverOnMainQueue).start(next: { [weak self] index in
-                                    guard let self, let component = self.component else {
-                                        return
-                                    }
-                                    if let _ = index.0 {
-                                        let controllerContext: AccountContext
-                                        if component.data.account.id == component.context.account.id {
-                                            controllerContext = component.context
-                                        } else {
-                                            controllerContext = component.context.sharedContext.makeTempAccountContext(account: component.data.account)
-                                        }
-                                        let playerController = component.context.sharedContext.makeOverlayAudioPlayerController(context: controllerContext, chatLocation: chatLocation, type: component.data.kind, initialMessageId: id.messageId, initialOrder: component.data.playbackOrder, playlistLocation: nil, parentNavigationController: navigationController)
-                                        self.window?.endEditing(true)
-                                        controller.present(playerController, in: .window(.root))
-                                    } else if index.1 {
-                                        if !progressStarted {
-                                            progressStarted = true
-                                            progressDisposable.set(progressSignal.start())
-                                        }
-                                    }
-                                }, completed: {
-                                })
-                                cancelImpl = { [weak self] in
-                                    self?.playlistPreloadDisposable?.dispose()
-                                }
-                            default:
-                                break
-                            }
-                        } else {
-                            component.context.sharedContext.navigateToChat(accountId: component.context.account.id, peerId: id.messageId.peerId, messageId: id.messageId)
+                    self?.performAction({ [weak self] in
+                        guard let self, let component = self.component, let controller = component.controller(), let navigationController = controller.navigationController as? NavigationController else {
+                            return
                         }
-                    }
+
+                        // A RICH message's audio plays out of an `InstantPageMediaPlaylist` — the file lives in
+                        // the message's `RichTextMessageAttribute`, not in `message.media` — so neither the item
+                        // id nor the location is a `PeerMessages*` one and the branch below never matched: the
+                        // mini player was inert for it. Open the same overlay music player the chat-history
+                        // playlists open, anchored on the message the playlist came from. That works because a
+                        // rich message IS `.music`-tagged (`tagsForStoreMessage` folds the attribute's media in),
+                        // so the player's own music-tagged history list finds it.
+                        if let instantPageLocation = component.data.playlistLocation as? InstantPagePlaylistLocation {
+                            // An Instant View page has no message to open — leave it inert, as before.
+                            guard let messageId = instantPageLocation.messageId else {
+                                return
+                            }
+                            guard case .music = component.data.kind else {
+                                // Voice / instant video: jump to the message, mirroring the non-music arm below.
+                                component.context.sharedContext.navigateToChat(accountId: component.context.account.id, peerId: messageId.peerId, messageId: messageId)
+                                return
+                            }
+                            let controllerContext: AccountContext
+                            if component.data.account.id == component.context.account.id {
+                                controllerContext = component.context
+                            } else {
+                                controllerContext = component.context.sharedContext.makeTempAccountContext(account: component.data.account)
+                            }
+                            // The queue is built from synthesized Local-id rows, one per track, so it
+                            // must be anchored on the PLAYING track's synthesized id — the rich
+                            // message's own id is not among those rows.
+                            var anchorMessageId = messageId
+                            if let indexProviding = component.data.item.id as? InstantPagePlaylistItemIndexProviding {
+                                anchorMessageId = EngineMessage.Id(peerId: messageId.peerId, namespace: Namespaces.Message.Local, id: Int32(clamping: indexProviding.instantPageMediaIndex))
+                            }
+                            let playerController = component.context.sharedContext.makeOverlayAudioPlayerController(context: controllerContext, chatLocation: .peer(id: messageId.peerId), type: component.data.kind, initialMessageId: anchorMessageId, initialOrder: component.data.playbackOrder, playlistLocation: instantPageLocation, parentNavigationController: navigationController)
+                            self.window?.endEditing(true)
+                            playerController.navigationPresentation = .flatModal
+                            controller.push(playerController)
+                            return
+                        }
+
+                        if let id = component.data.item.id as? PeerMessagesMediaPlaylistItemId, let playlistLocation = component.data.playlistLocation as? PeerMessagesPlaylistLocation {
+                            if case .music = component.data.kind {
+                                switch playlistLocation {
+                                case .custom, .savedMusic:
+                                    let controllerContext: AccountContext
+                                    if component.data.account.id == component.context.account.id {
+                                        controllerContext = component.context
+                                    } else {
+                                        controllerContext = component.context.sharedContext.makeTempAccountContext(account: component.data.account)
+                                    }
+                                    let playerController = component.context.sharedContext.makeOverlayAudioPlayerController(context: controllerContext, chatLocation: .peer(id: id.messageId.peerId), type: component.data.kind, initialMessageId: id.messageId, initialOrder: component.data.playbackOrder, playlistLocation: playlistLocation, parentNavigationController: navigationController)
+                                    self.window?.endEditing(true)
+                                    playerController.navigationPresentation = .flatModal
+                                    controller.push(playerController)
+                                case let .messages(chatLocation, _, _):
+                                    let signal = component.context.sharedContext.messageFromPreloadedChatHistoryViewForLocation(id: id.messageId, location: ChatHistoryLocationInput(content: .InitialSearch(subject: MessageHistoryInitialSearchSubject(location: .id(id.messageId)), count: 60, highlight: true, setupReply: false), id: 0), context: component.context, chatLocation: chatLocation, subject: nil, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>(value: nil), tag: .tag(EngineMessage.Tags.music))
+
+                                    var cancelImpl: (() -> Void)?
+                                    let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }
+                                    let progressSignal = Signal<Never, NoError> { [weak self] subscriber in
+                                        let controller = OverlayStatusController(theme: presentationData.theme, type: .loading(cancelled: {
+                                            cancelImpl?()
+                                        }))
+                                        self?.component?.controller()?.present(controller, in: .window(.root))
+                                        return ActionDisposable { [weak controller] in
+                                            Queue.mainQueue().async() {
+                                                controller?.dismiss()
+                                            }
+                                        }
+                                    }
+                                    |> runOn(Queue.mainQueue())
+                                    |> delay(0.15, queue: Queue.mainQueue())
+                                    let progressDisposable = MetaDisposable()
+                                    var progressStarted = false
+                                    self.playlistPreloadDisposable?.dispose()
+                                    self.playlistPreloadDisposable = (signal
+                                    |> afterDisposed {
+                                        Queue.mainQueue().async {
+                                            progressDisposable.dispose()
+                                        }
+                                    }
+                                    |> deliverOnMainQueue).start(next: { [weak self] index in
+                                        guard let self, let component = self.component else {
+                                            return
+                                        }
+                                        if let _ = index.0 {
+                                            let controllerContext: AccountContext
+                                            if component.data.account.id == component.context.account.id {
+                                                controllerContext = component.context
+                                            } else {
+                                                controllerContext = component.context.sharedContext.makeTempAccountContext(account: component.data.account)
+                                            }
+                                            let playerController = component.context.sharedContext.makeOverlayAudioPlayerController(context: controllerContext, chatLocation: chatLocation, type: component.data.kind, initialMessageId: id.messageId, initialOrder: component.data.playbackOrder, playlistLocation: nil, parentNavigationController: navigationController)
+                                            self.window?.endEditing(true)
+                                            playerController.navigationPresentation = .flatModal
+                                            controller.push(playerController)
+                                        } else if index.1 {
+                                            if !progressStarted {
+                                                progressStarted = true
+                                                progressDisposable.set(progressSignal.start())
+                                            }
+                                        }
+                                    }, completed: {
+                                    })
+                                    cancelImpl = { [weak self] in
+                                        self?.playlistPreloadDisposable?.dispose()
+                                    }
+                                default:
+                                    break
+                                }
+                            } else {
+                                component.context.sharedContext.navigateToChat(accountId: component.context.account.id, peerId: id.messageId.peerId, messageId: id.messageId)
+                            }
+                        }
+                    })
                 }
             }
             

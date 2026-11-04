@@ -1,4 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
+load("@build_bazel_rules_apple//apple/testing/default_runner:ios_test_runner.bzl", "ios_test_runner")
 
 sgdeps = [
     "//submodules/BuildConfig:BuildConfig",
@@ -21,9 +23,9 @@ swift_library(
     ],
     deps = sgdeps + [
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/AsyncDisplayKit:AsyncDisplayKit",
         "//submodules/Display:Display",
-        "//submodules/Postbox:Postbox",
         "//submodules/TelegramCore:TelegramCore",
         "//submodules/MtProtoKit:MtProtoKit",
         "//submodules/TelegramPresentationData:TelegramPresentationData",
@@ -64,6 +66,7 @@ swift_library(
         "//submodules/PeerAvatarGalleryUI:PeerAvatarGalleryUI",
         "//submodules/PhoneInputNode:PhoneInputNode",
         "//submodules/PhotoResources:PhotoResources",
+        "//submodules/StickerResources:StickerResources",
         "//submodules/ProgressNavigationButtonNode:ProgressNavigationButtonNode",
         "//submodules/RadialStatusNode:RadialStatusNode",
         "//submodules/SearchBarNode:SearchBarNode",
@@ -77,7 +80,6 @@ swift_library(
         "//submodules/TextFormat:TextFormat",
         "//submodules/MediaPlayer:UniversalMediaPlayer",
         "//submodules/UrlEscaping:UrlEscaping",
-        "//submodules/WebSearchUI:WebSearchUI",
         "//submodules/UrlHandling:UrlHandling",
         "//submodules/HexColor:HexColor",
         "//submodules/QrCode:QrCode",
@@ -138,6 +140,9 @@ swift_library(
         "//submodules/TelegramUI/Components/Settings/PasskeysScreen",
         "//submodules/TelegramUI/Components/FaceScanScreen",
         "//submodules/ComponentFlow",
+        "//submodules/Components/ViewControllerComponent",
+        "//submodules/Components/MultilineTextComponent",
+        "//submodules/Components/ResizableSheetComponent",
         "//submodules/Components/ComponentDisplayAdapters",
         "//submodules/Components/BundleIconComponent",
         "//submodules/TelegramUI/Components/ButtonComponent",
@@ -147,9 +152,42 @@ swift_library(
         "//submodules/TelegramUI/Components/EdgeEffect",
         "//submodules/TelegramUI/Components/AvatarEditorScreen",
         "//submodules/TelegramUI/Components/Settings/PeerSelectionScreen",
+        "//submodules/TelegramUI/Components/Settings/ChatbotSetupScreen",
         "//submodules/TelegramUI/Components/ListSectionComponent",
         "//submodules/TelegramUI/Components/ListActionItemComponent",
         "//submodules/Utils/DeviceModel",
+        "//submodules/PasscodeCore",
+        "//submodules/WalletContext",
+    ],
+    visibility = [
+        "//visibility:public",
+    ],
+)
+
+swift_library(
+    name = "SettingsUITestsLib",
+    testonly = True,
+    srcs = glob([
+        "Tests/**/*.swift",
+    ]),
+    deps = [
+        ":SettingsUI",
+        "//submodules/TelegramCore:TelegramCore",
+    ],
+)
+
+ios_test_runner(
+    name = "SettingsUITestRunner",
+    device_type = "iPhone 17",
+    os_version = "26.5",
+)
+
+ios_unit_test(
+    name = "SettingsUITests",
+    minimum_os_version = "15.0",
+    runner = ":SettingsUITestRunner",
+    deps = [
+        ":SettingsUITestsLib",
     ],
     visibility = [
         "//visibility:public",

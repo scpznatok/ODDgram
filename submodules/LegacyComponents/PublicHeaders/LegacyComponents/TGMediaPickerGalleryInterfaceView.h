@@ -14,7 +14,7 @@
 
 @property (nonatomic, copy) void (^captionSet)(id<TGModernGalleryItem>, NSAttributedString *);
 @property (nonatomic, copy) void (^donePressed)(id<TGModernGalleryItem>);
-@property (nonatomic, copy) void (^doneLongPressed)(id<TGModernGalleryItem>);
+@property (nonatomic, copy) void (^doneLongPressed)(id<TGModernGalleryItem>, UIView *);
 
 @property (nonatomic, copy) void (^photoStripItemSelected)(NSInteger index);
 
@@ -37,7 +37,7 @@
 
 @property (nonatomic, readonly) UIView *timerButton;
 
-- (instancetype)initWithContext:(id<LegacyComponentsContext>)context focusItem:(id<TGModernGalleryItem>)focusItem selectionContext:(TGMediaSelectionContext *)selectionContext editingContext:(TGMediaEditingContext *)editingContext stickersContext:(id<TGPhotoPaintStickersContext>)stickersContext hasSelectionPanel:(bool)hasSelectionPanel hasCameraButton:(bool)hasCameraButton recipientName:(NSString *)recipientName isScheduledMessages:(bool)isScheduledMessages canShowTelescope:(bool)canShowTelescope canSendTelescope:(bool)canSendTelescope hasCoverButton:(bool)hasCoverButton;
+- (instancetype)initWithContext:(id<LegacyComponentsContext>)context focusItem:(id<TGModernGalleryItem>)focusItem selectionContext:(TGMediaSelectionContext *)selectionContext editingContext:(TGMediaEditingContext *)editingContext stickersContext:(id<TGPhotoPaintStickersContext>)stickersContext hasSelectionPanel:(bool)hasSelectionPanel hasCameraButton:(bool)hasCameraButton recipientName:(NSString *)recipientName isScheduledMessages:(bool)isScheduledMessages isActionButtonDone:(bool)isActionButtonDone /* MARK: Swiftgram */ canShowTelescope:(bool)canShowTelescope canSendTelescope:(bool)canSendTelescope hasCoverButton:(bool)hasCoverButton;
 
 - (void)setSelectedItemsModel:(TGMediaPickerGallerySelectedItemsModel *)selectedItemsModel;
 - (void)setEditorTabPressed:(void (^)(TGPhotoEditorTab tab))editorTabPressed;
@@ -56,6 +56,7 @@
 - (void)editorTransitionIn;
 - (void)editorTransitionOut;
 
+- (bool)canBeginEditingCaption;
 - (void)beginEditingCaption;
 - (void)setupGifEditing;
 

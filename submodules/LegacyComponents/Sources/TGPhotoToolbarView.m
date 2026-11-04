@@ -31,6 +31,7 @@
     
     bool _animatingCancelDoneButtons;
 }
+
 @end
 
 @implementation TGPhotoToolbarView
@@ -54,7 +55,10 @@
         CGSize buttonSize = CGSizeMake(49.0f, 49.0f);
         _cancelButton = [[TGModernButton alloc] initWithFrame:CGRectMake(0, 0, buttonSize.width, buttonSize.height)];
         _cancelButton.exclusiveTouch = true;
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations" // legacy non-configuration UIButton: property is still honored
         _cancelButton.adjustsImageWhenHighlighted = false;
+        #pragma clang diagnostic pop
         [self setBackButtonType:backButton];
         [_cancelButton addTarget:self action:@selector(cancelButtonPressed) forControlEvents:UIControlEventTouchUpInside];
         [_backgroundView addSubview:_cancelButton];
@@ -72,7 +76,10 @@
         } else {
             _doneButton = [[TGModernButton alloc] initWithFrame:CGRectMake(0, 0, buttonSize.width, buttonSize.height)];
             _doneButton.exclusiveTouch = true;
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations" // legacy non-configuration UIButton: property is still honored
             _doneButton.adjustsImageWhenHighlighted = false;
+            #pragma clang diagnostic pop
             [self setDoneButtonType:doneButton];
             [_doneButton addTarget:self action:@selector(doneButtonPressed) forControlEvents:UIControlEventTouchUpInside];
             [_backgroundView addSubview:_doneButton];
@@ -633,6 +640,34 @@
             return button;
     }
     return nil;
+}
+
+- (UIView *)viewForTab:(TGPhotoEditorTab)tab
+{
+    return [self buttonForTab:tab];
+}
+
+- (void)setQualityButtonIsPhoto:(bool)isPhoto highQuality:(bool)highQuality videoPreset:(NSInteger)videoPreset
+{
+    TGPhotoEditorButton *qualityButton = [self buttonForTab:TGPhotoEditorQualityTab];
+    if (qualityButton == nil)
+        return;
+
+    if (isPhoto)
+        qualityButton.iconImage = [TGPhotoEditorInterfaceAssets qualityIconForHighQuality:highQuality filled:false];
+    else
+        qualityButton.iconImage = [TGPhotoEditorInterfaceAssets qualityIconForPreset:(TGMediaVideoConversionPreset)videoPreset];
+}
+
+- (void)setTimerButtonValue:(NSInteger)value
+{
+    TGPhotoEditorButton *timerButton = [self buttonForTab:TGPhotoEditorTimerTab];
+    if (timerButton == nil)
+        return;
+
+    UIImage *defaultIcon = [TGPhotoEditorInterfaceAssets timerIconForValue:0];
+    UIImage *activeIcon = [TGPhotoEditorInterfaceAssets timerIconForValue:value];
+    [timerButton setIconImage:defaultIcon activeIconImage:activeIcon];
 }
 
 - (void)layoutSubviews

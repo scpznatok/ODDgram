@@ -288,7 +288,7 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
     case giftStars(currency: String, amount: Int64, count: Int64, cryptoCurrency: String?, cryptoAmount: Int64?, transactionId: String?)
     case prizeStars(amount: Int64, isUnclaimed: Bool, boostPeerId: PeerId?, transactionId: String?, giveawayMessageId: MessageId?)
     case starGift(gift: StarGift, convertStars: Int64?, text: String?, entities: [MessageTextEntity]?, nameHidden: Bool, savedToProfile: Bool, converted: Bool, upgraded: Bool, canUpgrade: Bool, upgradeStars: Int64?, isRefunded: Bool, isPrepaidUpgrade: Bool, upgradeMessageId: Int32?, peerId: EnginePeer.Id?, senderId: EnginePeer.Id?, savedId: Int64?, prepaidUpgradeHash: String?, giftMessageId: Int32?, upgradeSeparate: Bool, isAuctionAcquired: Bool, toPeerId: EnginePeer.Id?, number: Int32?)
-    case starGiftUnique(gift: StarGift, isUpgrade: Bool, isTransferred: Bool, savedToProfile: Bool, canExportDate: Int32?, transferStars: Int64?, isRefunded: Bool, isPrepaidUpgrade: Bool, peerId: EnginePeer.Id?, senderId: EnginePeer.Id?, savedId: Int64?, resaleAmount: CurrencyAmount?, canTransferDate: Int32?, canResaleDate: Int32?, dropOriginalDetailsStars: Int64?, assigned: Bool, fromOffer: Bool, canCraftAt: Int32?, isCrafted: Bool)
+    case starGiftUnique(gift: StarGift, isUpgrade: Bool, isTransferred: Bool, savedToProfile: Bool, canExportDate: Int32?, transferStars: Int64?, isRefunded: Bool, isPrepaidUpgrade: Bool, peerId: EnginePeer.Id?, senderId: EnginePeer.Id?, savedId: Int64?, resaleAmount: CurrencyAmount?, canTransferDate: Int32?, canResaleDate: Int32?, dropOriginalDetailsStars: Int64?, assigned: Bool, fromOffer: Bool, canCraftAt: Int32?, isCrafted: Bool, text: String?, entities: [MessageTextEntity]?, nameHidden: Bool)
     case paidMessagesRefunded(count: Int32, stars: Int64)
     case paidMessagesPriceEdited(stars: Int64, broadcastMessagesAllowed: Bool)
     case conferenceCall(ConferenceCall)
@@ -296,6 +296,7 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
     case todoAppendTasks([TelegramMediaTodo.Item])
     case suggestedPostApprovalStatus(status: SuggestedPostApprovalStatus)
     case giftTon(currency: String, amount: Int64, cryptoCurrency: String?, cryptoAmount: Int64?, transactionId: String?)
+    case gramTransfer(amount: Int64, peerAddress: String, transactionId: String, comment: String?, commentEncrypted: Bool)
     case suggestedPostSuccess(amount: CurrencyAmount)
     case suggestedPostRefund(SuggestedPostRefund)
     case suggestedBirthday(TelegramBirthday)
@@ -304,6 +305,13 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
     case groupCreatorChange(GroupCreatorChange)
     case copyProtectionToggle(previousValue: Bool, newValue: Bool)
     case copyProtectionRequest(hasExpired: Bool, previousValue: Bool, newValue: Bool)
+    case managedBotCreated(botId: PeerId)
+    case pollOptionAppended(TelegramMediaPollOption)
+    case pollOptionDeleted(TelegramMediaPollOption)
+    case communityChanged(communityId: PeerId?)
+    case joinedViaCommunity(communityId: PeerId)
+    case walletTonConnectRequest(flags: Int32, sessionId: Int64, expires: Int32, topic: String?, traceId: String?, dappName: String?)
+    case noPaidMessagesTokenUsed
     
     public init(decoder: PostboxDecoder) {
         let rawValue: Int32 = decoder.decodeInt32ForKey("_rawValue", orElse: 0)
@@ -439,7 +447,7 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
             } else if let stars = decoder.decodeOptionalInt64ForKey("resaleStars") {
                 resaleAmount = CurrencyAmount(amount: StarsAmount(value: stars, nanos: 0), currency: .stars)
             }
-            self = .starGiftUnique(gift: decoder.decodeObjectForKey("gift", decoder: { StarGift(decoder: $0) }) as! StarGift, isUpgrade: decoder.decodeBoolForKey("isUpgrade", orElse: false), isTransferred: decoder.decodeBoolForKey("isTransferred", orElse: false), savedToProfile: decoder.decodeBoolForKey("savedToProfile", orElse: false), canExportDate: decoder.decodeOptionalInt32ForKey("canExportDate"), transferStars: decoder.decodeOptionalInt64ForKey("transferStars"), isRefunded: decoder.decodeBoolForKey("isRefunded", orElse: false), isPrepaidUpgrade: decoder.decodeBoolForKey("isPrepaidUpgrade", orElse: false), peerId: decoder.decodeOptionalInt64ForKey("peerId").flatMap { EnginePeer.Id($0) }, senderId: decoder.decodeOptionalInt64ForKey("senderId").flatMap { EnginePeer.Id($0) }, savedId: decoder.decodeOptionalInt64ForKey("savedId"), resaleAmount: resaleAmount, canTransferDate: decoder.decodeOptionalInt32ForKey("canTransferDate"), canResaleDate: decoder.decodeOptionalInt32ForKey("canResaleDate"), dropOriginalDetailsStars: decoder.decodeOptionalInt64ForKey("dropOriginalDetailsStars"), assigned: decoder.decodeBoolForKey("assigned", orElse: false), fromOffer: decoder.decodeBoolForKey("fromOffer", orElse: false), canCraftAt: decoder.decodeOptionalInt32ForKey("canCraftAt"), isCrafted: decoder.decodeBoolForKey("isCrafted", orElse: false))
+            self = .starGiftUnique(gift: decoder.decodeObjectForKey("gift", decoder: { StarGift(decoder: $0) }) as! StarGift, isUpgrade: decoder.decodeBoolForKey("isUpgrade", orElse: false), isTransferred: decoder.decodeBoolForKey("isTransferred", orElse: false), savedToProfile: decoder.decodeBoolForKey("savedToProfile", orElse: false), canExportDate: decoder.decodeOptionalInt32ForKey("canExportDate"), transferStars: decoder.decodeOptionalInt64ForKey("transferStars"), isRefunded: decoder.decodeBoolForKey("isRefunded", orElse: false), isPrepaidUpgrade: decoder.decodeBoolForKey("isPrepaidUpgrade", orElse: false), peerId: decoder.decodeOptionalInt64ForKey("peerId").flatMap { EnginePeer.Id($0) }, senderId: decoder.decodeOptionalInt64ForKey("senderId").flatMap { EnginePeer.Id($0) }, savedId: decoder.decodeOptionalInt64ForKey("savedId"), resaleAmount: resaleAmount, canTransferDate: decoder.decodeOptionalInt32ForKey("canTransferDate"), canResaleDate: decoder.decodeOptionalInt32ForKey("canResaleDate"), dropOriginalDetailsStars: decoder.decodeOptionalInt64ForKey("dropOriginalDetailsStars"), assigned: decoder.decodeBoolForKey("assigned", orElse: false), fromOffer: decoder.decodeBoolForKey("fromOffer", orElse: false), canCraftAt: decoder.decodeOptionalInt32ForKey("canCraftAt"), isCrafted: decoder.decodeBoolForKey("isCrafted", orElse: false), text: decoder.decodeOptionalStringForKey("text"), entities: decoder.decodeOptionalObjectArrayWithDecoderForKey("entities"), nameHidden: decoder.decodeBoolForKey("nameHidden", orElse: false))
         case 46:
             self = .paidMessagesRefunded(count: decoder.decodeInt32ForKey("count", orElse: 0), stars: decoder.decodeInt64ForKey("stars", orElse: 0))
         case 47:
@@ -481,6 +489,28 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
             self = .copyProtectionToggle(previousValue: decoder.decodeBoolForKey("previousValue", orElse: false), newValue: decoder.decodeBoolForKey("newValue", orElse: false))
         case 61:
             self = .copyProtectionRequest(hasExpired: decoder.decodeBoolForKey("hasExpired", orElse: false), previousValue: decoder.decodeBoolForKey("previousValue", orElse: false), newValue: decoder.decodeBoolForKey("newValue", orElse: false))
+        case 62:
+            self = .managedBotCreated(botId: PeerId(decoder.decodeInt64ForKey("botId", orElse: 0)))
+        case 63:
+            self = .pollOptionAppended(decoder.decodeObjectForKey("option", decoder: { TelegramMediaPollOption(decoder: $0) }) as! TelegramMediaPollOption)
+        case 64:
+            self = .pollOptionDeleted(decoder.decodeObjectForKey("option", decoder: { TelegramMediaPollOption(decoder: $0) }) as! TelegramMediaPollOption)
+        case 65:
+            self = .communityChanged(communityId: decoder.decodeOptionalInt64ForKey("communityId").flatMap(PeerId.init))
+        case 66:
+            self = .joinedViaCommunity(communityId: PeerId(decoder.decodeInt64ForKey("communityId", orElse: 0)))
+        case 68:
+            self = .walletTonConnectRequest(flags: decoder.decodeInt32ForKey("flags", orElse: 0), sessionId: decoder.decodeInt64ForKey("sessionId", orElse: 0), expires: decoder.decodeInt32ForKey("expires", orElse: 0), topic: decoder.decodeOptionalStringForKey("topic"), traceId: decoder.decodeOptionalStringForKey("traceId"), dappName: decoder.decodeOptionalStringForKey("dappName"))
+        case 67:
+            self = .gramTransfer(
+                amount: decoder.decodeInt64ForKey("amount", orElse: 0),
+                peerAddress: decoder.decodeStringForKey("peerAddress", orElse: ""),
+                transactionId: decoder.decodeStringForKey("transactionId", orElse: ""),
+                comment: decoder.decodeOptionalStringForKey("comment"),
+                commentEncrypted: decoder.decodeBoolForKey("commentEncrypted", orElse: false)
+            )
+        case 69:
+            self = .noPaidMessagesTokenUsed
         default:
             self = .unknown
         }
@@ -490,6 +520,8 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
         switch self {
         case .unknown:
             break
+        case .noPaidMessagesTokenUsed:
+            encoder.encodeInt32(69, forKey: "_rawValue")
         case let .groupCreated(title):
             encoder.encodeInt32(1, forKey: "_rawValue")
             encoder.encodeString(title, forKey: "title")
@@ -844,7 +876,7 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
             } else {
                 encoder.encodeNil(forKey: "number")
             }
-        case let .starGiftUnique(gift, isUpgrade, isTransferred, savedToProfile, canExportDate, transferStars, isRefunded, isPrepaidUpgrade, peerId, senderId, savedId, resaleAmount, canTransferDate, canResaleDate, dropOriginalDetailsStars, assigned, fromOffer, canCraftAt, isCrafted):
+        case let .starGiftUnique(gift, isUpgrade, isTransferred, savedToProfile, canExportDate, transferStars, isRefunded, isPrepaidUpgrade, peerId, senderId, savedId, resaleAmount, canTransferDate, canResaleDate, dropOriginalDetailsStars, assigned, fromOffer, canCraftAt, isCrafted, text, entities, nameHidden):
             encoder.encodeInt32(45, forKey: "_rawValue")
             encoder.encodeObject(gift, forKey: "gift")
             encoder.encodeBool(isUpgrade, forKey: "isUpgrade")
@@ -907,6 +939,14 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
             }
             
             encoder.encodeBool(isCrafted, forKey: "isCrafted")
+            if let text, let entities {
+                encoder.encodeString(text, forKey: "text")
+                encoder.encodeObjectArray(entities, forKey: "entities")
+            } else {
+                encoder.encodeNil(forKey: "text")
+                encoder.encodeNil(forKey: "entities")
+            }
+            encoder.encodeBool(nameHidden, forKey: "nameHidden")
         case let .paidMessagesRefunded(count, stars):
             encoder.encodeInt32(46, forKey: "_rawValue")
             encoder.encodeInt32(count, forKey: "count")
@@ -984,6 +1024,56 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
             encoder.encodeBool(hasExpired, forKey: "hasExpired")
             encoder.encodeBool(previousValue, forKey: "previousValue")
             encoder.encodeBool(newValue, forKey: "newValue")
+        case let .managedBotCreated(botId):
+            encoder.encodeInt32(62, forKey: "_rawValue")
+            encoder.encodeInt64(botId.toInt64(), forKey: "botId")
+        case let .pollOptionAppended(option):
+            encoder.encodeInt32(63, forKey: "_rawValue")
+            encoder.encodeObject(option, forKey: "option")
+        case let .pollOptionDeleted(option):
+            encoder.encodeInt32(64, forKey: "_rawValue")
+            encoder.encodeObject(option, forKey: "option")
+        case let .communityChanged(communityId):
+            encoder.encodeInt32(65, forKey: "_rawValue")
+            if let communityId {
+                encoder.encodeInt64(communityId.toInt64(), forKey: "communityId")
+            } else {
+                encoder.encodeNil(forKey: "communityId")
+            }
+        case let .joinedViaCommunity(communityId):
+            encoder.encodeInt32(66, forKey: "_rawValue")
+            encoder.encodeInt64(communityId.toInt64(), forKey: "communityId")
+        case let .walletTonConnectRequest(flags, sessionId, expires, topic, traceId, dappName):
+            if let dappName {
+                encoder.encodeString(dappName, forKey: "dappName")
+            } else {
+                encoder.encodeNil(forKey: "dappName")
+            }
+            encoder.encodeInt32(68, forKey: "_rawValue")
+            encoder.encodeInt32(flags, forKey: "flags")
+            encoder.encodeInt64(sessionId, forKey: "sessionId")
+            encoder.encodeInt32(expires, forKey: "expires")
+            if let topic {
+                encoder.encodeString(topic, forKey: "topic")
+            } else {
+                encoder.encodeNil(forKey: "topic")
+            }
+            if let traceId {
+                encoder.encodeString(traceId, forKey: "traceId")
+            } else {
+                encoder.encodeNil(forKey: "traceId")
+            }
+        case let .gramTransfer(amount, peerAddress, transactionId, comment, commentEncrypted):
+            encoder.encodeInt32(67, forKey: "_rawValue")
+            encoder.encodeBool(commentEncrypted, forKey: "commentEncrypted")
+            encoder.encodeInt64(amount, forKey: "amount")
+            encoder.encodeString(peerAddress, forKey: "peerAddress")
+            encoder.encodeString(transactionId, forKey: "transactionId")
+            if let comment {
+                encoder.encodeString(comment, forKey: "comment")
+            } else {
+                encoder.encodeNil(forKey: "comment")
+            }
         }
     }
     
@@ -1026,12 +1116,12 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
                 peerIds.append(toPeerId)
             }
             return peerIds
-        case let .starGiftUnique(gift, _, _, _, _, _, _, _, peerId, senderId, _, _, _, _, _, _, _, _, _):
+        case let .starGiftUnique(gift, _, _, _, _, _, _, _, peerId, senderId, _, _, _, _, _, _, _, _, _, _, _, nameHidden):
             var peerIds: [PeerId] = []
             if let peerId {
                 peerIds.append(peerId)
             }
-            if let senderId {
+            if let senderId, !nameHidden {
                 peerIds.append(senderId)
             }
             if let releasedBy = gift.releasedBy {
@@ -1042,6 +1132,12 @@ public enum TelegramMediaActionType: PostboxCoding, Equatable {
             return conferenceCall.otherParticipants
         case let .groupCreatorChange(groupCreatorChange):
             return [groupCreatorChange.targetPeerId]
+        case let .managedBotCreated(botId):
+            return [botId]
+        case let .communityChanged(communityId):
+            return communityId.flatMap { [$0] } ?? []
+        case let .joinedViaCommunity(communityId):
+            return [communityId]
         default:
             return []
         }

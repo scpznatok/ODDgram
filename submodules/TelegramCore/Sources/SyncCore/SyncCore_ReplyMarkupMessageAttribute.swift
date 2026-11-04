@@ -1,5 +1,5 @@
 import Postbox
-import TelegramApi
+internal import TelegramApi
 
 public enum ReplyMarkupButtonRequestPeerType: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
@@ -7,12 +7,14 @@ public enum ReplyMarkupButtonRequestPeerType: Codable, Equatable {
         case user = "u"
         case group = "g"
         case channel = "c"
+        case createBot = "cb"
     }
-    
+
     enum Discriminator: Int32 {
         case user = 0
         case group = 1
         case channel = 2
+        case createBot = 3
     }
     
     public struct User: Codable, Equatable {
@@ -144,10 +146,26 @@ public enum ReplyMarkupButtonRequestPeerType: Codable, Equatable {
         }
     }
     
+    public struct CreateBot: Codable, Equatable {
+        enum CodingKeys: String, CodingKey {
+            case suggestedName = "sn"
+            case suggestedUsername = "su"
+        }
+
+        public var suggestedName: String?
+        public var suggestedUsername: String?
+
+        public init(suggestedName: String?, suggestedUsername: String?) {
+            self.suggestedName = suggestedName
+            self.suggestedUsername = suggestedUsername
+        }
+    }
+
     case user(User)
     case group(Group)
     case channel(Channel)
-    
+    case createBot(CreateBot)
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         
@@ -158,6 +176,8 @@ public enum ReplyMarkupButtonRequestPeerType: Codable, Equatable {
             self = .group(try container.decode(Group.self, forKey: .group))
         case Discriminator.channel.rawValue:
             self = .channel(try container.decode(Channel.self, forKey: .channel))
+        case Discriminator.createBot.rawValue:
+            self = .createBot(try container.decode(CreateBot.self, forKey: .createBot))
         default:
             assertionFailure()
             self = .user(User(isBot: nil, isPremium: nil))
@@ -177,6 +197,9 @@ public enum ReplyMarkupButtonRequestPeerType: Codable, Equatable {
         case let .channel(channel):
             try container.encode(Discriminator.channel.rawValue, forKey: .discriminator)
             try container.encode(channel, forKey: .channel)
+        case let .createBot(createBot):
+            try container.encode(Discriminator.createBot.rawValue, forKey: .discriminator)
+            try container.encode(createBot, forKey: .createBot)
         }
     }
 }
@@ -234,6 +257,9 @@ public enum ReplyMarkupButtonAction: PostboxCoding, Equatable {
     case openWebView(url: String, simple: Bool)
     case requestPeer(peerType: ReplyMarkupButtonRequestPeerType, buttonId: Int32, maxQuantity: Int32)
     case copyText(payload: String)
+    /// `inlineButtonTypeDisabled`: a button the recipient cannot use, typically because a forward
+    /// stripped it. Renders dimmed and does nothing when tapped.
+    case disabled
     
     public init(decoder: PostboxDecoder) {
         switch decoder.decodeInt32ForKey("v", orElse: 0) {
@@ -265,6 +291,8 @@ public enum ReplyMarkupButtonAction: PostboxCoding, Equatable {
                 self = .requestPeer(peerType: decoder.decode(ReplyMarkupButtonRequestPeerType.self, forKey: "pt") ?? ReplyMarkupButtonRequestPeerType.user(ReplyMarkupButtonRequestPeerType.User(isBot: nil, isPremium: nil)), buttonId: decoder.decodeInt32ForKey("b", orElse: 0), maxQuantity: decoder.decodeInt32ForKey("q", orElse: 1))
             case 13:
                 self = .copyText(payload: decoder.decodeStringForKey("p", orElse: ""))
+            case 14:
+                self = .disabled
             default:
                 self = .text
         }
@@ -320,6 +348,8 @@ public enum ReplyMarkupButtonAction: PostboxCoding, Equatable {
         case let .copyText(payload):
             encoder.encodeInt32(13, forKey: "v")
             encoder.encodeString(payload, forKey: "p")
+        case .disabled:
+            encoder.encodeInt32(14, forKey: "v")
         }
     }
 }

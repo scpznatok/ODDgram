@@ -15,22 +15,33 @@ public final class AvatarComponent: Component {
     
     let context: AccountContext
     let theme: PresentationTheme
-    let peer: EnginePeer
+    let peer: EnginePeer?
     let clipStyle: ClipStyle
+    let overrideImage: AvatarNodeImageOverride?
     let icon: AnyComponent<Empty>?
+    let size: CGSize?
+    /// Whether the photo is decoded on the main thread as the view is updated. A view built ahead of being
+    /// shown (a list row entering during a scroll) can pass false and stay blank until it loads.
+    let synchronousLoad: Bool
 
     public init(
         context: AccountContext,
         theme: PresentationTheme,
-        peer: EnginePeer,
+        peer: EnginePeer?,
         clipStyle: ClipStyle = .round,
-        icon: AnyComponent<Empty>? = nil
+        overrideImage: AvatarNodeImageOverride? = nil,
+        icon: AnyComponent<Empty>? = nil,
+        size: CGSize? = nil,
+        synchronousLoad: Bool = true
     ) {
         self.context = context
         self.theme = theme
         self.peer = peer
         self.clipStyle = clipStyle
+        self.overrideImage = overrideImage
         self.icon = icon
+        self.size = size
+        self.synchronousLoad = synchronousLoad
     }
 
     public static func ==(lhs: AvatarComponent, rhs: AvatarComponent) -> Bool {
@@ -46,7 +57,16 @@ public final class AvatarComponent: Component {
         if lhs.clipStyle != rhs.clipStyle {
             return false
         }
+        if lhs.overrideImage != rhs.overrideImage {
+            return false
+        }
         if lhs.icon != rhs.icon {
+            return false
+        }
+        if lhs.size != rhs.size {
+            return false
+        }
+        if lhs.synchronousLoad != rhs.synchronousLoad {
             return false
         }
         return true
@@ -72,8 +92,10 @@ public final class AvatarComponent: Component {
         }
         
         func update(component: AvatarComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
+            let size = component.size ?? availableSize
+            
             if self.component == nil {
-                self.avatarNode.font = avatarPlaceholderFont(size: ceil(42.0 * availableSize.width / 100.0))
+                self.avatarNode.font = avatarPlaceholderFont(size: ceil(42.0 * size.width / 100.0))
             }
             
             self.component = component
@@ -94,14 +116,14 @@ public final class AvatarComponent: Component {
                     environment: {},
                     containerSize: CGSize(width: 24.0, height: 24.0)
                 )
-                let iconFrame = CGRect(origin: CGPoint(x: availableSize.width - iconSize.width + 2.0, y: availableSize.height - iconSize.height + 2.0), size: iconSize)
+                let iconFrame = CGRect(origin: CGPoint(x: size.width - iconSize.width + 2.0, y: size.height - iconSize.height + 2.0), size: iconSize)
                 if let iconView = iconView.view {
                     if iconView.superview == nil {
                         self.addSubview(iconView)
                     }
                     iconView.frame = iconFrame
                 }
-                cutoutRect = CGRect(origin: CGPoint(x: iconFrame.minX, y: availableSize.height - iconFrame.maxY), size: iconFrame.size).insetBy(dx: -2.0 + UIScreenPixel, dy: -2.0 + UIScreenPixel)
+                cutoutRect = CGRect(origin: CGPoint(x: iconFrame.minX, y: size.height - iconFrame.maxY), size: iconFrame.size).insetBy(dx: -2.0 + UIScreenPixel, dy: -2.0 + UIScreenPixel)
             }
             
             var clipStyle: AvatarNodeClipStyle = .round
@@ -109,18 +131,19 @@ public final class AvatarComponent: Component {
                 clipStyle = .roundedRect
             }
             
-            self.avatarNode.frame = CGRect(origin: .zero, size: availableSize)
+            self.avatarNode.frame = CGRect(origin: .zero, size: size)
             self.avatarNode.setPeer(
                 context: component.context,
                 theme: component.theme,
                 peer: component.peer,
+                overrideImage: component.overrideImage,
                 clipStyle: clipStyle,
-                synchronousLoad: true,
-                displayDimensions: availableSize,
+                synchronousLoad: component.synchronousLoad,
+                displayDimensions: size,
                 cutoutRect: cutoutRect
             )
             
-            return availableSize
+            return size
         }
     }
 

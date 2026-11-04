@@ -3,7 +3,6 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -149,7 +148,7 @@ private enum StorageUsageExceptionsEntry: ItemListNodeEntry {
         switch self {
         case let .addException(text):
             let icon: UIImage? = PresentationResourcesItemList.createGroupIcon(presentationData.theme)
-            return ItemListPeerActionItem(presentationData: presentationData, icon: icon, title: text, alwaysPlain: false, sectionId: self.section, editing: false, action: {
+            return ItemListPeerActionItem(presentationData: presentationData, systemStyle: .glass, icon: icon, title: text, alwaysPlain: false, sectionId: self.section, editing: false, action: {
                 arguments.openAddException()
             })
         case let .exceptionsHeader(text):
@@ -170,10 +169,10 @@ private enum StorageUsageExceptionsEntry: ItemListNodeEntry {
             if peer.peer.id == arguments.context.account.peerId {
                 title = presentationData.strings.DialogList_SavedMessages
             } else {
-                title = EnginePeer(peer.peer).displayTitle(strings: presentationData.strings, displayOrder: .firstLast)
+                title = peer.peer.displayTitle(strings: presentationData.strings, displayOrder: .firstLast)
             }
             
-            return ItemListDisclosureItem(presentationData: presentationData, icon: nil, context: arguments.context, iconPeer: EnginePeer(peer.peer), title: title, enabled: true, titleFont: .bold, label: optionText, labelStyle: .text, additionalDetailLabel: additionalDetailLabel, sectionId: self.section, style: .blocks, disclosureStyle: .optionArrows, action: {
+            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: nil, context: arguments.context, iconPeer: peer.peer, title: title, enabled: true, titleFont: .bold, label: optionText, labelStyle: .text, additionalDetailLabel: additionalDetailLabel, sectionId: self.section, style: .blocks, disclosureStyle: .optionArrows, action: {
                 arguments.openPeerMenu(peer.peer.id, value)
             }, tag: StorageUsageExceptionsEntryTag.peer(peer.peer.id))
         }
@@ -230,17 +229,9 @@ public func storageUsageExceptionsScreen(
         return cacheSettings
     })
     
-    let viewKey: PostboxViewKey = .preferences(keys: Set([PreferencesKeys.accountSpecificCacheStorageSettings]))
-    let accountSpecificSettings: Signal<AccountSpecificCacheStorageSettings, NoError> = context.account.postbox.combinedView(keys: [viewKey])
-    |> map { views -> AccountSpecificCacheStorageSettings in
-        let cacheSettings: AccountSpecificCacheStorageSettings
-        if let view = views.views[viewKey] as? PreferencesView, let value = view.values[PreferencesKeys.accountSpecificCacheStorageSettings]?.get(AccountSpecificCacheStorageSettings.self) {
-            cacheSettings = value
-        } else {
-            cacheSettings = AccountSpecificCacheStorageSettings.defaultSettings
-        }
-
-        return cacheSettings
+    let accountSpecificSettings: Signal<AccountSpecificCacheStorageSettings, NoError> = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.ApplicationSpecificPreference(key: PreferencesKeys.accountSpecificCacheStorageSettings))
+    |> map { entry -> AccountSpecificCacheStorageSettings in
+        return entry?.get(AccountSpecificCacheStorageSettings.self) ?? AccountSpecificCacheStorageSettings.defaultSettings
     }
     |> distinctUntilChanged
     
@@ -285,7 +276,7 @@ public func storageUsageExceptionsScreen(
                     continue
                 }
                 
-                result.append((peer: FoundPeer(peer: peer, subscribers: subscriberCount), value: value))
+                result.append((peer: FoundPeer(peer: EnginePeer(peer), subscribers: subscriberCount), value: value))
             }
             
             return result.sorted(by: { lhs, rhs in
@@ -297,15 +288,9 @@ public func storageUsageExceptionsScreen(
         }
     }
     
-    var presentControllerImpl: ((ViewController, PresentationContextType, Any?) -> Void)?
-    let _ = presentControllerImpl
     var pushControllerImpl: ((ViewController) -> Void)?
-    
     var findPeerReferenceNode: ((EnginePeer.Id) -> ItemListDisclosureItemNode?)?
-    let _ = findPeerReferenceNode
-    
     var presentInGlobalOverlay: ((ViewController) -> Void)?
-    let _ = presentInGlobalOverlay
     
     let actionDisposables = DisposableSet()
     
@@ -448,7 +433,7 @@ public func storageUsageExceptionsScreen(
     )
     |> deliverOnMainQueue
     |> map { presentationData, peerExceptions, state -> (ItemListControllerState, (ItemListNodeState, Any)) in
-        let leftNavigationButton = isModal ? ItemListNavigationButton(content: .text(presentationData.strings.Common_Cancel), style: .regular, enabled: true, action: {
+        let leftNavigationButton = isModal ? ItemListNavigationButton(content: .icon(.close), style: .regular, enabled: true, action: {
             dismissImpl?()
         }) : nil
         
@@ -465,9 +450,6 @@ public func storageUsageExceptionsScreen(
     if isModal {
         controller.navigationPresentation = .modal
         controller.supportedOrientations = ViewControllerSupportedOrientations(regularSize: .all, compactSize: .portrait)
-    }
-    presentControllerImpl = { [weak controller] c, contextType, a in
-        controller?.present(c, in: contextType, with: a)
     }
     pushControllerImpl = { [weak controller] c in
         controller?.push(c)
@@ -511,6 +493,6 @@ private final class StorageUsageExceptionsContextReferenceContentSource: Context
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: UIScreen.main.bounds, insets: UIEdgeInsets(top: -4.0, left: 0.0, bottom: -4.0, right: 0.0))
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: mainWindowScreenBounds, insets: UIEdgeInsets(top: -4.0, left: 0.0, bottom: -4.0, right: 0.0))
     }
 }

@@ -1,4 +1,6 @@
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 headers = [
     "opus.h",
     "opus_defines.h",
@@ -33,6 +35,8 @@ genrule(
         BUILD_ARCH="linux_x86_64"
     elif [ "$(TARGET_CPU)" == "aarch64" ] || [ "$(TARGET_CPU)" == "arm64" ]; then
         BUILD_ARCH="linux_arm64"
+    elif [ "$(TARGET_CPU)" == "darwin_arm64" ]; then
+        BUILD_ARCH="macos_arm64"
     else
         echo "Unsupported architecture $(TARGET_CPU)"
     fi
@@ -81,10 +85,8 @@ cc_library(
     ],
 )
 
-objc_library(
+cc_library(
     name = "opus",
-    module_name = "opus",
-    enable_modules = True,
     hdrs = [":Public/opus/" + x for x in headers],
     includes = [
         "Public",

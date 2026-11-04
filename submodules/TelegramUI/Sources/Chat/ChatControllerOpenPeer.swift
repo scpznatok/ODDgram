@@ -1,6 +1,5 @@
 import Foundation
 import UIKit
-import Postbox
 import SwiftSignalKit
 import Display
 import AsyncDisplayKit
@@ -18,10 +17,8 @@ import AccountContext
 import TelegramStringFormatting
 import OverlayStatusController
 import DeviceLocationManager
-import ShareController
 import UrlEscaping
 import ContextUI
-import ComposePollUI
 import AlertUI
 import PresentationDataUtils
 import UndoUI
@@ -121,13 +118,28 @@ import AudioWaveform
 import PeerNameColorScreen
 import ChatEmptyNode
 import ChatMediaInputStickerGridItem
-import AdsInfoScreen
 import FaceScanScreen
 import ForumCreateTopicScreen
 
 extension ChatControllerImpl {
-    func openPeer(peer: EnginePeer?, navigation: ChatControllerInteractionNavigateToPeer, fromMessage: MessageReference?, fromReactionMessageId: MessageId? = nil, expandAvatar: Bool = false, peerTypes: ReplyMarkupButtonAction.PeerTypes? = nil, skipAgeVerification: Bool = false) {
-        let _ = self.presentVoiceMessageDiscardAlert(action: {
+    /// Puts `textInputState` into this controller's composer and brings the text keyboard up.
+    /// Used when a navigation that carries composer text resolves to the chat already on screen.
+    func fillComposer(with textInputState: ChatTextInputState) {
+        self.updateChatPresentationInterfaceState(animated: true, interactive: true, {
+            return ($0.updatedInterfaceState {
+                return $0.withUpdatedComposeInputState(textInputState)
+            }).updatedInputMode({ _ in
+                return .text
+            })
+        })
+    }
+    
+    func openPeer(peer: EnginePeer?, navigation: ChatControllerInteractionNavigateToPeer, fromMessage: MessageReference?, fromReactionMessageId: EngineMessage.Id? = nil, expandAvatar: Bool = false, peerTypes: ReplyMarkupButtonAction.PeerTypes? = nil, skipAgeVerification: Bool = false) {
+        let _ = self.presentVoiceMessageDiscardAlert(action: { [weak self] in
+            guard let self else {
+                return
+            }
+
             if case let .peer(currentPeerId) = self.chatLocation, peer?.id == currentPeerId {
                 switch navigation {
                     case let .info(params):
@@ -146,13 +158,7 @@ extension ChatControllerImpl {
                         self.navigationButtonAction(.openChatInfo(expandAvatar: expandAvatar, section: section))
                     case let .chat(textInputState, _, _):
                         if let textInputState = textInputState {
-                            self.updateChatPresentationInterfaceState(animated: true, interactive: true, {
-                                return ($0.updatedInterfaceState {
-                                    return $0.withUpdatedComposeInputState(textInputState)
-                                }).updatedInputMode({ _ in
-                                    return .text
-                                })
-                            })
+                            self.fillComposer(with: textInputState)
                         } else {
                             self.playShakeAnimation()
                         }
@@ -165,10 +171,16 @@ extension ChatControllerImpl {
                     default:
                         break
                 }
+            } else if case let .chat(textInputState?, _, _) = navigation, let peer, self.chatLocation.peerId == peer.id {
+                // Same chat, but this controller shows a thread of it (a forum topic or a comment
+                // thread). A `switch_inline_query_current_chat` button must fill THIS composer;
+                // navigating to `.peer(forum)` instead lands in the topic list and stores the draft
+                // at forum level, where only "View as Messages" shows it (bugs.telegram.org/c/23654).
+                self.fillComposer(with: textInputState)
             } else {
                 if let peer = peer {
                     do {
-                        var chatPeerId: PeerId?
+                        var chatPeerId: EnginePeer.Id?
                         if let peer = self.presentationInterfaceState.renderedPeer?.chatMainPeer as? TelegramGroup {
                             chatPeerId = peer.id
                         } else if let peer = self.presentationInterfaceState.renderedPeer?.chatMainPeer as? TelegramChannel, case .group = peer.info, case .member = peer.participationStatus {
@@ -177,17 +189,18 @@ extension ChatControllerImpl {
                         
                         switch navigation {
                             case .info, .default:
-                                let peerSignal: Signal<Peer?, NoError>
+                                let peerSignal: Signal<EnginePeer?, NoError>
                                 if let messageId = fromMessage?.id {
                                     peerSignal = loadedPeerFromMessage(account: self.context.account, peerId: peer.id, messageId: messageId)
+                                    |> map { peer in peer.flatMap(EnginePeer.init) }
                                 } else {
-                                    peerSignal = self.context.account.postbox.loadedPeerWithId(peer.id) |> map(Optional.init)
+                                    peerSignal = self.context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peer.id))
                                 }
                                 self.navigationActionDisposable.set((peerSignal |> take(1) |> deliverOnMainQueue).startStrict(next: { [weak self] peer in
                                     if let strongSelf = self, let peer = peer {
                                         var mode: PeerInfoControllerMode = .generic
-                                        if let _ = fromMessage, let chatPeerId = chatPeerId {
-                                            mode = .group(chatPeerId)
+                                        if let messageId = fromMessage?.id, chatPeerId != nil {
+                                            mode = .group(sourceMessageId: messageId)
                                         }
                                         if let fromReactionMessageId = fromReactionMessageId {
                                             mode = .reaction(fromReactionMessageId)
@@ -266,14 +279,12 @@ extension ChatControllerImpl {
                                     let peerId = peer.id
                                     
                                     if let strongSelf = self, let strongController = controller {
-                                        if case let .peer(currentPeerId) = strongSelf.chatLocation, peerId == currentPeerId {
-                                            strongSelf.updateChatPresentationInterfaceState(animated: true, interactive: true, {
-                                                return ($0.updatedInterfaceState {
-                                                    return $0.withUpdatedComposeInputState(textInputState)
-                                                }).updatedInputMode({ _ in
-                                                    return .text
-                                                })
-                                            })
+                                        // Fill this composer unless the picker named another chat or, when this
+                                        // controller shows a thread, another thread of it. A `.peer` controller
+                                        // (a plain chat, or a forum viewed as messages) keeps taking any pick of
+                                        // its own peer, as it always did.
+                                        if strongSelf.chatLocation.peerId == peerId, strongSelf.chatLocation.threadId == nil || threadId == nil || strongSelf.chatLocation.threadId == threadId {
+                                            strongSelf.fillComposer(with: textInputState)
                                             strongController.dismiss()
                                         } else {
                                             let _ = (ChatInterfaceState.update(engine: strongSelf.context.engine, peerId: peerId, threadId: threadId, { currentState in
@@ -349,8 +360,8 @@ extension ChatControllerImpl {
                 guard let self, let peer = self.presentationInterfaceState.renderedPeer?.chatMainPeer else {
                     return
                 }
-                
-                guard let controller = self.context.sharedContext.makePeerInfoController(context: self.context, updatedPresentationData: nil, peer: peer, mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) else {
+
+                guard let controller = self.context.sharedContext.makePeerInfoController(context: self.context, updatedPresentationData: nil, peer: EnginePeer(peer), mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) else {
                     return
                 }
                 (self.navigationController as? NavigationController)?.pushViewController(controller)
@@ -411,39 +422,45 @@ extension ChatControllerImpl {
                 }
             })))
         } else {
-            items.append(.action(ContextMenuActionItem(text: strings.Chat_CreateTopic, icon: { theme in
-                return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Edit"), color: theme.contextMenu.primaryColor)
-            }, action: { [weak self] action in
-                guard let self else {
-                    return
-                }
-                
-                action.dismissWithResult(.default)
-                
-                let controller = ForumCreateTopicScreen(context: self.context, peerId: peerId, mode: .create)
-                controller.navigationPresentation = .modal
-                
-                controller.completion = { [weak self, weak controller] title, fileId, iconColor, _ in
-                    controller?.isInProgress = true
-                    controller?.view.endEditing(true)
-                    
+            var canCreateTopics = false
+            if let peer = self.presentationInterfaceState.renderedPeer?.chatMainPeer as? TelegramUser, let botInfo = peer.botInfo, botInfo.flags.contains(.forumManagedByUser) {
+                canCreateTopics = true
+            }
+            if canCreateTopics {
+                items.append(.action(ContextMenuActionItem(text: strings.Chat_CreateTopic, icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Edit"), color: theme.contextMenu.primaryColor)
+                }, action: { [weak self] action in
                     guard let self else {
                         return
                     }
                     
-                    let _ = (self.context.engine.peers.createForumChannelTopic(id: peerId, title: title, iconColor: iconColor, iconFileId: fileId)
-                             |> deliverOnMainQueue).startStandalone(next: { [weak self, weak controller] topicId in
+                    action.dismissWithResult(.default)
+                    
+                    let controller = ForumCreateTopicScreen(context: self.context, peerId: peerId, mode: .create)
+                    controller.navigationPresentation = .modal
+                    
+                    controller.completion = { [weak self, weak controller] title, fileId, iconColor, _ in
+                        controller?.isInProgress = true
+                        controller?.view.endEditing(true)
+                        
                         guard let self else {
                             return
                         }
-                        self.updateChatLocationThread(threadId: topicId)
-                        controller?.dismiss()
-                    }, error: { _ in
-                        controller?.isInProgress = false
-                    })
-                }
-                self.push(controller)
-            })))
+                        
+                        let _ = (self.context.engine.peers.createForumChannelTopic(id: peerId, title: title, iconColor: iconColor, iconFileId: fileId)
+                                 |> deliverOnMainQueue).startStandalone(next: { [weak self, weak controller] topicId in
+                            guard let self else {
+                                return
+                            }
+                            self.updateChatLocationThread(threadId: topicId)
+                            controller?.dismiss()
+                        }, error: { _ in
+                            controller?.isInProgress = false
+                        })
+                    }
+                    self.push(controller)
+                })))
+            }
         }
 
         let presentationData = self.presentationData
@@ -463,6 +480,6 @@ private final class HeaderContextReferenceContentSource: ContextReferenceContent
     }
 
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }

@@ -1,6 +1,6 @@
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 import Foundation
 
@@ -2957,7 +2957,7 @@ func _internal_groupCallDisplayAsAvailablePeers(accountPeerId: PeerId, network: 
                         }
                     }
                     
-                    return peers.map { FoundPeer(peer: $0, subscribers: subscribers[$0.id]) }
+                    return peers.map { FoundPeer(peer: EnginePeer($0), subscribers: subscribers[$0.id]) }
                 }
             }
         }
@@ -3011,7 +3011,7 @@ func _internal_cachedGroupCallDisplayAsAvailablePeers(account: Account, peerId: 
                     if let cachedData = transaction.getPeerCachedData(peerId: peerId) as? CachedChannelData {
                         subscribers = cachedData.participantsSummary.memberCount
                     }
-                    peers.append(FoundPeer(peer: peer, subscribers: subscribers))
+                    peers.append(FoundPeer(peer: EnginePeer(peer), subscribers: subscribers))
                 }
             }
             return (peers, cached.timestamp)
@@ -3415,10 +3415,6 @@ func _internal_revokeConferenceInviteLink(account: Account, reference: InternalG
     }
 }
 
-public enum ConfirmAddConferenceParticipantError {
-    case generic
-}
-
 func _internal_pollConferenceCallBlockchain(network: Network, reference: InternalGroupCallReference, subChainId: Int, offset: Int, limit: Int) -> Signal<(blocks: [Data], nextOffset: Int)?, NoError> {
     return network.request(Api.functions.phone.getGroupCallChainBlocks(call: reference.apiInputGroupCall, subChainId: Int32(subChainId), offset: Int32(offset), limit: Int32(limit)))
     |> map(Optional.init)
@@ -3589,6 +3585,8 @@ private func serializeGroupCallMessage(randomId: Int64, text: String, entities: 
                 entityDict["_"] = "messageEntityUnderline"
             case .BankCard:
                 entityDict["_"] = "messageEntityBankCard"
+            case .TonAddress:
+                entityDict["_"] = "messageEntityTonAddress"
             case .Spoiler:
                 entityDict["_"] = "messageEntitySpoiler"
             case let .CustomEmoji(_, fileId):
@@ -3719,6 +3717,8 @@ private func deserializeGroupCallMessage(data: Data) -> (randomId: Int64, text: 
                 messageEntityType = .Underline
             case "messageEntityBankCard":
                 messageEntityType = .BankCard
+            case "messageEntityTonAddress":
+                messageEntityType = .TonAddress
             case "messageEntitySpoiler":
                 messageEntityType = .Spoiler
             case "messageEntityCustomEmoji":
@@ -4126,7 +4126,10 @@ public final class GroupCallMessagesContext {
             self.pollTopStarsDisposable?.dispose()
             self.pollTopStarsDisposable = ((self.account.network.request(Api.functions.phone.getGroupCallStars(call: self.reference.apiInputGroupCall))
             |> map(Optional.init)
-            |> `catch` { _ -> Signal<Api.phone.GroupCallStars?, NoError> in
+            |> `catch` { error -> Signal<Api.phone.GroupCallStars?, NoError> in
+                if error.errorDescription == "GROUPCALL_INVALID" {
+                    return .never()
+                }
                 return .single(nil)
             }
             |> then(Signal<Api.phone.GroupCallStars?, NoError>.complete() |> delay(30.0, queue: self.queue))) |> restart

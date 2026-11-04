@@ -3,7 +3,6 @@ import UIKit
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import UniversalMediaPlayer
 import TelegramPresentationData
@@ -102,7 +101,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
     private var item: ChatMessageBubbleContentItem?
     private var automaticDownload: Bool?
     public var media: TelegramMediaFile?
-    public var appliedForwardInfo: (Peer?, String?)?
+    public var appliedForwardInfo: ChatMessageAppliedForwardInfo?
         
     private let fetchDisposable = MetaDisposable()
 
@@ -255,7 +254,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         let makeReplyInfoLayout = ChatMessageReplyInfoNode.asyncLayout(self.replyInfoNode)
         let makeForwardInfoLayout = ChatMessageForwardInfoNode.asyncLayout(self.forwardInfoNode)
         
-        return { item, width, displaySize, maximumDisplaySize, scaleProgress, statusDisplayType, automaticDownload, avatarInset in
+        return { [weak self] item, width, displaySize, maximumDisplaySize, scaleProgress, statusDisplayType, automaticDownload, avatarInset in
             var secretVideoPlaceholderBackgroundImage: UIImage?
             var updatedInfoBackgroundImage: UIImage?
             var updatedMuteIconImage: UIImage?
@@ -348,17 +347,16 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
             let bubbleContentInsetsLeft: CGFloat = 6.0
             let availableWidth: CGFloat = max(60.0, width - 210.0 - bubbleEdgeInset * 2.0 - bubbleContentInsetsLeft - 20.0)
             let availableContentWidth: CGFloat = width - bubbleEdgeInset * 2.0 - bubbleContentInsetsLeft - 20.0
+            var inlineBotNameString: String?
             
             if !ignoreHeaders {
-                var replyMessage: Message?
+                var replyMessage: EngineMessage?
                 var replyForward: QuotedReplyMessageAttribute?
                 var replyQuote: (quote: EngineMessageReplyQuote, isQuote: Bool)?
-                var replyTodoItemId: Int32?
-                var replyStory: StoryId?
-                
+                var replyInnerSubject: EngineMessageReplyInnerSubject?
+                var replyStory: EngineStoryId?
                 for attribute in item.message.attributes {
                     if let attribute = attribute as? InlineBotMessageAttribute {
-                        var inlineBotNameString: String?
                         if let peerId = attribute.peerId, let bot = item.message.peers[peerId] as? TelegramUser {
                             inlineBotNameString = bot.addressName
                         } else {
@@ -374,17 +372,19 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                             
                             viaBotApply = viaBotLayout(TextNodeLayoutArguments(attributedString: botString, backgroundColor: nil, maximumNumberOfLines: 1, truncationType: .end, constrainedSize: CGSize(width: max(0, availableWidth), height: CGFloat.greatestFiniteMagnitude), alignment: .natural, cutout: nil, insets: UIEdgeInsets()))
                             
-                            ignoreForward = true
+                            if item.message.forwardInfo?.psaType != nil {
+                                ignoreForward = true
+                            }
                         }
                     }
                     
                     if let replyAttribute = attribute as? ReplyMessageAttribute {
                         if case let .replyThread(replyThreadMessage) = item.chatLocation, Int32(clamping: replyThreadMessage.threadId) == replyAttribute.messageId.id {
                         } else {
-                            replyMessage = item.message.associatedMessages[replyAttribute.messageId]
+                            replyMessage = item.message.associatedMessages[replyAttribute.messageId].flatMap(EngineMessage.init)
                         }
                         replyQuote = replyAttribute.quote.flatMap { ($0, replyAttribute.isQuote) }
-                        replyTodoItemId = replyAttribute.todoItemId
+                        replyInnerSubject = replyAttribute.innerSubject
                     } else if let attribute = attribute as? QuotedReplyMessageAttribute {
                         replyForward = attribute
                     } else if let attribute = attribute as? ReplyStoryAttribute {
@@ -400,10 +400,10 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                             strings: item.presentationData.strings,
                             context: item.context,
                             type: .standalone,
-                            message: replyMessage,
+                            message: replyMessage?._asMessage(),
                             replyForward: replyForward,
                             quote: replyQuote,
-                            todoItemId: replyTodoItemId,
+                            innerSubject: replyInnerSubject,
                             story: replyStory,
                             isSummarized: false,
                             parentMessage: item.message,
@@ -430,7 +430,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                 }
             }
                         
-            var forwardSource: Peer?
+            var forwardSource: EnginePeer?
             var forwardAuthorSignature: String?
             
             var forwardInfoSizeApply: (CGSize, (CGFloat) -> ChatMessageForwardInfoNode)?
@@ -438,26 +438,13 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
             if !ignoreForward && !ignoreHeaders, let forwardInfo = item.message.forwardInfo {
                 let forwardPsaType = forwardInfo.psaType
                 
-                if let source = forwardInfo.source {
-                    forwardSource = source
-                    if let authorSignature = forwardInfo.authorSignature {
-                        forwardAuthorSignature = authorSignature
-                    } else if let forwardInfoAuthor = forwardInfo.author, forwardInfoAuthor.id != source.id {
-                        forwardAuthorSignature = EnginePeer(forwardInfoAuthor).displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder)
-                    } else {
-                        forwardAuthorSignature = nil
-                    }
-                } else {
-                    if let currentForwardInfo = currentForwardInfo, forwardInfo.author == nil && currentForwardInfo.0 != nil {
-                        forwardSource = nil
-                        forwardAuthorSignature = currentForwardInfo.0.flatMap(EnginePeer.init)?.displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder)
-                    } else {
-                        forwardSource = forwardInfo.author
-                        forwardAuthorSignature = forwardInfo.authorSignature
-                    }
-                }
+                let resolvedForwardInfo = chatMessageForwardInfoDisplay(forwardInfo: forwardInfo, messageId: item.message.id, previouslyApplied: currentForwardInfo, peerDisplayTitle: { peer in
+                    return peer.displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder)
+                })
+                forwardSource = resolvedForwardInfo.source
+                forwardAuthorSignature = resolvedForwardInfo.authorSignature
                 let availableWidth: CGFloat = max(60.0, availableContentWidth - 220.0 + 6.0)
-                forwardInfoSizeApply = makeForwardInfoLayout(item.context, item.presentationData, item.presentationData.strings, .standalone, forwardSource, forwardAuthorSignature, forwardPsaType, nil, CGSize(width: availableWidth, height: CGFloat.greatestFiniteMagnitude))
+                forwardInfoSizeApply = makeForwardInfoLayout(item.context, item.presentationData, item.presentationData.strings, .standalone, forwardSource, forwardAuthorSignature, forwardPsaType == nil ? inlineBotNameString : nil, forwardPsaType, nil, CGSize(width: availableWidth, height: CGFloat.greatestFiniteMagnitude))
             }
             
             var notConsumed = false
@@ -554,7 +541,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
             } else {
                 dateFormat = .regular
             }
-            let dateText = stringForMessageTimestampStatus(accountPeerId: item.context.account.peerId, message: item.message, dateTimeFormat: item.presentationData.dateTimeFormat, nameDisplayOrder: item.presentationData.nameDisplayOrder, strings: item.presentationData.strings, format: dateFormat, associatedData: item.associatedData, ignoreAuthor: item.presentationData.isPreview)
+            let dateText = stringForMessageTimestampStatus(context: item.context, message: EngineMessage(item.message), dateTimeFormat: item.presentationData.dateTimeFormat, nameDisplayOrder: item.presentationData.nameDisplayOrder, strings: item.presentationData.strings, format: dateFormat, associatedData: item.associatedData, ignoreAuthor: item.presentationData.isPreview)
             
             let maxDateAndStatusWidth: CGFloat
             if case .bubble = statusDisplayType {
@@ -581,7 +568,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                 impressionCount: !item.presentationData.isPreview ? viewCount : nil,
                 dateText: dateText,
                 type: statusType,
-                layoutInput: .standalone(reactionSettings: shouldDisplayInlineDateReactions(message: item.message, isPremium: item.associatedData.isPremium, forceInline: item.associatedData.forceInlineReactions) ? ChatMessageDateAndStatusNode.StandaloneReactionSettings() : nil),
+                layoutInput: .standalone(reactionSettings: shouldDisplayInlineDateReactions(message: EngineMessage(item.message), isPremium: item.associatedData.isPremium, forceInline: item.associatedData.forceInlineReactions) ? ChatMessageDateAndStatusNode.StandaloneReactionSettings() : nil),
                 constrainedSize: CGSize(width: max(1.0, maxDateAndStatusWidth), height: CGFloat.greatestFiniteMagnitude),
                 availableReactions: item.associatedData.availableReactions,
                 savedMessageTags: item.associatedData.savedMessageTags,
@@ -595,7 +582,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                 starsCount: starsCount,
                 isPinned: item.message.tags.contains(.pinned) && !item.associatedData.isInPinnedListMode && !isReplyThread,
                 hasAutoremove: item.message.isSelfExpiring,
-                canViewReactionList: canViewMessageReactionList(message: item.topMessage),
+                canViewReactionList: canViewMessageReactionList(message: EngineMessage(item.topMessage)),
                 animationCache: item.controllerInteraction.presentationContext.animationCache,
                 animationRenderer: item.controllerInteraction.presentationContext.animationRenderer
             ))
@@ -619,7 +606,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
             let result = ChatMessageInstantVideoItemLayoutResult(contentSize: contentSize, overflowLeft: 0.0, overflowRight: dateAndStatusOverflow ? 0.0 : (max(0.0, floorToScreenPixels(videoFrame.midX) + 55.0 + dateAndStatusSize.width - videoFrame.width)))
             
             var updatedAudioTranscriptionState: AudioTranscriptionButtonComponent.TranscriptionState?
-            let transcribedText = transcribedText(message: item.message)
+            let transcribedText = transcribedText(message: EngineMessage(item.message))
             
             switch audioTranscriptionState {
             case .inProgress:
@@ -649,7 +636,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                 if let strongSelf = self {
                     strongSelf.item = item
                     strongSelf.videoFrame = displayVideoFrame
-                    strongSelf.appliedForwardInfo = (forwardSource, forwardAuthorSignature)
+                    strongSelf.appliedForwardInfo = ChatMessageAppliedForwardInfo(messageId: item.message.id, source: forwardSource, authorSignature: forwardAuthorSignature)
                     strongSelf.viewOnceIconImage = viewOnceIconImage
                     
                     strongSelf.automaticDownload = automaticDownload
@@ -705,7 +692,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                     
                     if let updatedFile = updatedFile, updatedMedia {
                         if let resource = updatedFile.previewRepresentations.first?.resource {
-                            strongSelf.fetchedThumbnailDisposable.set(fetchedMediaResource(mediaBox: item.context.account.postbox.mediaBox, userLocation: .peer(item.message.id.peerId), userContentType: .video, reference: FileMediaReference.message(message: MessageReference(item.message), media: updatedFile).resourceReference(resource)).startStrict())
+                            strongSelf.fetchedThumbnailDisposable.set(item.context.engine.resources.fetch(reference: FileMediaReference.message(message: MessageReference(item.message), media: updatedFile).resourceReference(resource), userLocation: .peer(item.message.id.peerId), userContentType: .video).startStrict())
                         } else {
                             strongSelf.fetchedThumbnailDisposable.set(nil)
                         }
@@ -765,7 +752,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                             }
                             durationNode.defaultDuration = telegramFile.duration.flatMap(Double.init)
                             
-                            let streamVideo = automaticDownload && isMediaStreamable(message: item.message, media: telegramFile) && telegramFile.id?.namespace != Namespaces.Media.LocalFile
+                            let streamVideo = automaticDownload && isMediaStreamable(message: EngineMessage(item.message), media: telegramFile) && telegramFile.id?.namespace != Namespaces.Media.LocalFile
                             if let videoNode = strongSelf.videoNode {
                                 videoNode.layer.allowsGroupOpacity = true
                                 videoNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.5, delay: 0.2, removeOnCompletion: false, completion: { [weak videoNode] _ in
@@ -842,7 +829,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                     var displayTranscribe = false
                     if item.message.id.peerId.namespace != Namespaces.Peer.SecretChat && statusDisplayType == .free && !isViewOnceMessage && !item.presentationData.isPreview {
                         let premiumConfiguration = PremiumConfiguration.with(appConfiguration: item.context.currentAppConfiguration.with { $0 })
-                        if item.associatedData.isPremium {
+                        if item.associatedData.isPremium || item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
                             displayTranscribe = true
                         } else if premiumConfiguration.audioTransciptionTrialCount > 0 {
                             if incoming {
@@ -854,8 +841,6 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                             } else {
                                 displayTranscribe = false
                             }
-                        } else if item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
-                            displayTranscribe = true
                         }
                     }
                     
@@ -1250,7 +1235,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         self.infoBackgroundNode.isHidden = isViewOnceMessage
         
         var isBuffering: Bool?
-        if let message = self.item?.message, let media = self.media, isMediaStreamable(message: message, media: media) && (self.automaticDownload ?? false) {
+        if let message = self.item?.message, let media = self.media, isMediaStreamable(message: EngineMessage(message), media: media) && (self.automaticDownload ?? false) {
             if let playerStatus = self.playerStatus, case .buffering = playerStatus.status {
                 isBuffering = true
             } else {
@@ -1707,7 +1692,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
 
     public static func asyncLayout(_ node: ChatMessageInteractiveInstantVideoNode?) -> (_ item: ChatMessageBubbleContentItem, _ width: CGFloat, _ displaySize: CGSize, _ maximumDisplaySize: CGSize, _ scaleProgress: CGFloat, _ statusType: ChatMessageInteractiveInstantVideoNodeStatusType, _ automaticDownload: Bool, _ avatarInset: CGFloat) -> (ChatMessageInstantVideoItemLayoutResult, (ChatMessageInstantVideoItemLayoutData, ListViewItemUpdateAnimation) -> ChatMessageInteractiveInstantVideoNode) {
         let makeLayout = node?.asyncLayout()
-        return { item, width, displaySize, maximumDisplaySize, scaleProgress, statusType, automaticDownload, avatarInset in
+        return { [node] item, width, displaySize, maximumDisplaySize, scaleProgress, statusType, automaticDownload, avatarInset in
             var createdNode: ChatMessageInteractiveInstantVideoNode?
             let sizeAndApplyLayout: (ChatMessageInstantVideoItemLayoutResult, (ChatMessageInstantVideoItemLayoutData, ListViewItemUpdateAnimation) -> Void)
             if let makeLayout = makeLayout {
@@ -1835,7 +1820,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         let presentationData = item.context.sharedContext.currentPresentationData.with { $0 }
         let premiumConfiguration = PremiumConfiguration.with(appConfiguration: item.context.currentAppConfiguration.with { $0 })
         
-        let transcriptionText = transcribedText(message: item.message)
+        let transcriptionText = transcribedText(message: EngineMessage(item.message))
         if transcriptionText == nil && !item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
             if premiumConfiguration.audioTransciptionTrialCount > 0 {
                 if !item.associatedData.isPremium {
@@ -1878,7 +1863,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         if case .expanded = self.audioTranscriptionState {
             shouldExpandNow = true
         } else {
-            if let result = transcribedText(message: item.message) {
+            if let result = transcribedText(message: EngineMessage(item.message)) {
                 shouldExpandNow = true
                 
                 if case let .success(_, isPending) = result {
@@ -2229,7 +2214,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         self.canAttachContent = false
     }
     
-    public func targetForStoryTransition(id: StoryId) -> UIView? {
+    public func targetForStoryTransition(id: EngineStoryId) -> UIView? {
         guard let item = self.item else {
             return nil
         }

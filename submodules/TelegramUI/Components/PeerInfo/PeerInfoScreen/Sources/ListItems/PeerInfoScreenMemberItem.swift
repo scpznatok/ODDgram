@@ -6,7 +6,6 @@ import TelegramPresentationData
 import ItemListPeerItem
 import SwiftSignalKit
 import AccountContext
-import Postbox
 import TelegramCore
 import ItemListUI
 
@@ -20,7 +19,7 @@ enum PeerInfoScreenMemberItemAction {
 final class PeerInfoScreenMemberItem: PeerInfoScreenItem {
     let id: AnyHashable
     let context: ItemListPeerItem.Context
-    let enclosingPeer: Peer?
+    let enclosingPeer: EnginePeer?
     let member: PeerInfoMember
     let badge: String?
     let isAccount: Bool
@@ -31,7 +30,7 @@ final class PeerInfoScreenMemberItem: PeerInfoScreenItem {
     init(
         id: AnyHashable,
         context: ItemListPeerItem.Context,
-        enclosingPeer: Peer?,
+        enclosingPeer: EnginePeer?,
         member: PeerInfoMember,
         badge: String? = nil,
         isAccount: Bool,
@@ -56,7 +55,6 @@ final class PeerInfoScreenMemberItem: PeerInfoScreenItem {
 }
 
 private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
-    private let selectionNode: PeerInfoScreenSelectableBackgroundNode
     private let maskNode: ASImageNode
     private let bottomSeparatorNode: ASDisplayNode
     
@@ -64,10 +62,6 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
     private var itemNode: ItemListPeerItemNode?
     
     override init() {
-        var bringToFrontForHighlightImpl: (() -> Void)?
-        self.selectionNode = PeerInfoScreenSelectableBackgroundNode(bringToFrontForHighlight: { bringToFrontForHighlightImpl?() })
-        self.selectionNode.isUserInteractionEnabled = false
-        
         self.maskNode = ASImageNode()
         self.maskNode.isUserInteractionEnabled = false
         
@@ -76,19 +70,18 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
         
         super.init()
         
-        bringToFrontForHighlightImpl = { [weak self] in
-            self?.bringToFrontForHighlight?()
-        }
-        
         self.addSubnode(self.bottomSeparatorNode)
-        self.addSubnode(self.selectionNode)
     }
     
     override func didLoad() {
         super.didLoad()
         
         let recognizer = TapLongTapOrDoubleTapGestureRecognizer(target: self, action: #selector(self.tapLongTapOrDoubleTapGesture(_:)))
-        recognizer.tapActionAtPoint = { point in
+        recognizer.tapActionAtPoint = { [weak self] _ in
+            // The embedded row owns taps that dismiss or activate its actions.
+            if self?.itemNode?.isRevealOptionsActive == true {
+                return .fail
+            }
             return .keepWithSingleTap
         }
         recognizer.highlight = { [weak self] point in
@@ -106,7 +99,7 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
             if let (gesture, _) = recognizer.lastRecognizedGestureAndLocation {
                 switch gesture {
                 case .tap:
-                    if let item = self.item {
+                    if self.itemNode?.isRevealOptionsActive != true, let item = self.item {
                         item.action?(.open)
                     }
                 default:
@@ -125,12 +118,6 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
         
         self.item = item
         
-        self.selectionNode.pressed = item.action.flatMap { action in
-            return {
-                action(.open)
-            }
-        }
-        
         let sideInset: CGFloat = 16.0 + safeInsets.left
         
         self.bottomSeparatorNode.backgroundColor = presentationData.theme.list.itemBlocksSeparatorColor
@@ -147,7 +134,15 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
             case .admin:
                 label = presentationData.strings.GroupInfo_LabelAdmin
             case .member:
-                if item.member.id == item.context.accountPeerId, let enclosingPeer = item.enclosingPeer as? TelegramChannel, enclosingPeer.hasPermission(.editRank) {
+                var canEditRank = false
+                if item.member.id == item.context.accountPeerId {
+                    if case let .channel(channel) = item.enclosingPeer, channel.hasPermission(.editRank) {
+                        canEditRank = true
+                    } else if case let .legacyGroup(group) = item.enclosingPeer, !group.hasBannedPermission(.banEditRank) {
+                        canEditRank = true
+                    }
+                }
+                if canEditRank {
                     label = presentationData.strings.GroupInfo_AddRank
                     labelColor = presentationData.theme.list.itemAccentColor
                 } else {
@@ -170,13 +165,13 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
         let actions = availableActionsForMemberOfPeer(accountPeerId: item.context.accountPeerId, peer: item.enclosingPeer, member: item.member)
         
         var options: [ItemListPeerItemRevealOption] = []
-        if actions.contains(.promote) && item.enclosingPeer is TelegramChannel {
+        if actions.contains(.promote), case .channel = item.enclosingPeer {
             options.append(ItemListPeerItemRevealOption(type: .neutral, title: presentationData.strings.GroupInfo_ActionPromote, action: {
                 item.action?(.promote)
             }))
         }
         if actions.contains(.restrict) {
-            if item.enclosingPeer is TelegramChannel {
+            if case .channel = item.enclosingPeer {
                 options.append(ItemListPeerItemRevealOption(type: .warning, title: presentationData.strings.GroupInfo_ActionRestrict, action: {
                     item.action?(.restrict)
                 }))
@@ -212,7 +207,7 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
             itemText = .presence
         }
         
-        let peerItem = ItemListPeerItem(presentationData: ItemListPresentationData(presentationData), systemStyle: .glass, dateTimeFormat: presentationData.dateTimeFormat, nameDisplayOrder: presentationData.nameDisplayOrder, context: item.context, peer: EnginePeer(item.member.peer), height: itemHeight, presence: item.member.presence.flatMap(EnginePeer.Presence.init), text: itemText, label: itemLabel, editing: ItemListPeerItemEditing(editable: !options.isEmpty, editing: false, revealed: nil), revealOptions: ItemListPeerItemRevealOptions(options: options), switchValue: nil, enabled: true, selectable: false, animateFirstAvatarTransition: !item.isAccount, sectionId: 0, action: nil, setPeerIdWithRevealedOptions: { lhs, rhs in
+        let peerItem = ItemListPeerItem(presentationData: ItemListPresentationData(presentationData), systemStyle: .glass, dateTimeFormat: presentationData.dateTimeFormat, nameDisplayOrder: presentationData.nameDisplayOrder, context: item.context, peer: item.member.peer, height: itemHeight, presence: item.member.presence.flatMap(EnginePeer.Presence.init), text: itemText, label: itemLabel, editing: ItemListPeerItemEditing(editable: !options.isEmpty, editing: false, revealed: nil), revealOptions: ItemListPeerItemRevealOptions(options: options), switchValue: nil, enabled: true, selectable: false, animateFirstAvatarTransition: !item.isAccount, sectionId: 0, action: nil, setPeerIdWithRevealedOptions: { lhs, rhs in
             
         }, removePeer: { _ in
             
@@ -230,20 +225,20 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
             itemNode = current
             peerItem.updateNode(async: { $0() }, node: {
                 return itemNode
-            }, params: params, previousItem: nil, nextItem: nil, animation: .None, completion: { (layout, apply) in
+            }, params: params, neighbors: .none, animation: .None, completion: { (layout, apply) in
                 let nodeFrame = CGRect(origin: CGPoint(), size: CGSize(width: width, height: layout.size.height))
                 
                 itemNode.contentSize = layout.contentSize
                 itemNode.insets = layout.insets
                 itemNode.frame = nodeFrame
                 
-                apply(ListViewItemApply(isOnScreen: true))
+                apply(ListViewItemApply())
             })
         } else {
             var itemNodeValue: ListViewItemNode?
-            peerItem.nodeConfiguredForParams(async: { $0() }, params: params, synchronousLoads: synchronousLoads, previousItem: nil, nextItem: nil, completion: { node, apply in
+            peerItem.nodeConfiguredForParams(async: { $0() }, params: params, synchronousLoads: synchronousLoads, neighbors: .none, completion: { node, apply in
                 itemNodeValue = node
-                apply().1(ListViewItemApply(isOnScreen: true))
+                apply().1(ListViewItemApply())
             })
             itemNode = itemNodeValue as! ItemListPeerItemNode
             self.itemNode = itemNode
@@ -269,10 +264,6 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
             self.addSubnode(self.maskNode)
         }
         
-        let highlightNodeOffset: CGFloat = topItem == nil ? 0.0 : UIScreenPixel
-        self.selectionNode.update(size: CGSize(width: width, height: height + highlightNodeOffset), theme: presentationData.theme, transition: transition)
-        transition.updateFrame(node: self.selectionNode, frame: CGRect(origin: CGPoint(x: 0.0, y: -highlightNodeOffset), size: CGSize(width: width, height: height + highlightNodeOffset)))
-        
         var separatorInset: CGFloat = sideInset
         if bottomItem != nil {
             separatorInset += 49.0
@@ -287,21 +278,22 @@ private final class PeerInfoScreenMemberItemNode: PeerInfoScreenItemNode {
     }
     
     private func updateTouchesAtPoint(_ point: CGPoint?) {
-        guard let item = self.item else {
+        guard let item = self.item, let itemNode = self.itemNode else {
             return
         }
-        var highlight = point != nil
+        var highlight = point != nil && !itemNode.isRevealOptionsActive
         if case .account = item.member {
         } else if item.context.accountPeerId == item.member.id {
             highlight = false
         }
-        if let point, let itemNode = self.itemNode, let value = itemNode.view.hitTest(self.view.convert(point, to: itemNode.view), with: nil), value is UIControl {
+        if let point, let value = itemNode.view.hitTest(self.view.convert(point, to: itemNode.view), with: nil), value is UIControl {
             highlight = false
         }
         if highlight {
-            self.selectionNode.updateIsHighlighted(true)
-        } else {
-            self.selectionNode.updateIsHighlighted(false)
+            self.bringToFrontForHighlight?()
         }
+        // Keep touch and swipe highlighting on the same background so a swipe
+        // can continue the displayed opacity instead of replacing another node.
+        itemNode.setHighlighted(highlight, at: point.map { itemNode.view.convert($0, from: self.view) } ?? .zero, animated: !highlight)
     }
 }

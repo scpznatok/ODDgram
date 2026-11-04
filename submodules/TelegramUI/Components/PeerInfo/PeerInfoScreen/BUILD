@@ -1,5 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
+# MARK: Swiftgram
 sgdeps = [
     "//Swiftgram/SGSettingsUI:SGSettingsUI",
     "//Swiftgram/SGStrings:SGStrings",
@@ -9,6 +10,12 @@ sgdeps = [
     "//Swiftgram/SGRegDateScheme:SGRegDateScheme",
     "//Swiftgram/SGDebugUI:SGDebugUI",
 ]
+#
+# MARK: Swiftgram
+sgsrcs = [
+    "//Swiftgram/SGPeerInfoRows:SGPeerInfoRows",
+]
+#
 
 
 swift_library(
@@ -16,12 +23,17 @@ swift_library(
     module_name = "PeerInfoScreen",
     srcs = glob([
         "Sources/**/*.swift",
-    ]),
+    ]) + sgsrcs, # MARK: Swiftgram
     copts = [
         "-warnings-as-errors",
     ],
-    deps = sgdeps + [
+    deps = sgdeps + [ # MARK: Swiftgram
+        "//submodules/UrlWhitelist",
+        "//submodules/TelegramUI/Components/NavigationBarNode",
+        "//submodules/TelegramUI/Components/NavigationBarComponent",
+        "//submodules/TelegramUI/Components/NavigationExpansionTransition",
         "//submodules/AccountContext",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/AccountUtils",
         "//submodules/ActionSheetPeerItem",
         "//submodules/ActivityIndicator",
@@ -42,6 +54,7 @@ swift_library(
         "//submodules/ChatListUI",
         "//submodules/TelegramUI/Components/Chat/ChatMessageItemView",
         "//submodules/ChatPresentationInterfaceState",
+        "//submodules/TelegramUI/Components/ChatScheduleTimeController",
         "//submodules/TelegramUI/Components/ChatTimerScreen",
         "//submodules/TelegramUI/Components/ChatTitleView",
         "//submodules/Components/ComponentDisplayAdapters",
@@ -97,9 +110,9 @@ swift_library(
         "//submodules/TelegramUI/Components/PeerReportScreen",
         "//submodules/PhoneNumberFormat",
         "//submodules/PhotoResources",
-        "//submodules/Postbox",
         "//submodules/PremiumUI",
         "//submodules/PresentationDataUtils",
+        "//submodules/QrCode",
         "//submodules/QrCodeUI",
         "//submodules/RadialStatusNode",
         "//submodules/SaveToCameraRoll",
@@ -132,8 +145,11 @@ swift_library(
         "//submodules/TranslateUI",
         "//submodules/UndoUI",
         "//submodules/MediaPlayer:UniversalMediaPlayer",
-        "//submodules/WebSearchUI",
         "//submodules/WebUI",
+        "//submodules/WalletContext",
+        "//submodules/TelegramUI/Components/Wallet/WalletSendScreen",
+        "//submodules/TelegramUI/Components/Wallet/PeerWalletScreen",
+        "//submodules/TelegramUI/Components/Wallet/WalletGiftStickerMediaComponent",
         "//submodules/TelegramUI/Components/MultiScaleTextNode",
         "//submodules/GridMessageSelectionNode",
         "//submodules/ChatMessageInteractiveMediaBadge",
@@ -153,6 +169,7 @@ swift_library(
         "//submodules/TelegramUI/Components/Settings/PeerNameColorItem",
         "//submodules/TelegramUI/Components/PlainButtonComponent",
         "//submodules/TelegramUI/Components/TextLoadingEffect",
+        "//submodules/TelegramUI/Components/TextProcessingScreen",
         "//submodules/TelegramUI/Components/Settings/BirthdayPickerScreen",
         "//submodules/TelegramUI/Components/Settings/PeerSelectionScreen",
         "//submodules/TelegramUI/Components/ButtonComponent",
@@ -162,6 +179,7 @@ swift_library(
         "//submodules/TelegramUI/Components/TextNodeWithEntities",
         "//submodules/UrlHandling",
         "//submodules/Pasteboard",
+        "//submodules/TelegramUI/Components/Chat/ChatRichTextEditorComposer",
         "//submodules/TelegramUI/Components/EmojiTextAttachmentView",
         "//submodules/TelegramUI/Components/MediaEditor",
         "//submodules/TelegramUI/Components/MediaEditorScreen",
@@ -180,6 +198,7 @@ swift_library(
         "//submodules/TelegramUI/Components/TextFieldComponent",
         "//submodules/TelegramUI/Components/EdgeEffect",
         "//submodules/TelegramUI/Components/GlassBackgroundComponent",
+        "//submodules/TelegramUI/Components/SideColumnLayout",
         "//submodules/TelegramUI/Components/AlertComponent",
         "//submodules/TelegramUI/Components/AvatarComponent",
         "//submodules/TelegramUI/Components/AlertComponent/AlertTransferHeaderComponent",

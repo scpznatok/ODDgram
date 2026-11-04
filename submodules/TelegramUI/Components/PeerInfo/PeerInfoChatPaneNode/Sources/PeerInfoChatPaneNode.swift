@@ -3,7 +3,6 @@ import AsyncDisplayKit
 import Display
 import TelegramCore
 import SwiftSignalKit
-import Postbox
 import TelegramPresentationData
 import AccountContext
 import TelegramStringFormatting
@@ -92,7 +91,6 @@ private final class SearchNavigationContentNode: ASDisplayNode, PeerInfoPanelNod
 
 public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScrollViewDelegate, ASGestureRecognizerDelegate {
     private let context: AccountContext
-    private let peerId: EnginePeer.Id
     private let navigationController: () -> NavigationController?
     
     private let chatController: ChatController
@@ -102,17 +100,30 @@ public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScro
     public weak var parentController: ViewController? {
         didSet {
             if self.parentController !== oldValue {
+                self.detachChatController()
                 if let parentController = self.parentController {
-                    self.chatController.willMove(toParent: parentController)
-                    parentController.addChild(self.chatController)
-                    self.chatController.didMove(toParent: parentController)
-                } else {
-                    self.chatController.willMove(toParent: nil)
-                    self.chatController.removeFromParent()
-                    self.chatController.didMove(toParent: nil)
+                    self.attachChatController(to: parentController)
                 }
             }
         }
+    }
+
+    private func attachChatController(to parentController: ViewController) {
+        if self.chatController.parent === parentController {
+            return
+        }
+        self.chatController.willMove(toParent: parentController)
+        parentController.addChild(self.chatController)
+        self.chatController.didMove(toParent: parentController)
+    }
+
+    private func detachChatController() {
+        guard self.chatController.parent != nil else {
+            return
+        }
+        self.chatController.willMove(toParent: nil)
+        self.chatController.removeFromParent()
+        self.chatController.didMove(toParent: nil)
     }
     
     private var currentParams: (size: CGSize, topInset: CGFloat, sideInset: CGFloat, bottomInset: CGFloat, visibleHeight: CGFloat, isScrollingLockedAtTop: Bool, expandProgress: CGFloat, presentationData: PresentationData)?
@@ -142,15 +153,14 @@ public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScro
     private var presentationData: PresentationData
     private var presentationDataDisposable: Disposable?
         
-    public init(context: AccountContext, peerId: EnginePeer.Id, navigationController: @escaping () -> NavigationController?) {
+    public init(context: AccountContext, chatLocation: ChatLocation, tag: EngineMessage.Tags?, hideTopPanels: Bool = false, navigationController: @escaping () -> NavigationController?) {
         self.context = context
-        self.peerId = peerId
         self.navigationController = navigationController
         self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
         
         self.coveringView = UIView()
         
-        self.chatController = context.sharedContext.makeChatController(context: context, chatLocation: .replyThread(message: ChatReplyThreadMessage(peerId: context.account.peerId, threadId: peerId.toInt64(), channelMessageId: nil, isChannelPost: false, isForumPost: false, isMonoforumPost: false, maxMessage: nil, maxReadIncomingMessageId: nil, maxReadOutgoingMessageId: nil, unreadCount: 0, initialFilledHoles: IndexSet(), initialAnchor: .automatic, isNotAvailable: false)), subject: nil, botStart: nil, mode: .standard(.embedded(invertDirection: true)), params: nil)
+        self.chatController = context.sharedContext.makeChatController(context: context, chatLocation: chatLocation, subject: tag.flatMap { .tag($0) }, botStart: nil, mode: .standard(.embedded(invertDirection: true)), params: hideTopPanels ? ChatControllerParams(hideTopPanels: true) : nil)
         self.chatController.navigation_setNavigationController(navigationController())
         
         super.init()
@@ -165,13 +175,29 @@ public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScro
             self.presentationData = presentationData
         })
         
+        var peerId: EnginePeer.Id
+        var threadId: Int64?
+        switch chatLocation {
+        case let .peer(peerIdValue):
+            peerId = peerIdValue
+        case let .replyThread(message):
+            peerId = self.context.account.peerId
+            threadId = message.threadId
+        default:
+            fatalError()
+        }
+        
         let strings = self.presentationData.strings
         self.statusPromise.set(self.context.engine.data.subscribe(
-            TelegramEngine.EngineData.Item.Messages.MessageCount(peerId: self.context.account.peerId, threadId: peerId.toInt64(), tag: [])
+            TelegramEngine.EngineData.Item.Messages.MessageCount(peerId: peerId, threadId: threadId, tag: tag ?? [])
         )
         |> map { count in
             if let count {
-                return PeerInfoStatusData(text: strings.Conversation_Messages(Int32(count)), isActivity: false, key: .savedMessages)
+                if tag == .polls {
+                    return PeerInfoStatusData(text: strings.SharedMedia_PollCount(Int32(count)), isActivity: false, key: .polls)
+                } else {
+                    return PeerInfoStatusData(text: strings.Conversation_Messages(Int32(count)), isActivity: false, key: .savedMessages)
+                }
             } else {
                 return nil
             }
@@ -207,10 +233,11 @@ public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScro
     }
     
     deinit {
+        self.detachChatController()
         self.presentationDataDisposable?.dispose()
     }
 
-    public func ensureMessageIsVisible(id: MessageId) {
+    public func ensureMessageIsVisible(id: EngineMessage.Id) {
     }
     
     public func scrollToTop() -> Bool {
@@ -224,7 +251,7 @@ public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScro
     public func brieflyDisableTouchActions() {
     }
     
-    public func findLoadedMessage(id: MessageId) -> Message? {
+    public func findLoadedMessage(id: EngineMessage.Id) -> EngineMessage? {
         return nil
     }
     
@@ -240,7 +267,7 @@ public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScro
     public func cancelPreviewGestures() {
     }
     
-    public func transitionNodeForGallery(messageId: MessageId, media: Media) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    public func transitionNodeForGallery(messageId: EngineMessage.Id, media: EngineMedia) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         return nil
     }
     
@@ -291,7 +318,7 @@ public final class PeerInfoChatPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScro
         let combinedBottomInset = bottomInset
         transition.updateFrame(node: self.chatController.displayNode, frame: chatFrame)
         self.chatController.updateIsScrollingLockedAtTop(isScrollingLockedAtTop: isScrollingLockedAtTop)
-        self.chatController.containerLayoutUpdated(ContainerViewLayout(size: chatFrame.size, metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact, orientation: nil), deviceMetrics: deviceMetrics, intrinsicInsets: UIEdgeInsets(top: 0.0, left: sideInset, bottom: combinedBottomInset, right: sideInset), safeInsets: UIEdgeInsets(top: 0.0 + 4.0, left: sideInset, bottom: combinedBottomInset, right: sideInset), additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false), transition: transition)
+        self.chatController.containerLayoutUpdated(ContainerViewLayout(size: chatFrame.size, metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact, orientation: nil), deviceMetrics: deviceMetrics, intrinsicInsets: UIEdgeInsets(top: 0.0, left: sideInset, bottom: combinedBottomInset, right: sideInset), safeInsets: UIEdgeInsets(top: 0.0 + 4.0, left: sideInset, bottom: combinedBottomInset, right: sideInset), reservedCorners: .none, division: nil, additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false, presentedInFormSheet: false), transition: transition)
     }
     
     override public func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {

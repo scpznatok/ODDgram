@@ -4,7 +4,6 @@ import AsyncDisplayKit
 import Display
 import ComponentFlow
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import Markdown
 import TextFormat
@@ -442,7 +441,7 @@ private final class SheetContent: CombinedComponent {
                 case .ton:
                     if let value = state.amount?.value, value > 0 {
                         let tonValue = Int64(Float(value) * Float(resaleConfiguration.starGiftCommissionTonPermille) / 1000.0)
-                        let tonString = formatTonAmountText(tonValue, dateTimeFormat: environment.dateTimeFormat, maxDecimalPositions: 3) + " TON"
+                        let tonString = formatTonAmountText(tonValue, dateTimeFormat: environment.dateTimeFormat, maxDecimalPositions: 3, formatString: presentationData.strings.Currency_Grams)
                         amountInfoString = NSAttributedString(attributedString: parseMarkdownIntoAttributedString(environment.strings.Stars_SellGift_AmountInfo(tonString).string, attributes: amountMarkdownAttributes, textAlignment: .natural))
                         
                         if let tonUsdRate = withdrawConfiguration.tonUsdRate {
@@ -1294,7 +1293,7 @@ private final class StarsWithdrawSheetComponent: CombinedComponent {
                         }
                     )),
                     style: .glass,
-                    backgroundColor: .color(environment.theme.list.blocksBackgroundColor),
+                    backgroundColor: .color(environment.theme.list.modalBlocksBackgroundColor),
                     followContentSizeChanges: false,
                     clipsContent: true,
                     isScrollEnabled: false,
@@ -1307,7 +1306,7 @@ private final class StarsWithdrawSheetComponent: CombinedComponent {
                         metrics: environment.metrics,
                         deviceMetrics: environment.deviceMetrics,
                         isDisplaying: environment.value.isVisible,
-                        isCentered: environment.metrics.widthClass == .regular,
+                        isCentered: environment.presentsFloatingPanels,
                         hasInputHeight: !environment.inputHeight.isZero,
                         regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                         dismiss: { animated in
@@ -1347,11 +1346,14 @@ private final class StarsWithdrawSheetComponent: CombinedComponent {
                     deviceMetrics: environment.deviceMetrics,
                     intrinsicInsets: UIEdgeInsets(top: 0.0, left: 0.0, bottom: bottomInset, right: 0.0),
                     safeInsets: UIEdgeInsets(top: 0.0, left: max(sideInset, environment.safeInsets.left), bottom: 0.0, right: max(sideInset, environment.safeInsets.right)),
+                    reservedCorners: environment.reservedCorners,
+                    division: nil,
                     additionalInsets: .zero,
-                    statusBarHeight: environment.statusBarHeight,
+                    statusBarHeight: environment.fullStatusBarHeight,
                     inputHeight: nil,
                     inputHeightIsInteractivellyChanging: false,
-                    inVoiceOver: false
+                    inVoiceOver: false,
+                    presentedInFormSheet: false
                 )
                 controller.presentationContext.containerLayoutUpdated(layout, transition: context.transition.containedViewLayoutTransition)
             }
@@ -1427,7 +1429,7 @@ public final class StarsWithdrawScreen: ViewControllerComponentContainer {
             case .stars:
                 text = presentationData.strings.Stars_SellGiftMinAmountToast_Text("\(presentationData.strings.Stars_Withdraw_Withdraw_ErrorMinimum_Stars(Int32(clamping: minAmount)))").string
             case .ton:
-                let amountString = formatTonAmountText(minAmount, dateTimeFormat: presentationData.dateTimeFormat) + " TON"
+                let amountString = formatTonAmountText(minAmount, dateTimeFormat: presentationData.dateTimeFormat, formatString: presentationData.strings.Currency_Grams)
                 text = presentationData.strings.Stars_SellGiftMinAmountToast_Text(amountString).string
             }
         } else if case let .suggestedPost(mode, _, _, _) = self.mode {
@@ -1452,7 +1454,7 @@ public final class StarsWithdrawScreen: ViewControllerComponentContainer {
             case .stars:
                 text = presentationData.strings.Gift_Offer_GiftMinAmountToast_Text("\(presentationData.strings.Stars_Withdraw_Withdraw_ErrorMinimum_Stars(Int32(clamping: minAmount)))").string
             case .ton:
-                let amountString = formatTonAmountText(minAmount, dateTimeFormat: presentationData.dateTimeFormat) + " TON"
+                let amountString = formatTonAmountText(minAmount, dateTimeFormat: presentationData.dateTimeFormat, formatString: presentationData.strings.Currency_Grams)
                 text = presentationData.strings.Gift_Offer_GiftMinAmountToast_Text(amountString).string
             }
         }
@@ -1952,7 +1954,6 @@ public final class AmountFieldComponent: Component {
             var leftInset: CGFloat = 16.0
             
             let iconName: String
-            var iconTintColor: UIColor?
             let iconMaxSize: CGSize?
             var iconOffset = CGPoint()
             switch component.currency {
@@ -1960,8 +1961,7 @@ public final class AmountFieldComponent: Component {
                 iconName = "Premium/Stars/StarLarge"
                 iconMaxSize = CGSize(width: 22.0, height: 22.0)
             case .ton:
-                iconName = "Ads/TonBig"
-                iconTintColor = component.accentColor
+                iconName = "Ads/GramBig"
                 iconMaxSize = CGSize(width: 18.0, height: 18.0)
                 iconOffset = CGPoint(x: 3.0, y: 1.0)
             }
@@ -1969,7 +1969,7 @@ public final class AmountFieldComponent: Component {
                 transition: .immediate,
                 component: AnyComponent(BundleIconComponent(
                     name: iconName,
-                    tintColor: iconTintColor,
+                    tintColor: nil,
                     maxSize: iconMaxSize
                 )),
                 environment: {},
@@ -2178,22 +2178,20 @@ private final class BalanceComponent: CombinedComponent {
             let iconSize: CGSize
             let iconName: String
             var iconOffset = CGPoint()
-            var iconTintColor: UIColor?
             switch context.component.currency {
             case .stars:
                 iconSize = CGSize(width: 18.0, height: 18.0)
                 iconName = "Premium/Stars/StarLarge"
             case .ton:
                 iconSize = CGSize(width: 13.0, height: 13.0)
-                iconName = "Ads/TonBig"
-                iconTintColor = context.component.theme.list.itemAccentColor
+                iconName = "Ads/GramBig"
                 iconOffset = CGPoint(x: 0.0, y: 2.33)
             }
             
             let icon = icon.update(
                 component: BundleIconComponent(
                     name: iconName,
-                    tintColor: iconTintColor
+                    tintColor: nil
                 ),
                 availableSize: iconSize,
                 transition: context.transition
@@ -2299,8 +2297,8 @@ private final class CurrencyTabItemComponent: Component {
             let iconSize = self.icon.update(
                 transition: .immediate,
                 component: AnyComponent(BundleIconComponent(
-                    name: component.icon == .stars ? "Premium/Stars/StarLarge" : "Ads/TonAbout",
-                    tintColor: component.icon == .stars ? nil : component.theme.list.itemAccentColor
+                    name: component.icon == .stars ? "Premium/Stars/StarLarge" : "Wallet/TopGram",
+                    tintColor: nil
                 )),
                 environment: {},
                 containerSize: CGSize(width: 100.0, height: 100.0)

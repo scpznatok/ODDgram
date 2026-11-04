@@ -81,7 +81,7 @@ public class TermsOfServiceController: ViewController, StandalonePresentableCont
         self.decline = decline
         self.openUrl = openUrl
         
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: presentationData.theme), strings: NavigationBarStrings(back: presentationData.strings.Common_Back, close: presentationData.strings.Common_Close)))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: presentationData.theme), strings: NavigationBarStrings(back: presentationData.strings.Common_Back, close: presentationData.strings.Common_Close, more: presentationData.strings.Common_More)))
         
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
         
@@ -118,7 +118,7 @@ public class TermsOfServiceController: ViewController, StandalonePresentableCont
             }
             strongSelf.present(textAlertController(context: strongSelf.context, title: strongSelf.presentationData.strings.PrivacyPolicy_Decline, text: text, actions: [TextAlertAction(type: .destructiveAction, title: declineTitle, action: {
                 self?.decline()
-            }), TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_Cancel, action: {
+            }), TextAlertAction(type: .genericAction, title: strongSelf.presentationData.strings.Common_Cancel, action: {
             })], actionLayout: .vertical), in: .window(.root))
         }, rightAction: { [weak self] in
             guard let strongSelf = self else {

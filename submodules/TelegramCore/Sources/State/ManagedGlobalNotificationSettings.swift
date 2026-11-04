@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 
@@ -421,6 +421,7 @@ private func pushedNotificationSettings(network: Network, settings: GlobalNotifi
         flags: reactionFlags,
         messagesNotifyFrom: reactionsMessages,
         storiesNotifyFrom: reactionsStories,
+        pollVotesNotifyFrom: nil,
         sound: settings.reactionSettings.sound.apiSound,
         showPreviews: settings.reactionSettings.hideSender == .hide ? .boolFalse : .boolTrue
     ))

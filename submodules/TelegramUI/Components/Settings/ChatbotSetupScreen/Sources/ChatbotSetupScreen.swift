@@ -1,10 +1,10 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Photos
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -15,6 +15,7 @@ import ViewControllerComponent
 import MultilineTextComponent
 import BalancedTextComponent
 import BackButtonComponent
+import EdgeEffect
 import ListSectionComponent
 import ListActionItemComponent
 import ListTextFieldItemComponent
@@ -24,6 +25,7 @@ import Markdown
 import PeerListItemComponent
 import AvatarNode
 import AlertComponent
+import UndoUI
 
 private let checkIcon: UIImage = {
     return generateImage(CGSize(width: 12.0, height: 10.0), rotatedContext: { size, context in
@@ -144,6 +146,7 @@ final class ChatbotSetupScreenComponent: Component {
         private let scrollView: ScrollView
         
         private let navigationTitle = ComponentView<Empty>()
+        private let titleTransformContainer: UIView
         private let icon = ComponentView<Empty>()
         private let subtitle = ComponentView<Empty>()
         private let nameSection = ComponentView<Empty>()
@@ -190,6 +193,9 @@ final class ChatbotSetupScreenComponent: Component {
             }
             self.scrollView.alwaysBounceVertical = true
             
+            self.titleTransformContainer = UIView()
+            self.titleTransformContainer.isUserInteractionEnabled = false
+            
             super.init(frame: frame)
             
             self.scrollView.delegate = self
@@ -203,6 +209,7 @@ final class ChatbotSetupScreenComponent: Component {
         }
         
         deinit {
+            self.titleTransformContainer.removeFromSuperview()
         }
 
         func scrollToTop() {
@@ -210,8 +217,19 @@ final class ChatbotSetupScreenComponent: Component {
         }
         
         func attemptNavigation(complete: @escaping () -> Void) -> Bool {
-            guard let component = self.component else {
+            guard let component = self.component, let environemnt = self.environment else {
                 return true
+            }
+            
+            if let botResolutionState = self.botResolutionState, case let .found(_, isInstalled) = botResolutionState.state, !isInstalled {
+                let alertController = textAlertController(context: component.context, title: environemnt.strings.ChatbotSetup_SetupNotCompleted_Title, text: environemnt.strings.ChatbotSetup_SetupNotCompleted_Text, actions: [
+                    TextAlertAction(type: .defaultAction, title: environemnt.strings.Common_Cancel, action: {}),
+                    TextAlertAction(type: .genericAction, title: environemnt.strings.ChatbotSetup_SetupNotCompleted_Leave, action: {
+                        complete()
+                    })
+                ])
+                environemnt.controller()?.present(alertController, in: .window(.root))
+                return false
             }
             
             var mappedCategories: TelegramBusinessRecipients.Categories = []
@@ -251,33 +269,29 @@ final class ChatbotSetupScreenComponent: Component {
             self.updateScrolling(transition: .immediate)
         }
         
-        var scrolledUp = true
         private func updateScrolling(transition: ComponentTransition) {
-            let navigationRevealOffsetY: CGFloat = 0.0
-            
-            let navigationAlphaDistance: CGFloat = 16.0
-            let navigationAlpha: CGFloat = max(0.0, min(1.0, (self.scrollView.contentOffset.y - navigationRevealOffsetY) / navigationAlphaDistance))
-            if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
-                transition.setAlpha(layer: navigationBar.backgroundNode.layer, alpha: navigationAlpha)
-                transition.setAlpha(layer: navigationBar.stripeNode.layer, alpha: navigationAlpha)
+            guard let environment = self.environment else {
+                return
             }
             
-            var scrolledUp = false
-            if navigationAlpha < 0.5 {
-                scrolledUp = true
-            } else if navigationAlpha > 0.5 {
-                scrolledUp = false
-            }
+            let titleCenterY: CGFloat = environment.statusBarHeight + (environment.navigationHeight - environment.statusBarHeight) * 0.5
+            let titleTransformDistance: CGFloat = 20.0
+            let titleY: CGFloat = max(titleCenterY, self.titleTransformContainer.center.y - self.scrollView.contentOffset.y)
             
-            if self.scrolledUp != scrolledUp {
-                self.scrolledUp = scrolledUp
-                if !self.isUpdating {
-                    self.state?.updated()
-                }
-            }
+            transition.setSublayerTransform(view: self.titleTransformContainer, transform: CATransform3DMakeTranslation(0.0, titleY - self.titleTransformContainer.center.y, 0.0))
             
+            let titleYDistance: CGFloat = titleY - titleCenterY
+            let titleTransformFraction: CGFloat = 1.0 - max(0.0, min(1.0, titleYDistance / titleTransformDistance))
+            let titleMinScale: CGFloat = 17.0 / 24.0
+            let titleScale: CGFloat = 1.0 * (1.0 - titleTransformFraction) + titleMinScale * titleTransformFraction
             if let navigationTitleView = self.navigationTitle.view {
-                transition.setAlpha(view: navigationTitleView, alpha: 1.0)
+                transition.setScale(view: navigationTitleView, scale: titleScale)
+            }
+            
+            if let controller = environment.controller(), let navigationBar = controller.navigationBar {
+                let edgeEffectAlphaDistance = max(1.0, self.titleTransformContainer.center.y - titleCenterY)
+                let edgeEffectAlpha = max(0.0, min(1.0, self.scrollView.contentOffset.y / edgeEffectAlphaDistance))
+                navigationBar.setBackdropAlpha(edgeEffectAlpha, transition: transition.containedViewLayoutTransition)
             }
         }
         
@@ -645,24 +659,49 @@ final class ChatbotSetupScreenComponent: Component {
             let navigationTitleSize = self.navigationTitle.update(
                 transition: transition,
                 component: AnyComponent(MultilineTextComponent(
-                    text: .plain(NSAttributedString(string: environment.strings.ChatbotSetup_TitleItem, font: Font.semibold(17.0), textColor: environment.theme.rootController.navigationBar.primaryTextColor)),
+                    text: .plain(NSAttributedString(string: environment.strings.ChatbotSetup_TitleItem, font: Font.bold(24.0), textColor: environment.theme.rootController.navigationBar.primaryTextColor)),
                     horizontalAlignment: .center
                 )),
                 environment: {},
                 containerSize: CGSize(width: availableSize.width, height: 100.0)
             )
-            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - navigationTitleSize.width) / 2.0), y: environment.statusBarHeight + floor((environment.navigationHeight - environment.statusBarHeight - navigationTitleSize.height) / 2.0)), size: navigationTitleSize)
-            if let navigationTitleView = self.navigationTitle.view {
-                if navigationTitleView.superview == nil {
-                    if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
-                        navigationBar.view.addSubview(navigationTitleView)
+            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor(environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right - navigationTitleSize.width) / 2.0), y: environment.navigationHeight + 76.0), size: navigationTitleSize)
+            let overlaySuperview: UIView?
+            if let controller = environment.controller(), let navigationBar = controller.navigationBar, let navigationBarSuperview = navigationBar.view.superview {
+                overlaySuperview = navigationBarSuperview
+            } else {
+                overlaySuperview = self
+            }
+            if let overlaySuperview {
+                if self.titleTransformContainer.superview !== overlaySuperview {
+                    self.titleTransformContainer.removeFromSuperview()
+                    if let controller = environment.controller(), let navigationBar = controller.navigationBar, overlaySuperview === navigationBar.view.superview {
+                        overlaySuperview.insertSubview(self.titleTransformContainer, aboveSubview: navigationBar.view)
+                    } else {
+                        overlaySuperview.addSubview(self.titleTransformContainer)
                     }
                 }
-                transition.setFrame(view: navigationTitleView, frame: navigationTitleFrame)
+            }
+            if let navigationTitleView = self.navigationTitle.view {
+                if navigationTitleView.superview !== self.titleTransformContainer {
+                    navigationTitleView.removeFromSuperview()
+                    self.titleTransformContainer.addSubview(navigationTitleView)
+                }
+                transition.setPosition(view: self.titleTransformContainer, position: navigationTitleFrame.center)
+                transition.setBounds(view: self.titleTransformContainer, bounds: CGRect(origin: CGPoint(), size: navigationTitleFrame.size))
+                transition.setBounds(view: navigationTitleView, bounds: CGRect(origin: CGPoint(), size: navigationTitleFrame.size))
+                transition.setPosition(view: navigationTitleView, position: CGPoint(
+                    x: navigationTitleFrame.size.width * 0.5,
+                    y: navigationTitleFrame.size.height * 0.5
+                ))
             }
             
             let bottomContentInset: CGFloat = 24.0
+            // iPhone Duo: one side's safe inset is the side strip; the right margin is its own and centered
+            // content is centered in the band between the insets. With equal insets these are the old values.
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
+            let rightSideInset: CGFloat = 16.0 + environment.safeInsets.right
+            let bandCenterX: CGFloat = environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right) / 2.0
             let sectionSpacing: CGFloat = 32.0
             
             let _ = bottomContentInset
@@ -675,13 +714,14 @@ final class ChatbotSetupScreenComponent: Component {
             let iconSize = self.icon.update(
                 transition: .immediate,
                 component: AnyComponent(LottieComponent(
-                    content: LottieComponent.AppBundleContent(name: "BotEmoji"),
-                    loop: false
+                    content: LottieComponent.AppBundleContent(name: "ChatAutomation"),
+                    loop: false,
+                    lottieSettings: component.context.lottieRenderingSettings
                 )),
                 environment: {},
-                containerSize: CGSize(width: 100.0, height: 100.0)
+                containerSize: CGSize(width: 140.0, height: 140.0)
             )
-            let iconFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - iconSize.width) * 0.5), y: contentHeight + 8.0), size: iconSize)
+            let iconFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - iconSize.width * 0.5), y: contentHeight - 50.0), size: iconSize)
             if let iconView = self.icon.view as? LottieComponent.View {
                 if iconView.superview == nil {
                     self.scrollView.addSubview(iconView)
@@ -691,11 +731,11 @@ final class ChatbotSetupScreenComponent: Component {
                 iconView.bounds = CGRect(origin: CGPoint(), size: iconFrame.size)
             }
             
-            contentHeight += 129.0
+            contentHeight += 115.0
             
             let subtitleString = NSMutableAttributedString(attributedString: parseMarkdownIntoAttributedString(environment.strings.ChatbotSetup_Text, attributes: MarkdownAttributes(
-                body: MarkdownAttributeSet(font: Font.regular(15.0), textColor: environment.theme.list.freeTextColor),
-                bold: MarkdownAttributeSet(font: Font.semibold(15.0), textColor: environment.theme.list.freeTextColor),
+                body: MarkdownAttributeSet(font: Font.regular(15.0), textColor: environment.theme.list.itemPrimaryTextColor),
+                bold: MarkdownAttributeSet(font: Font.semibold(15.0), textColor: environment.theme.list.itemPrimaryTextColor),
                 link: MarkdownAttributeSet(font: Font.regular(15.0), textColor: environment.theme.list.itemAccentColor),
                 linkAttribute: { attributes in
                     return ("URL", "")
@@ -732,9 +772,9 @@ final class ChatbotSetupScreenComponent: Component {
                     }
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 1000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset - 64.0, height: 1000.0)
             )
-            let subtitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - subtitleSize.width) * 0.5), y: contentHeight), size: subtitleSize)
+            let subtitleFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - subtitleSize.width * 0.5), y: contentHeight), size: subtitleSize)
             if let subtitleView = self.subtitle.view {
                 if subtitleView.superview == nil {
                     self.scrollView.addSubview(subtitleView)
@@ -780,7 +820,7 @@ final class ChatbotSetupScreenComponent: Component {
                     strings: environment.strings,
                     content: mappedContent,
                     installAction: { [weak self] in
-                        guard let self else {
+                        guard let self, let component = self.component, let environment = self.environment, let controller = self.environment?.controller() else {
                             return
                         }
                         self.endEditing(true)
@@ -791,6 +831,15 @@ final class ChatbotSetupScreenComponent: Component {
                                 self.botResolutionState = botResolutionState
                                 self.botRights = [.reply, .readMessages, .deleteSentMessages, .deleteReceivedMessages]
                                 self.state?.updated(transition: .spring(duration: 0.3))
+                                
+                                controller.present(UndoOverlayController(
+                                    presentationData: presentationData,
+                                    content: .actionSucceeded(title: nil, text: environment.strings.ChatbotSetup_BotInstalled(peer.compactDisplayTitle).string, cancel: nil, destructive: false),
+                                    elevatedLayout: false,
+                                    position: .bottom,
+                                    animateInAsReplacement: false,
+                                    action: { _ in return true }
+                                ), in: .current)
                             } else {
                                 self.environment?.controller()?.present(textAlertController(context: component.context, title: nil, text: presentationData.strings.ChatbotSetup_ErrorBotNotBusinessCapable, actions: [
                                     TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {
@@ -836,7 +885,7 @@ final class ChatbotSetupScreenComponent: Component {
                     items: nameSectionItems
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let nameSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: nameSectionSize)
             if let nameSectionView = self.nameSection.view {
@@ -928,7 +977,7 @@ final class ChatbotSetupScreenComponent: Component {
                     ]
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let accessSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: accessSectionSize)
             if let accessSectionView = self.accessSection.view {
@@ -1011,7 +1060,7 @@ final class ChatbotSetupScreenComponent: Component {
                     items: excludedSectionItems
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let excludedSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: excludedSectionSize)
             if let excludedSectionView = self.excludedSection.view {
@@ -1078,7 +1127,7 @@ final class ChatbotSetupScreenComponent: Component {
                     items: excludedUsersSectionItems
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let excludedUsersSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight + excludedUsersContentHeight), size: excludedSectionSize)
             if let excludedUsersSectionView = self.excludedUsersSection.view {
@@ -1305,7 +1354,7 @@ final class ChatbotSetupScreenComponent: Component {
                         items: permissionsItems
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                 )
                 let permissionsSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: permissionsSectionSize)
                 if let permissionsSectionView = self.permissionsSection.view {
@@ -1424,6 +1473,16 @@ public final class ChatbotSetupScreen: ViewControllerComponentContainer {
         self.dismiss()
     }
     
+    override public func preferredContentSizeForLayout(_ layout: ContainerViewLayout) -> CGSize? {
+        guard layout.metrics.widthClass == .regular else {
+            return nil
+        }
+        return CGSize(
+            width: min(480.0, layout.size.width - 20.0),
+            height: min(layout.size.width, layout.size.height) - 88.0
+        )
+    }
+
     override public func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
     }

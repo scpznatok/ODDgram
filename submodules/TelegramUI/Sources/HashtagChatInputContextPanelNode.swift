@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import Display
 import TelegramPresentationData
@@ -96,7 +95,7 @@ final class HashtagChatInputContextPanelNode: ChatInputContextPanelNode {
         self.backgroundView = GlassBackgroundView()
         self.backgroundView.layer.anchorPoint = CGPoint()
         
-        self.listView = ListView()
+        self.listView = ListViewImpl()
         self.listView.isOpaque = false
         self.listView.stackFromBottom = true
         self.listView.limitHitTestToNodes = true
@@ -236,14 +235,7 @@ final class HashtagChatInputContextPanelNode: ChatInputContextPanelNode {
                     }
                     
                     if let range = hashtagQueryRange {
-                        let inputText = NSMutableAttributedString(attributedString: textInputState.inputText)
-                        
-                        let replacementText = text
-                        inputText.replaceCharacters(in: range, with: replacementText)
-                        
-                        let selectionPosition = range.lowerBound + (replacementText as NSString).length
-                        
-                        return (ChatTextInputState(inputText: inputText, selectionRange: selectionPosition ..< selectionPosition), inputMode)
+                        return (textInputState.replacingFlatRange(range, with: text), inputMode)
                     }
                     return (textInputState, inputMode)
                 }

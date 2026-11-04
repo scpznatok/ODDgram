@@ -8,7 +8,6 @@ import AppBundle
 import ViewControllerComponent
 import AccountContext
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import MultilineTextComponent
 import ButtonComponent
@@ -18,7 +17,7 @@ import ListSectionComponent
 import ListItemSliderSelectorComponent
 import ListActionItemComponent
 import Markdown
-import BlurredBackgroundComponent
+import EdgeEffect
 import PresentationDataUtils
 import PeerListItemComponent
 import TelegramStringFormatting
@@ -117,8 +116,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
         private let activeProgramsSection = ComponentView<Empty>()
         private let suggestedProgramsSection = ComponentView<Empty>()
         
-        private let bottomPanelSeparator = SimpleLayer()
-        private let bottomPanelBackground = ComponentView<Empty>()
+        private let bottomPanelEdgeEffect = EdgeEffectView()
         private let bottomPanelButton = ComponentView<Empty>()
         private let bottomPanelText = ComponentView<Empty>()
         
@@ -173,8 +171,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
             
             self.scrollView.delegate = self
             self.addSubview(self.scrollView)
-            
-            self.layer.addSublayer(self.bottomPanelSeparator)
+            self.bottomPanelEdgeEffect.isUserInteractionEnabled = false
         }
         
         required init?(coder: NSCoder) {
@@ -376,21 +373,13 @@ final class AffiliateProgramSetupScreenComponent: Component {
                 transition.setScale(view: titleView, scale: titleScale)
             }
             
-            let navigationAlpha: CGFloat = titleTransformFraction
-            if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
-                transition.setAlpha(layer: navigationBar.backgroundNode.layer, alpha: navigationAlpha)
-                transition.setAlpha(layer: navigationBar.stripeNode.layer, alpha: navigationAlpha)
-            }
-            
             let bottomPanelAlphaDistance: CGFloat = 20.0
             let bottomPanelDistance: CGFloat = self.scrollView.contentSize.height - self.scrollView.bounds.maxY
             let bottomPanelAlphaFraction: CGFloat = max(0.0, min(1.0, bottomPanelDistance / bottomPanelAlphaDistance))
             
             let bottomPanelAlpha: CGFloat = bottomPanelAlphaFraction
-            if let bottomPanelBackgroundView = self.bottomPanelBackground.view, bottomPanelBackgroundView.alpha != bottomPanelAlpha{
-                let alphaTransition = transition
-                alphaTransition.setAlpha(view: bottomPanelBackgroundView, alpha: bottomPanelAlpha)
-                alphaTransition.setAlpha(layer: self.bottomPanelSeparator, alpha: bottomPanelAlpha)
+            if self.bottomPanelEdgeEffect.alpha != bottomPanelAlpha {
+                transition.setAlpha(view: self.bottomPanelEdgeEffect, alpha: bottomPanelAlpha)
             }
             
             if self.scrollView.bounds.maxY >= self.scrollView.contentSize.height - 100.0 {
@@ -552,7 +541,6 @@ final class AffiliateProgramSetupScreenComponent: Component {
             
             if themeUpdated {
                 self.backgroundColor = environment.theme.list.blocksBackgroundColor
-                self.bottomPanelSeparator.backgroundColor = environment.theme.rootController.navigationBar.separatorColor.cgColor
             }
             
             if self.component == nil {
@@ -662,7 +650,11 @@ final class AffiliateProgramSetupScreenComponent: Component {
             
             let topInset: CGFloat = environment.navigationHeight + 90.0
             let bottomInset: CGFloat = 8.0
+            // iPhone Duo: one side's safe inset is the side strip; the right margin is its own and centered
+            // content is centered in the band between the insets. With equal insets these are the old values.
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
+            let rightSideInset: CGFloat = 16.0 + environment.safeInsets.right
+            let bandCenterX: CGFloat = environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right) / 2.0
             let textSideInset: CGFloat = 16.0
             let sectionSpacing: CGFloat = 24.0
             
@@ -680,7 +672,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
                 environment: {},
                 containerSize: CGSize(width: min(414.0, availableSize.width), height: 184.0)
             )
-            let coinIconFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - coinIconSize.width) * 0.5), y: contentHeight - coinIconSize.height + 30.0), size: coinIconSize)
+            let coinIconFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - coinIconSize.width * 0.5), y: contentHeight - coinIconSize.height + 30.0), size: coinIconSize)
             if let coinIconView = self.coinIcon.view {
                 if coinIconView.superview == nil {
                     self.titleContainer.addSubview(coinIconView)
@@ -706,8 +698,8 @@ final class AffiliateProgramSetupScreenComponent: Component {
                 environment: {},
                 containerSize: CGSize(width: availableSize.width + 140.0, height: 1000.0)
             )
-            let titleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - titleSize.width) * 0.5), y: contentHeight), size: titleSize)
-            let titleNeutralScale: CGFloat = min(1.0, (availableSize.width - sideInset * 2.0) / titleSize.width)
+            let titleFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - titleSize.width * 0.5), y: contentHeight), size: titleSize)
+            let titleNeutralScale: CGFloat = min(1.0, (availableSize.width - sideInset - rightSideInset) / titleSize.width)
             self.titleNeutralScale = titleNeutralScale
             if let titleView = self.title.view {
                 if self.titleTransformContainer.superview == nil {
@@ -741,9 +733,11 @@ final class AffiliateProgramSetupScreenComponent: Component {
                     maximumNumberOfLines: 0
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - textSideInset * 2.0, height: 1000.0)
+                // iPhone Duo: narrowed by the side insets when they differ (one is the side strip), so the text centred
+                // on the band stays inside it; equal insets keep the old width.
+                containerSize: CGSize(width: availableSize.width - textSideInset * 2.0 - (environment.safeInsets.left != environment.safeInsets.right ? environment.safeInsets.left + environment.safeInsets.right : 0.0), height: 1000.0)
             )
-            let subtitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - subtitleSize.width) * 0.5), y: contentHeight), size: subtitleSize)
+            let subtitleFrame = CGRect(origin: CGPoint(x: floor(bandCenterX - subtitleSize.width * 0.5), y: contentHeight), size: subtitleSize)
             if let subtitleView = self.subtitle.view {
                 if subtitleView.superview == nil {
                     self.scrollView.addSubview(subtitleView)
@@ -796,7 +790,8 @@ final class AffiliateProgramSetupScreenComponent: Component {
             var introItemsHeight: CGFloat = 17.0
             let introItemIconX: CGFloat = sideInset + 19.0
             let introItemTextX: CGFloat = sideInset + 56.0
-            let introItemTextRightInset: CGFloat = sideInset + 10.0
+            // The text stops short of the card's own right edge (iPhone Duo: beside the side strip that is not the left one).
+            let introItemTextRightInset: CGFloat = rightSideInset + 10.0
             let introItemSpacing: CGFloat = 22.0
             for i in 0 ..< introItems.count {
                 if i != 0 {
@@ -888,7 +883,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
             }
             introItemsHeight += 19.0
             
-            let introBackgroundFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: CGSize(width: availableSize.width - sideInset * 2.0, height: introItemsHeight))
+            let introBackgroundFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: CGSize(width: availableSize.width - sideInset - rightSideInset, height: introItemsHeight))
             let _ = self.introBackground.update(
                 transition: transition,
                 component: AnyComponent(FilledRoundedRectangleComponent(
@@ -961,7 +956,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
                         displaySeparators: false
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                 )
                 let commissionSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: commissionSectionSize)
                 if let commissionSectionView = self.commissionSection.view {
@@ -1040,7 +1035,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
                         displaySeparators: false
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                 )
                 let durationSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: durationSectionSize)
                 if let durationSectionView = self.durationSection.view {
@@ -1093,7 +1088,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
                         displaySeparators: false
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                 )
                 let existingProgramsSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: existingProgramsSectionSize)
                 if let existingProgramsSectionView = self.existingProgramsSection.view {
@@ -1139,7 +1134,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
                         displaySeparators: false
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                    containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                 )
                 let endProgramSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: endProgramSectionSize)
                 if let endProgramSectionView = self.endProgramSection.view {
@@ -1155,6 +1150,13 @@ final class AffiliateProgramSetupScreenComponent: Component {
                 }
                 
                 contentHeight += bottomInset
+                
+                // The bottom panel spans iPhone Duo's side strip; it keeps clear only of a corner block at the bottom.
+                // With equal insets these are `sideInset`, `rightSideInset` and `bandCenterX`.
+                let bottomEdgeInsets = environment.bottomEdgeSideInsets()
+                let bottomPanelSideInset: CGFloat = 16.0 + bottomEdgeInsets.left
+                let bottomPanelRightSideInset: CGFloat = 16.0 + bottomEdgeInsets.right
+                let bottomPanelCenterX: CGFloat = bottomEdgeInsets.left + (availableSize.width - bottomEdgeInsets.left - bottomEdgeInsets.right) / 2.0
                 
                 let bottomPanelTextSize = self.bottomPanelText.update(
                     transition: .immediate,
@@ -1174,10 +1176,10 @@ final class AffiliateProgramSetupScreenComponent: Component {
                         maximumNumberOfLines: 0
                     )),
                     environment: {},
-                    containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 1000.0)
+                    containerSize: CGSize(width: availableSize.width - bottomPanelSideInset - bottomPanelRightSideInset, height: 1000.0)
                 )
                 
-                let bottomPanelButtonInsets = UIEdgeInsets(top: 10.0, left: sideInset, bottom: 10.0, right: sideInset)
+                let bottomPanelButtonInsets = UIEdgeInsets(top: 10.0, left: bottomPanelSideInset, bottom: 10.0, right: bottomPanelRightSideInset)
                 
                 let buttonText: String
                 if let endDate = self.currentProgram?.endDate {
@@ -1216,22 +1218,19 @@ final class AffiliateProgramSetupScreenComponent: Component {
                 let bottomPanelHeight: CGFloat = bottomPanelButtonInsets.top + bottomPanelButtonSize.height + bottomPanelButtonInsets.bottom + bottomPanelTextSize.height + 8.0 + environment.safeInsets.bottom
                 let bottomPanelFrame = CGRect(origin: CGPoint(x: 0.0, y: availableSize.height - bottomPanelHeight), size: CGSize(width: availableSize.width, height: bottomPanelHeight))
                 
-                let _ = self.bottomPanelBackground.update(
-                    transition: transition,
-                    component: AnyComponent(BlurredBackgroundComponent(
-                        color: environment.theme.rootController.navigationBar.blurredBackgroundColor
-                    )),
-                    environment: {},
-                    containerSize: bottomPanelFrame.size
-                )
-                
-                if let bottomPanelBackgroundView = self.bottomPanelBackground.view {
-                    if bottomPanelBackgroundView.superview == nil {
-                        self.addSubview(bottomPanelBackgroundView)
-                    }
-                    transition.setFrame(view: bottomPanelBackgroundView, frame: bottomPanelFrame)
+                if self.bottomPanelEdgeEffect.superview == nil {
+                    self.addSubview(self.bottomPanelEdgeEffect)
                 }
-                transition.setFrame(layer: self.bottomPanelSeparator, frame: CGRect(origin: CGPoint(x: 0.0, y: bottomPanelFrame.minY - UIScreenPixel), size: CGSize(width: availableSize.width, height: UIScreenPixel)))
+                transition.setFrame(view: self.bottomPanelEdgeEffect, frame: bottomPanelFrame)
+                self.bottomPanelEdgeEffect.update(
+                    content: environment.theme.list.blocksBackgroundColor,
+                    blur: true,
+                    alpha: 1.0,
+                    rect: bottomPanelFrame,
+                    edge: .bottom,
+                    edgeSize: bottomPanelFrame.height,
+                    transition: transition
+                )
                 
                 let bottomPanelButtonFrame = CGRect(origin: CGPoint(x: bottomPanelFrame.minX + bottomPanelButtonInsets.left, y: bottomPanelFrame.minY + bottomPanelButtonInsets.top), size: bottomPanelButtonSize)
                 if let bottomPanelButtonView = self.bottomPanelButton.view {
@@ -1241,7 +1240,8 @@ final class AffiliateProgramSetupScreenComponent: Component {
                     transition.setFrame(view: bottomPanelButtonView, frame: bottomPanelButtonFrame)
                 }
                 
-                let bottomPanelTextFrame = CGRect(origin: CGPoint(x: bottomPanelFrame.minX + floor((bottomPanelFrame.width - bottomPanelTextSize.width) * 0.5), y: bottomPanelButtonFrame.maxY + bottomPanelButtonInsets.bottom), size: bottomPanelTextSize)
+                // Centred in the width it is measured for.
+                let bottomPanelTextFrame = CGRect(origin: CGPoint(x: floor(bottomPanelCenterX - bottomPanelTextSize.width * 0.5), y: bottomPanelButtonFrame.maxY + bottomPanelButtonInsets.bottom), size: bottomPanelTextSize)
                 if let bottomPanelTextView = self.bottomPanelText.view {
                     if bottomPanelTextView.superview == nil {
                         self.addSubview(bottomPanelTextView)
@@ -1421,7 +1421,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
                                 displaySeparators: true
                             )),
                             environment: {},
-                            containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                            containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                         )
                         let activeProgramsSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: activeProgramsSectionSize)
                         if let activeProgramsSectionView = self.activeProgramsSection.view {
@@ -1569,7 +1569,7 @@ final class AffiliateProgramSetupScreenComponent: Component {
                                 displaySeparators: true
                             )),
                             environment: {},
-                            containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                            containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
                         )
                         let suggestedProgramsSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: suggestedProgramsSectionSize)
                         if let suggestedProgramsSectionView = self.suggestedProgramsSection.view as? ListSectionComponent.View {
@@ -1746,11 +1746,11 @@ private final class ListContextExtractedContentSource: ContextExtractedContentSo
     }
     
     func takeView() -> ContextControllerTakeViewInfo? {
-        return ContextControllerTakeViewInfo(containingItem: .view(self.contentView), contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerTakeViewInfo(containingItem: .view(self.contentView), contentAreaInScreenSpace: mainWindowScreenBounds)
     }
     
     func putBack() -> ContextControllerPutBackViewInfo? {
-        return ContextControllerPutBackViewInfo(contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerPutBackViewInfo(contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }
 
@@ -1766,6 +1766,6 @@ final class HeaderContextReferenceContentSource: ContextReferenceContentSource {
     }
 
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: UIScreen.main.bounds, actionsPosition: self.actionsOnTop ? .top : .bottom)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: mainWindowScreenBounds, actionsPosition: self.actionsOnTop ? .top : .bottom)
     }
 }

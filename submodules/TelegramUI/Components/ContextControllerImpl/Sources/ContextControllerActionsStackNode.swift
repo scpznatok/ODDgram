@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -20,6 +21,7 @@ import LottieComponent
 import TextNodeWithEntities
 import ContextUI
 import LensTransition
+import BalancedTextComponent
 
 public protocol ContextControllerActionsListItemNode: ASDisplayNode {
     func update(presentationData: PresentationData, constrainedSize: CGSize) -> (minSize: CGSize, apply: (_ size: CGSize, _ transition: ContainedViewLayoutTransition) -> Void)
@@ -39,6 +41,7 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
     private var item: ContextMenuActionItem
     
     private let titleLabelNode: ImmediateTextNodeWithEntities
+    private let balancedTitleLabel = ComponentView<Empty>()
     private let subtitleNode: ImmediateTextNode
     private let iconNode: ASImageNode
     private let additionalIconNode: ASImageNode
@@ -234,7 +237,13 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
         }
         
         let subtitleFont = Font.regular(presentationData.listsFontSize.baseDisplaySize * 14.0 / 17.0)
-        let subtitleColor = presentationData.theme.contextMenu.secondaryColor
+        var subtitleColor: UIColor
+        switch self.item.textColor {
+        case .destructive:
+            subtitleColor = presentationData.theme.contextMenu.destructiveColor
+        default:
+            subtitleColor = presentationData.theme.contextMenu.secondaryColor
+        }
         
         if let context = self.context {
             self.titleLabelNode.arguments = TextNodeWithEntities.Arguments(
@@ -262,6 +271,7 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
             )
         case let .secondLineWithAttributedValue(subtitleValue):
             self.titleLabelNode.maximumNumberOfLines = 1
+            self.subtitleNode.maximumNumberOfLines = 3
             let mutableString = subtitleValue.mutableCopy() as! NSMutableAttributedString
             mutableString.addAttribute(.foregroundColor, value: subtitleColor, range: NSRange(location: 0, length: mutableString.length))
             mutableString.addAttribute(.font, value: subtitleFont, range: NSRange(location: 0, length: mutableString.length))
@@ -282,7 +292,13 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
             titleColor = presentationData.theme.contextMenu.primaryColor.withMultipliedAlpha(0.4)
         }
         
+        var balanceTitleAttributedText: NSAttributedString?
         if self.item.parseMarkdown || !self.item.entities.isEmpty {
+            var balancedTextLayout = false
+            if self.item.parseMarkdown, case .twoLinesMax = self.item.textLayout {
+                balancedTextLayout = true
+            }
+            
             let attributedText: NSAttributedString
             if !self.item.entities.isEmpty {
                 let inputStateText = ChatTextInputStateText(text: self.item.text, attributes: self.item.entities.compactMap { entity -> ChatTextInputStateTextAttribute? in
@@ -324,18 +340,25 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
                     )
                 )
             }
-            self.titleLabelNode.attributedText = attributedText
-            self.titleLabelNode.linkHighlightColor = presentationData.theme.list.itemAccentColor.withMultipliedAlpha(0.5)
-            self.titleLabelNode.highlightAttributeAction = { attributes in
-                if let _ = attributes[NSAttributedString.Key(rawValue: "URL")] {
-                    return NSAttributedString.Key(rawValue: "URL")
-                } else {
-                    return nil
+            
+            if self.item.entities.isEmpty && balancedTextLayout {
+                self.titleLabelNode.isHidden = true
+                balanceTitleAttributedText = attributedText
+            } else {
+                self.titleLabelNode.isHidden = false
+                self.titleLabelNode.attributedText = attributedText
+                self.titleLabelNode.linkHighlightColor = presentationData.theme.list.itemAccentColor.withMultipliedAlpha(0.5)
+                self.titleLabelNode.highlightAttributeAction = { attributes in
+                    if let _ = attributes[NSAttributedString.Key(rawValue: "URL")] {
+                        return NSAttributedString.Key(rawValue: "URL")
+                    } else {
+                        return nil
+                    }
                 }
-            }
-            self.titleLabelNode.tapAttributeAction = { [weak item] attributes, _ in
-                if let _ = attributes[NSAttributedString.Key(rawValue: "URL")] {
-                    item?.textLinkAction()
+                self.titleLabelNode.tapAttributeAction = { [weak item] attributes, _ in
+                    if let _ = attributes[NSAttributedString.Key(rawValue: "URL")] {
+                        item?.textLinkAction()
+                    }
                 }
             }
         } else {
@@ -395,7 +418,8 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
                     content: LottieComponent.AppBundleContent(name: iconAnimation.name),
                     color: titleColor,
                     startingPosition: iconAnimation.loop ? .begin : .end,
-                    loop: iconAnimation.loop
+                    loop: iconAnimation.loop,
+                    lottieSettings: self.context?.lottieRenderingSettings ?? .noAccountFallback
                 )),
                 environment: {},
                 containerSize: animatedIconSize
@@ -506,7 +530,22 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
         
         maxTextWidth = max(1.0, maxTextWidth)
         
-        let titleSize = self.titleLabelNode.updateLayout(CGSize(width: maxTextWidth, height: 1000.0))
+        let titleSize: CGSize
+        if let balanceTitleAttributedText {
+            titleSize = self.balancedTitleLabel.update(
+                transition: .immediate,
+                component: AnyComponent(
+                    BalancedTextComponent(
+                        text: .plain(balanceTitleAttributedText),
+                        maximumNumberOfLines: 3
+                    )
+                ),
+                environment: {},
+                containerSize: CGSize(width: maxTextWidth, height: 1000.0)
+            )
+        } else {
+            titleSize = self.titleLabelNode.updateLayout(CGSize(width: maxTextWidth, height: 1000.0))
+        }
         let subtitleSize = self.subtitleNode.updateLayout(CGSize(width: maxTextWidth, height: 1000.0))
         
         var minSize = CGSize()
@@ -549,7 +588,16 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
                 subtitleFrame.origin.x = titleFrame.minX
             }
             
-            transition.updateFrameAdditive(node: self.titleLabelNode, frame: titleFrame)
+            if let _ = balanceTitleAttributedText {
+                if let balancedTitleLabelView = self.balancedTitleLabel.view {
+                    if balancedTitleLabelView.superview == nil {
+                        self.view.addSubview(balancedTitleLabelView)
+                    }
+                    transition.updateFrameAdditive(view: balancedTitleLabelView, frame: titleFrame)
+                }
+            } else {
+                transition.updateFrameAdditive(node: self.titleLabelNode, frame: titleFrame)
+            }
             transition.updateFrameAdditive(node: self.subtitleNode, frame: subtitleFrame)
             
             if let badgeIconNode = self.badgeIconNode, let iconSize = badgeIconNode.image?.size {
@@ -557,10 +605,21 @@ public final class ContextControllerActionsListActionItemNode: HighlightTracking
             }
             
             if let iconSize {
+                let iconY: CGFloat
+                if case .secondLineWithAttributedValue = self.item.textLayout {
+                    if self.item.iconSource != nil {
+                        let textBlockFrame = titleFrame.union(subtitleFrame)
+                        iconY = floor(textBlockFrame.midY - iconSize.height * 0.5)
+                    } else {
+                        iconY = titleFrame.minY + floor((titleFrame.height - iconSize.height) / 2.0)
+                    }
+                } else {
+                    iconY = floor((size.height - iconSize.height) / 2.0)
+                }
                 let iconFrame = CGRect(
                     origin: CGPoint(
                         x: iconSideInset + floor((standardIconWidth - iconSize.width) * 0.5),
-                        y: floor((size.height - iconSize.height) / 2.0)
+                        y: iconY
                     ),
                     size: iconSize
                 )
@@ -756,7 +815,7 @@ public final class ContextControllerActionsListStackItem: ContextControllerActio
         
         private var tip: ContextController.Tip?
         private var tipDisposable: Disposable?
-        private var tipNode: InnerTextSelectionTipContainerNode?
+        private(set) var tipNode: InnerTextSelectionTipContainerNode?
         private var tipSeparatorNode: ContextControllerActionsListSeparatorItemNode?
         
         private var hapticFeedback: HapticFeedback?
@@ -1362,6 +1421,10 @@ private final class ItemSelectionRecognizer: UIGestureRecognizer {
         self.initialLocation = nil
     }
     
+    func cancel() {
+        self.state = .failed
+    }
+    
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
         
@@ -1407,16 +1470,17 @@ private final class ItemSelectionRecognizer: UIGestureRecognizer {
 }
 
 public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, ContextControllerActionsStackNode {
+    public var usesClearGlass: Bool = false
+    public var glassBlurRadius: CGFloat?
+
     final class NavigationContainer: ASDisplayNode, ASGestureRecognizerDelegate {
         let backgroundContainer: GlassBackgroundContainerView
-        let backgroundContainerInset: CGFloat
-        let backgroundView: GlassBackgroundView
-        var sourceExtractableContainer: ContextExtractableContainer?
         let contentContainer: LensTransitionContainer
         
         var requestUpdate: ((ContainedViewLayoutTransition) -> Void)?
         var requestPop: (() -> Void)?
         var transitionFraction: CGFloat = 0.0
+        var cancelItemSelectionGesture: (() -> Void)?
         
         private var panRecognizer: InteractiveTransitionGestureRecognizer?
         
@@ -1427,19 +1491,13 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
         }
         
         override init() {
-            self.backgroundContainer = GlassBackgroundContainerView()
-            self.backgroundView = GlassBackgroundView()
-            self.backgroundContainer.contentView.addSubview(self.backgroundView)
-            
-            self.contentContainer = LensTransitionContainer()
-            self.contentContainer.clipsToBounds = true
-            self.backgroundView.contentView.addSubview(self.contentContainer)
-            
-            self.backgroundContainerInset = 32.0
+            self.backgroundContainer = GlassBackgroundContainerView(spacing: 28.0)
+            self.contentContainer = LensTransitionContainer(frame: .zero)
             
             super.init()
             
             self.view.addSubview(self.backgroundContainer)
+            self.backgroundContainer.contentView.addSubview(self.contentContainer)
             
             let panRecognizer = InteractiveTransitionGestureRecognizer(target: self, action: #selector(self.panGesture(_:)), allowedDirections: { [weak self] point in
                 guard let strongSelf = self else {
@@ -1454,6 +1512,9 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
         }
         
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            if otherGestureRecognizer is ItemSelectionRecognizer {
+                return true
+            }
             return false
         }
         
@@ -1470,6 +1531,7 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
         @objc private func panGesture(_ recognizer: UIPanGestureRecognizer) {
             switch recognizer.state {
             case .began:
+                self.cancelItemSelectionGesture?()
                 self.transitionFraction = 0.0
             case .changed:
                 let distanceFactor: CGFloat = recognizer.translation(in: self.view).x / self.bounds.width
@@ -1493,93 +1555,25 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
             }
         }
         
-        func animateIn(fromExtractableContainer extractableContainer: ContextExtractableContainer, transition: ComponentTransition) {
-            let normalState = extractableContainer.normalState
-            let sourceSize = normalState.size
-            let normalCornerRadius: CGFloat = normalState.cornerRadius
-            
-            let currentSize = self.contentContainer.bounds.size
-            
-            self.sourceExtractableContainer = extractableContainer
-            self.backgroundView.isHidden = true
-            
-            self.backgroundContainer.contentView.addSubview(extractableContainer.extractableContentView)
-            for subview in extractableContainer.extractableContentView.subviews {
-                if let subview = subview as? GlassBackgroundView {
-                    //TODO:release
-                    subview.contentView.addSubview(self.contentContainer)
-                    break
-                }
-            }
-            
-            self.contentContainer.frame = CGRect(origin: CGPoint(), size: sourceSize)
-            self.contentContainer.update(size: sourceSize, cornerRadius: min(sourceSize.width, sourceSize.height) * 0.5, state: .animatedOut, transition: .immediate)
-            
-            extractableContainer.extractableContentView.frame = CGRect(origin: CGPoint(x: (currentSize.width - sourceSize.width) * 0.5, y: (currentSize.height - sourceSize.height) * 0.5), size: sourceSize).offsetBy(dx: self.backgroundContainerInset, dy: self.backgroundContainerInset)
-            transition.setFrame(view: extractableContainer.extractableContentView, frame: CGRect(origin: CGPoint(x: self.backgroundContainerInset, y: self.backgroundContainerInset), size: currentSize))
-            transition.setFrame(view: self.contentContainer, frame: CGRect(origin: CGPoint(), size: currentSize))
-            self.contentContainer.update(size: currentSize, cornerRadius: 30.0, state: .animatedIn, transition: transition)
-            self.contentContainer.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.15)
-            
-            extractableContainer.updateState(state: .extracted(size: sourceSize, cornerRadius: normalCornerRadius, state: .animatedOut), transition: .transition(.immediate), completion: nil)
-            let mappedTransition: ContextExtractableContainer.Transition
-            if case let .curve(duration, curve) = transition.animation, case let .bounce(stiffness, damping) = curve {
-                mappedTransition = .spring(duration: duration, stiffness: stiffness, damping: damping)
-            } else {
-                mappedTransition = .transition(transition.containedViewLayoutTransition)
-            }
-            extractableContainer.updateState(state: .extracted(size: currentSize, cornerRadius: 30.0, state: .animatedIn), transition: mappedTransition, completion: nil)
+        func animateIn(from sourceView: UIView, sourceRect: CGRect, sourcePath: UIBezierPath?, alongsideAnimations: @escaping () -> Void) {
+            self.contentContainer.animateIn(from: sourceView, sourceRect: sourceRect, sourcePath: sourcePath, alongsideAnimations: alongsideAnimations)
         }
-        
-        func animateOut(toExtractableContainer extractableContainer: ContextExtractableContainer, transition: ComponentTransition) {
-            let normalState = extractableContainer.normalState
-            let normalSize = normalState.size
-            let normalCornerRadius: CGFloat = normalState.cornerRadius
-            
-            let currentSize = self.contentContainer.bounds.size
-            
-            transition.setFrame(view: extractableContainer.extractableContentView, frame: CGRect(origin: CGPoint(x: self.backgroundContainerInset, y: self.backgroundContainerInset), size: normalSize).offsetBy(dx: (currentSize.width - normalSize.width) * 0.5, dy: (currentSize.height - normalSize.height) * 0.5))
-            
-            transition.setFrame(view: self.contentContainer, frame: CGRect(origin: CGPoint(), size: normalSize))
-            self.contentContainer.update(size: normalSize, cornerRadius: normalCornerRadius, state: .animatedOut, transition: transition)
-            
-            transition.setCornerRadius(layer: self.contentContainer.layer, cornerRadius: normalCornerRadius)
-            transition.setAlpha(view: self.contentContainer, alpha: 0.0)
-            
-            let mappedTransition: ContextExtractableContainer.Transition
-            if case let .curve(duration, curve) = transition.animation, case let .bounce(stiffness, damping) = curve {
-                mappedTransition = .spring(duration: duration, stiffness: stiffness, damping: damping)
-            } else {
-                mappedTransition = .transition(transition.containedViewLayoutTransition)
-            }
-            extractableContainer.updateState(state: .extracted(size: normalSize, cornerRadius: normalCornerRadius, state: .animatedOut), transition: mappedTransition, completion: nil)
+
+        func animateOut(currentSource: (view: UIView, sourceRect: CGRect, sourcePath: UIBezierPath?)?, alongsideAnimations: @escaping () -> Void, completion: @escaping () -> Void) {
+            self.contentContainer.animateOut(currentSource: currentSource, alongsideAnimations: alongsideAnimations, completion: completion)
         }
-        
-        func didAnimateOut(toExtractableContainer extractableContainer: ContextExtractableContainer) {
-            extractableContainer.addSubview(extractableContainer.extractableContentView)
-            extractableContainer.updateState(state: .normal, transition: .transition(.immediate), completion: nil)
-        }
-        
-        func update(presentationData: PresentationData, presentation: Presentation, size: CGSize, transition: ContainedViewLayoutTransition) {
+
+        func update(presentationData: PresentationData, presentation: Presentation, size: CGSize, usesClearGlass: Bool, glassBlurRadius: CGFloat?, transition: ContainedViewLayoutTransition) {
             let transition = ComponentTransition(transition)
             
-            transition.setFrame(view: self.contentContainer, frame: CGRect(origin: CGPoint(), size: size))
-            transition.setCornerRadius(layer: self.contentContainer.layer, cornerRadius: min(30.0, size.height * 0.5))
+            transition.setFrame(view: self.backgroundContainer, frame: CGRect(origin: CGPoint(), size: size))
+            self.backgroundContainer.update(size: size, isDark: presentationData.theme.overallDarkAppearance, transition: transition)
             
-            let backgroundContainerFrame = CGRect(origin: CGPoint(), size: size).insetBy(dx: -self.backgroundContainerInset, dy: -self.backgroundContainerInset)
-            
-            if self.backgroundContainer.bounds.size != backgroundContainerFrame.size {
-                self.backgroundContainer.update(size: backgroundContainerFrame.size, isDark: presentationData.theme.overallDarkAppearance, transition: transition)
-                transition.setFrame(view: self.backgroundContainer, frame: backgroundContainerFrame)
-            }
-            
-            transition.setFrame(view: self.backgroundView, frame: CGRect(origin: CGPoint(x: self.backgroundContainerInset, y: self.backgroundContainerInset), size: size))
-            self.backgroundView.update(size: size, cornerRadius: min(30.0, size.height * 0.5), isDark: presentationData.theme.overallDarkAppearance, tintColor: .init(kind: .panel), isInteractive: true, transition: transition)
-            
-            if let sourceExtractableContainer = self.sourceExtractableContainer {
-                transition.setFrame(view: sourceExtractableContainer.extractableContentView, frame: CGRect(origin: CGPoint(x: self.backgroundContainerInset, y: self.backgroundContainerInset), size: size))
-                sourceExtractableContainer.updateState(state: .extracted(size: size, cornerRadius: min(30.0, size.height * 0.5), state: .animatedIn), transition: .transition(transition.containedViewLayoutTransition), completion: nil)
-            }
+            transition.setPosition(view: self.contentContainer, position: CGRect(origin: CGPoint(), size: size).center)
+            transition.setBounds(view: self.contentContainer, bounds: CGRect(origin: CGPoint(), size: size))
+            self.backgroundContainer.nativeBlurRadius = glassBlurRadius
+            self.contentContainer.nativeBlurRadius = glassBlurRadius
+            self.contentContainer.update(size: size, cornerRadius: min(30.0, size.height * 0.5), isDark: presentationData.theme.overallDarkAppearance, tintColor: GlassBackgroundView.TintColor(kind: usesClearGlass ? .custom(style: .clear, color: .clear) : .panel), transition: transition)
         }
     }
     
@@ -1817,6 +1811,10 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
                 return
             }
             strongSelf.pop()
+        }
+        
+        self.navigationContainer.cancelItemSelectionGesture = { [weak self] in
+            self?.selectionPanGesture?.cancel()
         }
         
         let selectionPanGesture = ItemSelectionRecognizer(target: self, action: #selector(self.panGesture(_:)))
@@ -2107,7 +2105,7 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
         let previousNavigationContainerFrame = self.navigationContainer.frame
         transition.updateFrame(node: self.navigationContainer, frame: navigationContainerFrame, beginWithCurrentState: true)
         if !navigationContainerFrame.isEmpty {
-            self.navigationContainer.update(presentationData: presentationData, presentation: presentation, size: navigationContainerFrame.size, transition: transition)
+            self.navigationContainer.update(presentationData: presentationData, presentation: presentation, size: navigationContainerFrame.size, usesClearGlass: self.usesClearGlass, glassBlurRadius: self.glassBlurRadius, transition: transition)
         }
         
         for i in 0 ..< self.itemContainers.count {
@@ -2220,18 +2218,37 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
             if let tipNode = itemContainer.tipNode {
                 tipNode.animateIn()
             }
+            if let topNode = itemContainer.node as? ContextControllerActionsListStackItem.Node {
+                topNode.tipNode?.animateIn()
+            }
         }
     }
     
-    func animateIn(fromExtractableContainer extractableContainer: ContextExtractableContainer, transition: ComponentTransition) {
-        self.navigationContainer.animateIn(fromExtractableContainer: extractableContainer, transition: transition)
+    static var supportsLiquidMorph: Bool {
+        return LensTransitionContainer.isMorphSupported
     }
-    
-    func animateOut(toExtractableContainer extractableContainer: ContextExtractableContainer, transition: ComponentTransition) {
-        self.navigationContainer.animateOut(toExtractableContainer: extractableContainer, transition: transition)
+
+    func animateIn(from sourceView: UIView, sourceRect: CGRect, sourcePath: UIBezierPath?, alongsideAnimations: @escaping () -> Void) {
+        let accessories = self.subnodes?.filter { $0 !== self.navigationContainer } ?? []
+        for node in accessories {
+            node.alpha = 0.0
+        }
+        self.navigationContainer.animateIn(from: sourceView, sourceRect: sourceRect, sourcePath: sourcePath, alongsideAnimations: {
+            for node in accessories {
+                node.alpha = 1.0
+            }
+            alongsideAnimations()
+        })
     }
-    
-    func didAnimateOut(toExtractableContainer extractableContainer: ContextExtractableContainer) {
-        self.navigationContainer.didAnimateOut(toExtractableContainer: extractableContainer)
+
+    /// `currentSource` is the morph source's outline resolved for this close, as `animateIn` was given it at opening.
+    func animateOut(currentSource: (view: UIView, sourceRect: CGRect, sourcePath: UIBezierPath?)?, alongsideAnimations: @escaping () -> Void, completion: @escaping () -> Void) {
+        let accessories = self.subnodes?.filter { $0 !== self.navigationContainer } ?? []
+        self.navigationContainer.animateOut(currentSource: currentSource, alongsideAnimations: {
+            for node in accessories {
+                node.alpha = 0.0
+            }
+            alongsideAnimations()
+        }, completion: completion)
     }
 }

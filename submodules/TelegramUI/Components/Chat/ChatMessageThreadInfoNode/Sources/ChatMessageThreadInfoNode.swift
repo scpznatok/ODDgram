@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import AsyncDisplayKit
-import Postbox
 import Display
 import TelegramCore
 import SwiftSignalKit
@@ -187,7 +186,7 @@ public class ChatMessageThreadInfoNode: ASDisplayNode {
         public let type: ChatMessageThreadInfoType
         public let peer: EnginePeer?
         public let threadId: Int64?
-        public let parentMessage: Message
+        public let parentMessage: EngineMessage
         public let constrainedSize: CGSize
         public let animationCache: AnimationCache?
         public let animationRenderer: MultiAnimationRenderer?
@@ -200,7 +199,7 @@ public class ChatMessageThreadInfoNode: ASDisplayNode {
             type: ChatMessageThreadInfoType,
             peer: EnginePeer?,
             threadId: Int64?,
-            parentMessage: Message,
+            parentMessage: EngineMessage,
             constrainedSize: CGSize,
             animationCache: AnimationCache?,
             animationRenderer: MultiAnimationRenderer?
@@ -305,12 +304,6 @@ public class ChatMessageThreadInfoNode: ASDisplayNode {
     
     public func updateAbsoluteRect(_ rect: CGRect, within containerSize: CGSize) {
         self.absolutePosition = (rect, containerSize)
-        if let backgroundContent = self.backgroundContent {
-            var backgroundFrame = backgroundContent.frame
-            backgroundFrame.origin.x += rect.minX
-            backgroundFrame.origin.y += rect.minY
-            backgroundContent.update(rect: backgroundFrame, within: containerSize, transition: .immediate)
-        }
     }
     
     public class func asyncLayout(_ maybeNode: ChatMessageThreadInfoNode?) -> (_ arguments: Arguments) -> (CGSize, (Bool) -> ChatMessageThreadInfoNode) {
@@ -432,12 +425,6 @@ public class ChatMessageThreadInfoNode: ASDisplayNode {
                                     (backgroundContent.view.mask as? UIImageView)?.image = image
                                     
                                     backgroundContent.frame = backgroundFrame
-                                    if let (rect, containerSize) = node.absolutePosition {
-                                        var backgroundFrame = backgroundContent.frame
-                                        backgroundFrame.origin.x += rect.minX
-                                        backgroundFrame.origin.y += rect.minY
-                                        backgroundContent.update(rect: backgroundFrame, within: containerSize, transition: .immediate)
-                                    }
                                 }
                             } else {
                                 node.backgroundContent?.removeFromSupernode()

@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
@@ -29,8 +30,8 @@ private struct StickerPackPreviewGridEntry: Comparable, Equatable, Identifiable 
         return lhs.index < rhs.index
     }
     
-    func item(account: Account, interaction: StickerPackPreviewInteraction, theme: PresentationTheme) -> StickerPackPreviewGridItem {
-        return StickerPackPreviewGridItem(account: account, stickerItem: self.stickerItem, interaction: interaction, theme: theme, isVerified: self.isVerified)
+    func item(account: Account, interaction: StickerPackPreviewInteraction, theme: PresentationTheme, lottieSettings: LottieRenderingSettings) -> StickerPackPreviewGridItem {
+        return StickerPackPreviewGridItem(account: account, stickerItem: self.stickerItem, interaction: interaction, theme: theme, isVerified: self.isVerified, lottieSettings: lottieSettings)
     }
 }
 
@@ -39,12 +40,12 @@ private struct StickerPackPreviewGridTransaction {
     let insertions: [GridNodeInsertItem]
     let updates: [GridNodeUpdateItem]
     
-    init(previousList: [StickerPackPreviewGridEntry], list: [StickerPackPreviewGridEntry], account: Account, interaction: StickerPackPreviewInteraction, theme: PresentationTheme) {
+    init(previousList: [StickerPackPreviewGridEntry], list: [StickerPackPreviewGridEntry], account: Account, interaction: StickerPackPreviewInteraction, theme: PresentationTheme, lottieSettings: LottieRenderingSettings) {
          let (deleteIndices, indicesAndItems, updateIndices) = mergeListsStableWithUpdates(leftList: previousList, rightList: list)
         
         self.deletions = deleteIndices
-        self.insertions = indicesAndItems.map { GridNodeInsertItem(index: $0.0, item: $0.1.item(account: account, interaction: interaction, theme: theme), previousIndex: $0.2) }
-        self.updates = updateIndices.map { GridNodeUpdateItem(index: $0.0, previousIndex: $0.2, item: $0.1.item(account: account, interaction: interaction, theme: theme)) }
+        self.insertions = indicesAndItems.map { GridNodeInsertItem(index: $0.0, item: $0.1.item(account: account, interaction: interaction, theme: theme, lottieSettings: lottieSettings), previousIndex: $0.2) }
+        self.updates = updateIndices.map { GridNodeUpdateItem(index: $0.0, previousIndex: $0.2, item: $0.1.item(account: account, interaction: interaction, theme: theme, lottieSettings: lottieSettings)) }
     }
 }
 
@@ -110,6 +111,7 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
         self.wrappingScrollNode.view.alwaysBounceVertical = true
         self.wrappingScrollNode.view.delaysContentTouches = false
         self.wrappingScrollNode.view.canCancelContentTouches = true
+        self.wrappingScrollNode.view.scrollsToTop = false
         
         self.dimNode = ASDisplayNode()
         self.dimNode.backgroundColor = UIColor(white: 0.0, alpha: 0.5)
@@ -375,9 +377,10 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
         let sectionSpacing: CGFloat = 8.0
         let titleAreaHeight: CGFloat = 51.0
         
-        let width = horizontalContainerFillingSizeForLayout(layout: layout, sideInset: 10.0 + layout.safeInsets.left)
-        
-        let sideInset = floor((layout.size.width - width) / 2.0)
+        // Centered, or in the band beside a side strip (iPhone Duo).
+        let placement = horizontalContainerFillingPlacementForLayout(layout: layout, margin: 10.0, includesSafeInsets: true)
+        let width = placement.width
+        let sideInset = placement.left
         
         transition.updateFrame(node: self.cancelButtonNode, frame: CGRect(origin: CGPoint(x: sideInset, y: layout.size.height - bottomInset - buttonHeight), size: CGSize(width: width, height: buttonHeight)))
         
@@ -428,7 +431,7 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
             }
             
             if !forceTitleUpdate {
-                transaction = StickerPackPreviewGridTransaction(previousList: previousItems, list: self.currentItems, account: self.context.account, interaction: self.interaction, theme: self.presentationData.theme)
+                transaction = StickerPackPreviewGridTransaction(previousList: previousItems, list: self.currentItems, account: self.context.account, interaction: self.interaction, theme: self.presentationData.theme, lottieSettings: self.context.lottieRenderingSettings)
             }
         }
         let itemCount = self.currentItems.count
@@ -531,21 +534,22 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
         let radialStatusTextSize = self.radialStatusText.updateLayout(CGSize(width: 200.0, height: .greatestFiniteMagnitude))
         
         self.progressText.attributedText = NSAttributedString(string:  self.presentationData.strings.ImportStickerPack_Of(String(count), String(total)).string, font: Font.semibold(17.0), textColor: self.presentationData.theme.list.itemPrimaryTextColor)
-        let progressTextSize = self.progressText.updateLayout(CGSize(width: layout.size.width - 16.0 * 2.0, height: .greatestFiniteMagnitude))
+        let progressTextSize = self.progressText.updateLayout(CGSize(width: contentContainerFrame.width - 16.0 * 2.0, height: .greatestFiniteMagnitude))
         
         self.infoText.attributedText = NSAttributedString(string: self.presentationData.strings.ImportStickerPack_InProgress, font: Font.regular(17.0), textColor: self.presentationData.theme.list.itemSecondaryTextColor)
-        let infoTextSize = self.infoText.updateLayout(CGSize(width: layout.size.width - 16.0 * 2.0, height: .greatestFiniteMagnitude))
+        let infoTextSize = self.infoText.updateLayout(CGSize(width: contentContainerFrame.width - 16.0 * 2.0, height: .greatestFiniteMagnitude))
         
-        transition.updateFrame(node: self.radialStatus, frame: CGRect(origin: CGPoint(x: floor((layout.size.width - radialStatusSize.width) / 2.0), y: contentOrigin), size: radialStatusSize))
+        // Centred on the card, which keeps to the band beside a side strip (iPhone Duo).
+        transition.updateFrame(node: self.radialStatus, frame: CGRect(origin: CGPoint(x: contentContainerFrame.minX + floor((contentContainerFrame.width - radialStatusSize.width) / 2.0), y: contentOrigin), size: radialStatusSize))
         let checkSize: CGFloat = 130.0
         transition.updateFrame(node: self.radialCheck, frame: CGRect(origin: CGPoint(x: self.radialStatus.frame.minX + floor((self.radialStatus.frame.width - checkSize) / 2.0), y: self.radialStatus.frame.minY + floor((self.radialStatus.frame.height - checkSize) / 2.0)), size: CGSize(width: checkSize, height: checkSize)))
         transition.updateFrame(node: self.radialStatusBackground, frame: self.radialStatus.frame)
         
         transition.updateFrame(node: self.radialStatusText, frame: CGRect(origin: CGPoint(x: self.radialStatus.frame.minX + floor((self.radialStatus.frame.width - radialStatusTextSize.width) / 2.0), y: self.radialStatus.frame.minY + floor((self.radialStatus.frame.height - radialStatusTextSize.height) / 2.0)), size: radialStatusTextSize))
         
-        transition.updateFrame(node: self.progressText, frame: CGRect(origin: CGPoint(x: floor((layout.size.width - progressTextSize.width) / 2.0), y: (self.radialStatus.frame.maxY + maxProgressTextSpacing)), size: progressTextSize))
+        transition.updateFrame(node: self.progressText, frame: CGRect(origin: CGPoint(x: contentContainerFrame.minX + floor((contentContainerFrame.width - progressTextSize.width) / 2.0), y: (self.radialStatus.frame.maxY + maxProgressTextSpacing)), size: progressTextSize))
         
-        transition.updateFrame(node: self.infoText, frame: CGRect(origin: CGPoint(x: floor((layout.size.width - infoTextSize.width) / 2.0), y: (self.progressText.frame.maxY + maxProgressTextSpacing) + 10.0), size: infoTextSize))
+        transition.updateFrame(node: self.infoText, frame: CGRect(origin: CGPoint(x: contentContainerFrame.minX + floor((contentContainerFrame.width - infoTextSize.width) / 2.0), y: (self.progressText.frame.maxY + maxProgressTextSpacing) + 10.0), size: infoTextSize))
     }
     
     private func gridPresentationLayoutUpdated(_ presentationLayout: GridNodeCurrentPresentationLayout, transition: ContainedViewLayoutTransition) {
@@ -563,9 +567,9 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
             let sectionSpacing: CGFloat = 8.0
             let titleAreaHeight: CGFloat = 51.0
             
-            let width = horizontalContainerFillingSizeForLayout(layout: layout, sideInset: 10.0 + layout.safeInsets.left)
-            
-            let sideInset = floor((layout.size.width - width) / 2.0)
+            let placement = horizontalContainerFillingPlacementForLayout(layout: layout, margin: 10.0, includesSafeInsets: true)
+            let width = placement.width
+            let sideInset = placement.left
             
             let maximumContentHeight = layout.size.height - insets.top - bottomInset - buttonHeight - sectionSpacing
             let contentFrame = CGRect(origin: CGPoint(x: sideInset, y: insets.top), size: CGSize(width: width, height: maximumContentHeight))
@@ -623,7 +627,7 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
             }
             if let resource = self.uploadedStickerResources[item.stickerItem.uuid] {
                 if let localResource = item.stickerItem.resource {
-                    self.context.account.postbox.mediaBox.copyResourceData(from: localResource._asResource().id, to: resource._asResource().id)
+                    self.context.engine.resources.copyResourceData(from: localResource.id, to: resource.id)
                 }
                 stickers.append(ImportSticker(resource: .standalone(resource: resource._asResource()), emojis: item.stickerItem.emojis, dimensions: dimensions, duration: nil, mimeType: item.stickerItem.mimeType, keywords: item.stickerItem.keywords))
             } else if let resource = item.stickerItem.resource {
@@ -637,7 +641,7 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
                 dimensions = PixelDimensions(image.size)
             }
             let resource = LocalFileMediaResource(fileId: Int64.random(in: Int64.min ... Int64.max))
-            self.context.account.postbox.mediaBox.storeResourceData(resource.id, data: thumbnail.data)
+            self.context.engine.resources.storeResourceData(id: EngineMediaResource.Id(resource.id), data: thumbnail.data)
             thumbnailSticker = ImportSticker(resource: .standalone(resource: resource), emojis: [], dimensions: dimensions, duration: nil, mimeType: thumbnail.mimeType, keywords: thumbnail.keywords)
         }
         
@@ -796,7 +800,7 @@ final class ImportStickerPackControllerNode: ViewControllerTracingNode, ASScroll
                 item.resource = resource
             } else {
                 let resource = LocalFileMediaResource(fileId: Int64.random(in: Int64.min ... Int64.max))
-                self.context.account.postbox.mediaBox.storeResourceData(resource.id, data: item.data)
+                self.context.engine.resources.storeResourceData(id: EngineMediaResource.Id(resource.id), data: item.data)
                 item.resource = EngineMediaResource(resource)
                 self.stickerResources[item.uuid] = EngineMediaResource(resource)
             }

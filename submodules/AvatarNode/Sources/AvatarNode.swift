@@ -31,6 +31,10 @@ public func avatarPlaceholderFont(size: CGFloat) -> UIFont {
     return Font.with(size: size, design: .round, weight: .bold)
 }
 
+public func generateDeletedAccountAvatarImage(size: CGSize) -> UIImage? {
+    return generateAvatarImage(size: size, icon: deletedIcon, iconScale: size.width / 60.0, color: .blue, customColors: AvatarNode.grayscaleColors)
+}
+
 public enum AvatarNodeClipStyle {
     case none
     case round
@@ -533,7 +537,7 @@ public final class AvatarNode: ASDisplayNode {
             self.imageNode.isHidden = true
         }
         
-        public func playRepostAnimation() {
+        public func playRepostAnimation(animated: Bool = true) {
             let animationNode = AnimationNode(animation: "anim_storyrepost", colors: [:], scale: 0.11)
             animationNode.isUserInteractionEnabled = false
             self.addSubnode(animationNode)
@@ -541,9 +545,13 @@ public final class AvatarNode: ASDisplayNode {
             if var size = animationNode.preferredSize() {
                 size = CGSize(width: ceil(size.width), height: ceil(size.height))
                 animationNode.frame = CGRect(x: floor((self.bounds.width - size.width) / 2.0), y: floor((self.bounds.height - size.height) / 2.0) + 1.0, width: size.width, height: size.height)
-                Queue.mainQueue().after(0.15, {
-                    animationNode.play()
-                })
+                if animated {
+                    Queue.mainQueue().after(0.15, {
+                        animationNode.play()
+                    })
+                } else {
+                    animationNode.seekToEnd()
+                }
             }
         }
         
@@ -561,7 +569,7 @@ public final class AvatarNode: ASDisplayNode {
             if var size = animationNode.preferredSize() {
                 size = CGSize(width: ceil(size.width), height: ceil(size.height))
                 animationNode.frame = CGRect(x: floor((self.bounds.width - size.width) / 2.0) + 1.0, y: floor((self.bounds.height - size.height) / 2.0), width: size.width, height: size.height)
-                Queue.mainQueue().after(0.15, {
+                Queue.mainQueue().after(0.15, { [animationBackgroundNode, animationNode] in
                     animationNode.play()
                     animationNode.completion = { [weak animationNode, weak animationBackgroundNode] in
                         animationNode?.removeFromSupernode()
@@ -643,7 +651,7 @@ public final class AvatarNode: ASDisplayNode {
                 
                 let parameters: AvatarNodeParameters
                 
-                if let peer = peer, let signal = peerAvatarImage(postbox: postbox, network: network, peerReference: PeerReference(peer._asPeer()), authorOfMessage: authorOfMessage, representation: representation, displayDimensions: displayDimensions, clipStyle: clipStyle, emptyColor: emptyColor, synchronousLoad: synchronousLoad, provideUnrounded: storeUnrounded, cutoutRect: cutoutRect) {
+                if let peer = peer, let signal = peerAvatarImage(postbox: postbox, peerReference: PeerReference(peer), authorOfMessage: authorOfMessage, representation: representation, displayDimensions: displayDimensions, clipStyle: clipStyle, emptyColor: emptyColor, synchronousLoad: synchronousLoad, provideUnrounded: storeUnrounded, cutoutRect: cutoutRect) {
                     self.contents = nil
                     self.displaySuspended = true
                     self.imageReady.set(self.imageNode.contentReady)
@@ -763,7 +771,7 @@ public final class AvatarNode: ASDisplayNode {
                 self.imageNode.view.mask = nil
             }
             
-            if let imageCache = genericContext.imageCache as? DirectMediaImageCache, let peer, let smallProfileImage = peer.smallProfileImage, let peerReference = PeerReference(peer._asPeer()) {
+            if let imageCache = genericContext.imageCache as? DirectMediaImageCache, let peer, let smallProfileImage = peer.smallProfileImage, let peerReference = PeerReference(peer) {
                 if let result = imageCache.getAvatarImage(peer: peerReference, resource: MediaResourceReference.avatar(peer: peerReference, resource: smallProfileImage.resource), immediateThumbnail: peer.profileImageRepresentations.first?.immediateThumbnailData, size: Int(displayDimensions.width * UIScreenScale), synchronous: synchronousLoad) {
                     if let image = result.image {
                         self.imageNode.contents = image.cgImage
@@ -852,7 +860,7 @@ public final class AvatarNode: ASDisplayNode {
                 
                 let account = account ?? genericContext.account
                 
-                if let peer = peer, let signal = peerAvatarImage(account: account, peerReference: PeerReference(peer._asPeer()), authorOfMessage: authorOfMessage, representation: representation, displayDimensions: displayDimensions, clipStyle: clipStyle, emptyColor: emptyColor, synchronousLoad: synchronousLoad, provideUnrounded: storeUnrounded, cutoutRect: cutoutRect) {
+                if let peer = peer, let signal = peerAvatarImage(account: account, peerReference: PeerReference(peer), authorOfMessage: authorOfMessage, representation: representation, displayDimensions: displayDimensions, clipStyle: clipStyle, emptyColor: emptyColor, synchronousLoad: synchronousLoad, provideUnrounded: storeUnrounded, cutoutRect: cutoutRect) {
                     self.contents = nil
                     self.displaySuspended = true
                     self.imageReady.set(self.imageNode.contentReady)
@@ -1273,8 +1281,8 @@ public final class AvatarNode: ASDisplayNode {
         self.contentNode.playArchiveAnimation()
     }
     
-    public func playRepostAnimation() {
-        self.contentNode.playRepostAnimation()
+    public func playRepostAnimation(animated: Bool = true) {
+        self.contentNode.playRepostAnimation(animated: animated)
     }
     
     public func playCameraAnimation() {

@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import AccountContext
 import TelegramPresentationData
@@ -26,7 +26,7 @@ import ComponentFlow
 import ReactionSelectionNode
 import MultilineTextComponent
 
-private func attributedServiceMessageString(theme: ChatPresentationThemeData, strings: PresentationStrings, nameDisplayOrder: PresentationPersonNameOrder, dateTimeFormat: PresentationDateTimeFormat, message: Message, messageCount: Int? = nil, accountPeerId: PeerId, forForumOverview: Bool) -> NSAttributedString? {
+private func attributedServiceMessageString(theme: ChatPresentationThemeData, strings: PresentationStrings, nameDisplayOrder: PresentationPersonNameOrder, dateTimeFormat: PresentationDateTimeFormat, message: EngineRawMessage, messageCount: Int? = nil, accountPeerId: EnginePeer.Id, forForumOverview: Bool) -> NSAttributedString? {
     return universalServiceMessageString(presentationData: (theme.theme, theme.wallpaper), strings: strings, nameDisplayOrder: nameDisplayOrder, dateTimeFormat: dateTimeFormat, message: EngineMessage(message), messageCount: messageCount, accountPeerId: accountPeerId, forChatList: false, forForumOverview: forForumOverview)
 }
 
@@ -79,7 +79,7 @@ public class ChatMessageActionBubbleContentNode: ChatMessageBubbleContentNode {
         }
     }
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.labelNode = TextNodeWithEntities()
         self.labelNode.textNode.isUserInteractionEnabled = false
         self.labelNode.textNode.displaysAsynchronously = false
@@ -91,7 +91,7 @@ public class ChatMessageActionBubbleContentNode: ChatMessageBubbleContentNode {
         self.mediaBackgroundNode.displaysAsynchronously = false
         self.mediaBackgroundNode.displayWithoutProcessing = true
         
-        super.init()
+        super.init(lottieSettings: lottieSettings)
 
         self.addSubnode(self.labelNode.textNode)
     }
@@ -108,7 +108,7 @@ public class ChatMessageActionBubbleContentNode: ChatMessageBubbleContentNode {
         super.didLoad()
     }
     
-    override public func transitionNode(messageId: MessageId, media: Media, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    override public func transitionNode(messageId: EngineMessage.Id, media: EngineRawMedia, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         if let imageNode = self.imageNode, self.item?.message.id == messageId {
             return (imageNode, imageNode.bounds, { [weak self] in
                 guard let strongSelf = self, let imageNode = strongSelf.imageNode else {
@@ -137,9 +137,9 @@ public class ChatMessageActionBubbleContentNode: ChatMessageBubbleContentNode {
         }
     }
     
-    override public func updateHiddenMedia(_ media: [Media]?) -> Bool {
+    override public func updateHiddenMedia(_ media: [EngineRawMedia]?) -> Bool {
         var mediaHidden = false
-        var currentMedia: Media?
+        var currentMedia: EngineRawMedia?
         if let item = item {
             mediaLoop: for media in item.message.media {
                 if let media = media as? TelegramMediaAction {
@@ -180,7 +180,7 @@ public class ChatMessageActionBubbleContentNode: ChatMessageBubbleContentNode {
 
         let cachedMaskBackgroundImage = self.cachedMaskBackgroundImage
         
-        return { item, layoutConstants, _, _, _, _ in
+        return { [weak self] item, layoutConstants, _, _, _, _ in
             var isDetached = false
             if let _ = item.message.paidStarsAttribute {
                 isDetached = true
@@ -552,7 +552,7 @@ public class ChatMessageActionBubbleContentNode: ChatMessageBubbleContentNode {
                             strongSelf.mediaBackgroundNode.image = backgroundImage
                             
                             if let image = image, let video = image.videoRepresentations.last, let id = image.id?.id {
-                                let videoFileReference = FileMediaReference.message(message: MessageReference(item.message), media: TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.LocalFile, id: 0), partialReference: nil, resource: video.resource, previewRepresentations: image.representations, videoThumbnails: [], immediateThumbnailData: image.immediateThumbnailData, mimeType: "video/mp4", size: nil, attributes: [.Animated, .Video(duration: 0, size: video.dimensions, flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)], alternativeRepresentations: []))
+                                let videoFileReference = FileMediaReference.message(message: MessageReference(item.message), media: TelegramMediaFile(fileId: EngineMedia.Id(namespace: Namespaces.Media.LocalFile, id: 0), partialReference: nil, resource: video.resource, previewRepresentations: image.representations, videoThumbnails: [], immediateThumbnailData: image.immediateThumbnailData, mimeType: "video/mp4", size: nil, attributes: [.Animated, .Video(duration: 0, size: video.dimensions, flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)], alternativeRepresentations: []))
                                 let videoContent = NativeVideoContent(id: .profileVideo(id, "action"), userLocation: .peer(item.message.id.peerId), fileReference: videoFileReference, streamVideo: isMediaStreamable(resource: video.resource) ? .conservative : .none, loopVideo: true, enableSound: false, fetchAutomatically: true, onlyFullSizeThumbnail: false, useLargeThumbnail: true, autoFetchFullSizeThumbnail: true, continuePlayingWithoutSoundOnLostAudioSession: false, placeholderColor: .clear, storeAfterDownload: nil)
                                 if videoContent.id != strongSelf.videoContent?.id {
                                     let mediaManager = item.context.sharedContext.mediaManager
@@ -872,26 +872,8 @@ public class ChatMessageActionBubbleContentNode: ChatMessageBubbleContentNode {
     override public func updateAbsoluteRect(_ rect: CGRect, within containerSize: CGSize) {
         self.absoluteRect = (rect, containerSize)
 
-        if let backgroundNode = self.backgroundNode {
-            var backgroundFrame = backgroundNode.frame
-            backgroundFrame.origin.x += rect.minX
-            backgroundFrame.origin.y += rect.minY
-            backgroundNode.update(rect: backgroundFrame, within: containerSize, transition: .immediate)
-        }
     }
 
-    override public func applyAbsoluteOffset(value: CGPoint, animationCurve: ContainedViewLayoutTransitionCurve, duration: Double) {
-        if let backgroundNode = self.backgroundNode {
-            backgroundNode.offset(value: value, animationCurve: animationCurve, duration: duration)
-        }
-    }
-
-    override public func applyAbsoluteOffsetSpring(value: CGFloat, duration: Double, damping: CGFloat) {
-        if let backgroundNode = self.backgroundNode {
-            backgroundNode.offsetSpring(value: value, duration: duration, damping: damping)
-        }
-    }
-    
     override public func updateTouchesAtPoint(_ point: CGPoint?) {
         if let item = self.item {
             var rects: [(CGRect, CGRect)]?

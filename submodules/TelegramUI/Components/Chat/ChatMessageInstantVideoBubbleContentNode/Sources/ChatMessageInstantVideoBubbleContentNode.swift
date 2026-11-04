@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramUIPreferences
 import ComponentFlow
@@ -80,11 +80,11 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
         return isVisible
     }
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.interactiveFileNode = ChatMessageInteractiveFileNode()
         self.interactiveVideoNode = ChatMessageInteractiveInstantVideoNode()
                 
-        super.init()
+        super.init(lottieSettings: lottieSettings)
         
         self.maskForeground.backgroundColor = UIColor.white.cgColor
         self.maskForeground.masksToBounds = true
@@ -94,7 +94,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
                 
         self.interactiveVideoNode.requestUpdateLayout = { [weak self] _ in
             if let strongSelf = self, let item = strongSelf.item {
-                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false)
+                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false, nil)
             }
         }
         self.interactiveVideoNode.updateTranscriptionExpanded = { [weak self] state in
@@ -102,13 +102,13 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
                 let previous = strongSelf.audioTranscriptionState
                 strongSelf.audioTranscriptionState = state
                 strongSelf.interactiveFileNode.audioTranscriptionState = state
-                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, state != .inProgress && previous != state)
+                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, state != .inProgress && previous != state, nil)
             }
         }
         self.interactiveVideoNode.updateTranscriptionText = { [weak self] text in
             if let strongSelf = self, let item = strongSelf.item {
                 strongSelf.interactiveFileNode.forcedAudioTranscriptionText = text
-                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false)
+                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false, nil)
             }
         }
         self.interactiveFileNode.updateTranscriptionExpanded = { [weak self] state in
@@ -116,7 +116,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
                 let previous = strongSelf.audioTranscriptionState
                 strongSelf.audioTranscriptionState = state
                 strongSelf.interactiveVideoNode.audioTranscriptionState = state
-                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, previous != state)
+                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, previous != state, nil)
             }
         }
         
@@ -134,7 +134,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
         
         self.interactiveFileNode.requestUpdateLayout = { [weak self] _ in
             if let strongSelf = self, let item = strongSelf.item {
-                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false)
+                let _ = item.controllerInteraction.requestMessageUpdate(item.message.id, false, nil)
             }
         }
         
@@ -184,7 +184,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
         let audioTranscriptionState = self.audioTranscriptionState
         let didSetupFileNode = self.item != nil
         
-        return { item, layoutConstants, preparePosition, selection, constrainedSize, avatarInset in
+        return { [weak self] item, layoutConstants, preparePosition, selection, constrainedSize, avatarInset in
             var selectedFile: TelegramMediaFile?
             for media in item.message.media {
                 if let telegramFile = media as? TelegramMediaFile {
@@ -222,7 +222,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
                 }
             }
             
-            let automaticDownload = shouldDownloadMediaAutomatically(settings: item.controllerInteraction.automaticMediaDownloadSettings, peerType: item.associatedData.automaticDownloadPeerType, networkType: item.associatedData.automaticDownloadNetworkType, authorPeerId: item.message.author?.id, contactsPeerIds: item.associatedData.contactsPeerIds, media: selectedFile!)
+            let automaticDownload = shouldDownloadMediaAutomatically(settings: item.controllerInteraction.automaticMediaDownloadSettings, peerType: item.associatedData.automaticDownloadPeerType, networkType: item.associatedData.automaticDownloadNetworkType, authorPeerId: item.message.author?.id, contactsPeerIds: item.associatedData.contactsPeerIds, media: .file(selectedFile!))
             
             let (initialWidth, refineLayout) = interactiveFileLayout(ChatMessageInteractiveFileNode.Arguments(
                 context: item.context,
@@ -281,7 +281,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
             
             let videoFrameWidth = videoFrame.width + 2.0
             
-            return (contentProperties, nil, initialWidth, { constrainedSize, position in
+            return (contentProperties, nil, initialWidth, { [weak self] constrainedSize, position in
                 var refinedWidth = videoFrameWidth
                 var finishLayout: ((CGFloat) -> (CGSize, (Bool, ListViewItemUpdateAnimation, ListViewItemApply?) -> Void))?
                 
@@ -294,7 +294,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
                     refinedWidth = videoFrameWidth
                 }
                 
-                return (refinedWidth, { boundingWidth in
+                return (refinedWidth, { [weak self] boundingWidth in
                     var finalSize: CGSize
                     var finalFileSize: CGSize?
                     var finalFileApply: ((Bool, ListViewItemUpdateAnimation, ListViewItemApply?) -> Void)?
@@ -393,11 +393,11 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
         }
     }
     
-    override public func transitionNode(messageId: MessageId, media: Media, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    override public func transitionNode(messageId: EngineMessage.Id, media: EngineRawMedia, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         return nil
     }
     
-    override public func updateHiddenMedia(_ media: [Media]?) -> Bool {
+    override public func updateHiddenMedia(_ media: [EngineRawMedia]?) -> Bool {
         return false
     }
     
@@ -465,7 +465,7 @@ public class ChatMessageInstantVideoBubbleContentNode: ChatMessageBubbleContentN
         return nil
     }
     
-    override public func targetForStoryTransition(id: StoryId) -> UIView? {
+    override public func targetForStoryTransition(id: EngineStoryId) -> UIView? {
         return self.interactiveVideoNode.targetForStoryTransition(id: id)
     }
     

@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -161,8 +162,8 @@ private enum ContactListSearchEntry: Comparable, Identifiable {
                 let peerItem: ContactsPeerItemPeer
                 switch peer {
                     case let .peer(peer, _, _):
-                        peerItem = .peer(peer: EnginePeer(peer), chatPeer: EnginePeer(peer))
-                        nativePeer = EnginePeer(peer)
+                        peerItem = .peer(peer: peer, chatPeer: peer)
+                        nativePeer = peer
                     case let .deviceContact(stableId, contact):
                         peerItem = .deviceContact(stableId: stableId, contact: contact)
                 }
@@ -178,7 +179,7 @@ private enum ContactListSearchEntry: Comparable, Identifiable {
                     openPeer(peer, .generic)
                 }, disabledAction: { _ in
                     if case let .peer(peer, _, _) = peer {
-                        openDisabledPeer(EnginePeer(peer), requiresPremiumForMessaging ? .premiumRequired : .generic)
+                        openDisabledPeer(peer, requiresPremiumForMessaging ? .premiumRequired : .generic)
                     }
                 }, contextAction: contextAction.flatMap { contextAction in
                     return nativePeer.flatMap { nativePeer in
@@ -299,7 +300,7 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
         self.backgroundNode.backgroundColor = self.presentationData.theme.list.plainBackgroundColor
         self.backgroundNode.alpha = 0.0
         
-        self.listNode = ListView()
+        self.listNode = ListViewImpl()
         self.listNode.backgroundColor = self.presentationData.theme.list.plainBackgroundColor
         self.listNode.alpha = 0.0
         
@@ -321,7 +322,7 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
         self.emptyResultsTextNode.alpha = 0.0
         self.emptyResultsTextNode.isUserInteractionEnabled = false
         
-        self.emptyResultsAnimationNode = DefaultAnimatedStickerNodeImpl()
+        self.emptyResultsAnimationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: self.context.lottieRenderingSettings)
         self.emptyResultsAnimationNode.alpha = 0.0
         self.emptyResultsAnimationNode.isUserInteractionEnabled = false
         
@@ -404,12 +405,12 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
                         
                         if let foundRemoteContacts = foundPeers.foundRemoteContacts {
                             for peer in foundRemoteContacts.0 {
-                                if let user = peer.peer as? TelegramUser, user.flags.contains(.requirePremium) {
+                                if case let .user(user) = peer.peer, user.flags.contains(.requirePremium) {
                                     result.insert(user.id)
                                 }
                             }
                             for peer in foundRemoteContacts.1 {
-                                if let user = peer.peer as? TelegramUser, user.flags.contains(.requirePremium) {
+                                if case let .user(user) = peer.peer, user.flags.contains(.requirePremium) {
                                     result.insert(user.id)
                                 }
                             }
@@ -485,13 +486,13 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
                         var enabled = true
                         var requiresPremiumForMessaging = false
                         if onlyWriteable {
-                            enabled = canSendMessagesToPeer(peer._asPeer())
+                            enabled = canSendMessagesToPeer(peer)
                             if let value = peerRequiresPremiumForMessaging[peer.id], value {
                                 requiresPremiumForMessaging = true
                                 enabled = false
                             }
                         }
-                        entries.append(.peer(index: index, theme: themeAndStrings.0, strings: themeAndStrings.1, peer: .peer(peer: peer._asPeer(), isGlobal: false, participantCount: nil), presence: localPeersAndPresences.1[peer.id], group: .contacts, enabled: enabled, requiresPremiumForMessaging: requiresPremiumForMessaging, displayCallIcons: displayCallIcons))
+                        entries.append(.peer(index: index, theme: themeAndStrings.0, strings: themeAndStrings.1, peer: .peer(peer: peer, isGlobal: false, participantCount: nil), presence: localPeersAndPresences.1[peer.id], group: .contacts, enabled: enabled, requiresPremiumForMessaging: requiresPremiumForMessaging, displayCallIcons: displayCallIcons))
                         if searchDeviceContacts, case let .user(user) = peer, let phone = user.phone {
                             existingNormalizedPhoneNumbers.insert(DeviceContactNormalizedPhoneNumber(rawValue: formatPhoneNumber(phone)))
                         }
@@ -499,14 +500,13 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
                     }
                     if let remotePeers = remotePeers {
                         for peer in remotePeers.0 {
-                            if !(peer.peer is TelegramUser) {
-                                if let channel = peer.peer as? TelegramChannel, case .broadcast = channel.info, categories.contains(.channels) {
-                                } else {
-                                    continue
-                                }
+                            if case .user = peer.peer {
+                            } else if case let .channel(channel) = peer.peer, case .broadcast = channel.info, categories.contains(.channels) {
+                            } else {
+                                continue
                             }
 
-                            if let user = peer.peer as? TelegramUser {
+                            if case let .user(user) = peer.peer {
                                 if requirePhoneNumbers {
                                     let phone = user.phone ?? ""
                                     if phone.isEmpty {
@@ -517,12 +517,12 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
                                     if user.botInfo != nil {
                                         continue
                                     }
-                                } 
+                                }
                             }
-                            
+
                             if !existingPeerIds.contains(peer.peer.id) {
                                 existingPeerIds.insert(peer.peer.id)
-                                
+
                                 var enabled = true
                                 var requiresPremiumForMessaging = false
                                 if onlyWriteable {
@@ -532,32 +532,31 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
                                         enabled = false
                                     }
                                 }
-                                
+
                                 entries.append(.peer(index: index, theme: themeAndStrings.0, strings: themeAndStrings.1, peer: .peer(peer: peer.peer, isGlobal: true, participantCount: peer.subscribers), presence: nil, group: .global, enabled: enabled, requiresPremiumForMessaging: requiresPremiumForMessaging, displayCallIcons: displayCallIcons))
-                                if searchDeviceContacts, let user = peer.peer as? TelegramUser, let phone = user.phone {
+                                if searchDeviceContacts, case let .user(user) = peer.peer, let phone = user.phone {
                                     existingNormalizedPhoneNumbers.insert(DeviceContactNormalizedPhoneNumber(rawValue: formatPhoneNumber(phone)))
                                 }
                                 index += 1
                             }
                         }
                         for peer in remotePeers.1 {
-                            if !(peer.peer is TelegramUser) {
-                                if let channel = peer.peer as? TelegramChannel, case .broadcast = channel.info, categories.contains(.channels) {
-                                } else {
-                                    continue
-                                }
+                            if case .user = peer.peer {
+                            } else if case let .channel(channel) = peer.peer, case .broadcast = channel.info, categories.contains(.channels) {
+                            } else {
+                                continue
                             }
-                            
-                            if let user = peer.peer as? TelegramUser, requirePhoneNumbers {
+
+                            if case let .user(user) = peer.peer, requirePhoneNumbers {
                                 let phone = user.phone ?? ""
                                 if phone.isEmpty {
                                     continue
                                 }
                             }
-                            
+
                             if !existingPeerIds.contains(peer.peer.id) {
                                 existingPeerIds.insert(peer.peer.id)
-                                
+
                                 var enabled = true
                                 var requiresPremiumForMessaging = false
                                 if onlyWriteable {
@@ -567,9 +566,9 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
                                         enabled = false
                                     }
                                 }
-                                
+
                                 entries.append(.peer(index: index, theme: themeAndStrings.0, strings: themeAndStrings.1, peer: .peer(peer: peer.peer, isGlobal: true, participantCount: peer.subscribers), presence: nil, group: .global, enabled: enabled, requiresPremiumForMessaging: requiresPremiumForMessaging, displayCallIcons: displayCallIcons))
-                                if searchDeviceContacts, let user = peer.peer as? TelegramUser, let phone = user.phone {
+                                if searchDeviceContacts, case let .user(user) = peer.peer, let phone = user.phone {
                                     existingNormalizedPhoneNumbers.insert(DeviceContactNormalizedPhoneNumber(rawValue: formatPhoneNumber(phone)))
                                 }
                                 index += 1
@@ -712,12 +711,14 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
         
         let size = layout.size
         let sideInset = layout.safeInsets.left
+        // Each side keeps its own safe inset (beside iPhone Duo's side strip only one side has one).
+        let bandWidth = size.width - layout.safeInsets.left - layout.safeInsets.right
         let visibleHeight = layout.size.height
         let bottomInset = layout.insets(options: .input).bottom
             
         let padding: CGFloat = 16.0
-        let emptyTitleSize = self.emptyResultsTitleNode.updateLayout(CGSize(width: size.width - sideInset * 2.0 - padding * 2.0, height: CGFloat.greatestFiniteMagnitude))
-        let emptyTextSize = self.emptyResultsTextNode.updateLayout(CGSize(width: size.width - sideInset * 2.0 - padding * 2.0, height: CGFloat.greatestFiniteMagnitude))
+        let emptyTitleSize = self.emptyResultsTitleNode.updateLayout(CGSize(width: bandWidth - padding * 2.0, height: CGFloat.greatestFiniteMagnitude))
+        let emptyTextSize = self.emptyResultsTextNode.updateLayout(CGSize(width: bandWidth - padding * 2.0, height: CGFloat.greatestFiniteMagnitude))
         
         let emptyAnimationHeight = self.emptyResultsAnimationSize.height
         let emptyAnimationSpacing: CGFloat = 8.0
@@ -726,9 +727,9 @@ public final class ContactsSearchContainerNode: SearchDisplayControllerContentNo
         let emptyAnimationY = topInset + floorToScreenPixels((visibleHeight - topInset - bottomInset - emptyTotalHeight) / 2.0)
         
         let textTransition = ContainedViewLayoutTransition.immediate
-        textTransition.updateFrame(node: self.emptyResultsAnimationNode, frame: CGRect(origin: CGPoint(x: sideInset + padding + (size.width - sideInset * 2.0 - padding * 2.0 - self.emptyResultsAnimationSize.width) / 2.0, y: emptyAnimationY), size: self.emptyResultsAnimationSize))
-        textTransition.updateFrame(node: self.emptyResultsTitleNode, frame: CGRect(origin: CGPoint(x: sideInset + padding + (size.width - sideInset * 2.0 - padding * 2.0 - emptyTitleSize.width) / 2.0, y: emptyAnimationY + emptyAnimationHeight + emptyAnimationSpacing), size: emptyTitleSize))
-        textTransition.updateFrame(node: self.emptyResultsTextNode, frame: CGRect(origin: CGPoint(x: sideInset + padding + (size.width - sideInset * 2.0 - padding * 2.0 - emptyTextSize.width) / 2.0, y: emptyAnimationY + emptyAnimationHeight + emptyAnimationSpacing + emptyTitleSize.height + emptyTextSpacing), size: emptyTextSize))
+        textTransition.updateFrame(node: self.emptyResultsAnimationNode, frame: CGRect(origin: CGPoint(x: sideInset + padding + (bandWidth - padding * 2.0 - self.emptyResultsAnimationSize.width) / 2.0, y: emptyAnimationY), size: self.emptyResultsAnimationSize))
+        textTransition.updateFrame(node: self.emptyResultsTitleNode, frame: CGRect(origin: CGPoint(x: sideInset + padding + (bandWidth - padding * 2.0 - emptyTitleSize.width) / 2.0, y: emptyAnimationY + emptyAnimationHeight + emptyAnimationSpacing), size: emptyTitleSize))
+        textTransition.updateFrame(node: self.emptyResultsTextNode, frame: CGRect(origin: CGPoint(x: sideInset + padding + (bandWidth - padding * 2.0 - emptyTextSize.width) / 2.0, y: emptyAnimationY + emptyAnimationHeight + emptyAnimationSpacing + emptyTitleSize.height + emptyTextSpacing), size: emptyTextSize))
         self.emptyResultsAnimationNode.updateLayout(size: self.emptyResultsAnimationSize)
         
         if self.glass && !self.externalSearchBar {

@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import SwiftSignalKit
 import TelegramPresentationData
@@ -10,9 +9,9 @@ import TelegramUIPreferences
 import AccountContext
 import AlertUI
 import PresentationDataUtils
-import ShareController
 import AvatarNode
 import UndoUI
+import ShareController
 
 public final class VoiceChatJoinScreen: ViewController {
     private var controllerNode: Node {
@@ -22,7 +21,7 @@ public final class VoiceChatJoinScreen: ViewController {
     private var animatedIn = false
     
     private let context: AccountContext
-    private let peerId: PeerId
+    private let peerId: EnginePeer.Id
     private let invite: String?
     private var join: (CachedChannelData.ActiveCall) -> Void
     
@@ -30,7 +29,7 @@ public final class VoiceChatJoinScreen: ViewController {
     
     private let disposable = MetaDisposable()
     
-    public init(context: AccountContext, peerId: PeerId, invite: String?, join: @escaping (CachedChannelData.ActiveCall) -> Void) {
+    public init(context: AccountContext, peerId: EnginePeer.Id, invite: String?, join: @escaping (CachedChannelData.ActiveCall) -> Void) {
         self.context = context
         self.peerId = peerId
         self.invite = invite
@@ -132,14 +131,14 @@ public final class VoiceChatJoinScreen: ViewController {
                         return
                     }
                     
-                    let defaultJoinAsPeerId: PeerId? = callJoinAsPeerId
+                    let defaultJoinAsPeerId: EnginePeer.Id? = callJoinAsPeerId
                     
                     let activeCall = CachedChannelData.ActiveCall(id: call.info.id, accessHash: call.info.accessHash, title: call.info.title, scheduleTimestamp: call.info.scheduleTimestamp, subscribedToScheduled: call.info.subscribedToScheduled, isStream: call.info.isStream)
                     if availablePeers.count > 0 && defaultJoinAsPeerId == nil {
                         strongSelf.dismiss()
                         strongSelf.join(activeCall)
                     } else {
-                        strongSelf.controllerNode.setPeer(call: activeCall, peer: peer._asPeer(), title: call.info.title, memberCount: call.info.participantCount, isStream: call.info.isStream)
+                        strongSelf.controllerNode.setPeer(call: activeCall, peer: peer, title: call.info.title, memberCount: call.info.participantCount, isStream: call.info.isStream)
                     }
                 } else {
                     let presentationData = context.sharedContext.currentPresentationData.with { $0 }
@@ -242,6 +241,7 @@ public final class VoiceChatJoinScreen: ViewController {
             self.wrappingScrollNode.view.alwaysBounceVertical = true
             self.wrappingScrollNode.view.delaysContentTouches = false
             self.wrappingScrollNode.view.canCancelContentTouches = true
+            self.wrappingScrollNode.view.scrollsToTop = false
             
             self.dimNode = ASDisplayNode()
             self.dimNode.backgroundColor = UIColor(white: 0.0, alpha: 0.5)
@@ -404,8 +404,7 @@ public final class VoiceChatJoinScreen: ViewController {
             
             let maximumContentHeight = layout.size.height - insets.top - max(bottomInset + buttonHeight, insets.bottom) - sectionSpacing
             
-            let width = min(layout.size.width, layout.size.height) - 20.0
-            let sideInset = floor((layout.size.width - width) / 2.0)
+            let (sideInset, width) = voiceChatJoinPreviewPlacement(layout: layout)
             
             let contentContainerFrame = CGRect(origin: CGPoint(x: sideInset, y: insets.top), size: CGSize(width: width, height: maximumContentHeight))
             let contentFrame = contentContainerFrame.insetBy(dx: 0.0, dy: 0.0)
@@ -450,9 +449,7 @@ public final class VoiceChatJoinScreen: ViewController {
                 let buttonHeight: CGFloat = 57.0
                 let sectionSpacing: CGFloat = 8.0
                 
-                let width = min(layout.size.width, layout.size.height) - 20.0
-                
-                let sideInset = floor((layout.size.width - width) / 2.0)
+                let (sideInset, width) = voiceChatJoinPreviewPlacement(layout: layout)
                 
                 let maximumContentHeight = layout.size.height - insets.top - max(bottomInset + buttonHeight, insets.bottom) - sectionSpacing
                 let contentFrame = CGRect(origin: CGPoint(x: sideInset, y: insets.top), size: CGSize(width: width, height: maximumContentHeight))
@@ -622,7 +619,7 @@ public final class VoiceChatJoinScreen: ViewController {
             }))
         }
         
-        func setPeer(call: CachedChannelData.ActiveCall, peer: Peer, title: String?, memberCount: Int, isStream: Bool) {
+        func setPeer(call: CachedChannelData.ActiveCall, peer: EnginePeer, title: String?, memberCount: Int, isStream: Bool) {
             self.call = call
             
             let transition = ContainedViewLayoutTransition.animated(duration: 0.22, curve: .easeInOut)
@@ -647,7 +644,7 @@ final class VoiceChatPreviewContentNode: ASDisplayNode, ShareContentContainerNod
     private let titleNode: ImmediateTextNode
     private let countNode: ImmediateTextNode
     
-    init(context: AccountContext, peer: Peer, title: String?, memberCount: Int, isStream: Bool, theme: PresentationTheme, strings: PresentationStrings, displayOrder: PresentationPersonNameOrder) {
+    init(context: AccountContext, peer: EnginePeer, title: String?, memberCount: Int, isStream: Bool, theme: PresentationTheme, strings: PresentationStrings, displayOrder: PresentationPersonNameOrder) {
         self.avatarNode = AvatarNode(font: avatarFont)
         self.titleNode = ImmediateTextNode()
         self.titleNode.maximumNumberOfLines = 4
@@ -659,10 +656,10 @@ final class VoiceChatPreviewContentNode: ASDisplayNode, ShareContentContainerNod
         super.init()
         
         self.addSubnode(self.avatarNode)
-        self.avatarNode.setPeer(context: context, theme: theme, peer: EnginePeer(peer), emptyColor: theme.list.mediaPlaceholderColor)
+        self.avatarNode.setPeer(context: context, theme: theme, peer: peer, emptyColor: theme.list.mediaPlaceholderColor)
         
         self.addSubnode(self.titleNode)
-        self.titleNode.attributedText = NSAttributedString(string: title ?? EnginePeer(peer).displayTitle(strings: strings, displayOrder: displayOrder), font: Font.semibold(16.0), textColor: theme.actionSheet.primaryTextColor)
+        self.titleNode.attributedText = NSAttributedString(string: title ?? peer.displayTitle(strings: strings, displayOrder: displayOrder), font: Font.semibold(16.0), textColor: theme.actionSheet.primaryTextColor)
         
         self.addSubnode(self.countNode)
 
@@ -682,7 +679,7 @@ final class VoiceChatPreviewContentNode: ASDisplayNode, ShareContentContainerNod
     func deactivate() {
     }
     
-    func setEnsurePeerVisibleOnLayout(_ peerId: PeerId?) {
+    func setEnsurePeerVisibleOnLayout(_ peerId: EnginePeer.Id?) {
     }
     
     func setDidBeginDragging(_ f: (() -> Void)?) {
@@ -721,4 +718,20 @@ final class VoiceChatPreviewContentNode: ASDisplayNode, ShareContentContainerNod
     
     func updateSelectedPeers(animated: Bool) {
     }
+}
+
+/// The preview's left edge and width: `min(width, height) - 20` centered on the screen, or, beside a side strip (iPhone
+/// Duo), no wider than the band at the bottom edge less 10pt a side and centered in it. Equal side insets keep the old
+/// placement.
+private func voiceChatJoinPreviewPlacement(layout: ContainerViewLayout) -> (CGFloat, CGFloat) {
+    var width = min(layout.size.width, layout.size.height) - 20.0
+    if layout.safeInsets.left != layout.safeInsets.right {
+        // The preview and its cancel button are anchored at the bottom: they span iPhone Duo's side strip and keep clear
+        // only of a corner block at the bottom.
+        let bottomInsets = layout.bottomEdgeSideInsets()
+        let bandWidth = layout.size.width - bottomInsets.left - bottomInsets.right
+        width = min(width, bandWidth - 20.0)
+        return (bottomInsets.left + floor((bandWidth - width) / 2.0), width)
+    }
+    return (floor((layout.size.width - width) / 2.0), width)
 }

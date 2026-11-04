@@ -6,6 +6,9 @@ import SwiftSignalKit
 import TelegramCore
 import TelegramPresentationData
 import MergeLists
+import ComponentFlow
+import GlassControls
+import SideColumnLayout
 
 public protocol ItemListHeaderItemNode: AnyObject {
     func updateTheme(theme: PresentationTheme)
@@ -252,10 +255,12 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
     public let listNode: ListView
     private let leftOverlayNode: ASDisplayNode
     private let rightOverlayNode: ASDisplayNode
+    /// The x range in which a touch can select a row: the list margins, in both styles.
+    private var selectableBand: (minX: CGFloat, maxX: CGFloat)?
     private var emptyStateItem: ItemListControllerEmptyStateItem?
     private var emptyStateNode: ItemListControllerEmptyStateItemNode?
     
-    private var toolbarNode: ToolbarNode?
+    private var toolbar: ComponentView<Empty>?
     
     private var searchItem: ItemListControllerSearch?
     private var searchNode: ItemListControllerSearchNode?
@@ -267,6 +272,10 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
     
     private var footerItem: ItemListControllerFooterItem?
     private var footerItemNode: ItemListControllerFooterItemNode?
+    
+    /// iPhone Duo: the bar's side column, which the bottom panels keep clear of (nil without one).
+    var navigationBarSideColumn: NavigationBarSideColumnExtent?
+    private var lastFooterHeight: CGFloat = 0.0
     
     private let transitionDisposable = MetaDisposable()
     
@@ -310,7 +319,7 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         self.navigationBar = navigationBar
         
         self.listNodeContainer = ASDisplayNode()
-        self.listNode = ListView()
+        self.listNode = ListViewImpl()
         self.leftOverlayNode = ASDisplayNode()
         self.leftOverlayNode.isUserInteractionEnabled = false
         self.rightOverlayNode = ASDisplayNode()
@@ -380,9 +389,11 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             }
             strongSelf.contentOffsetChanged?(offset, inVoiceOver)
             
+            var hasExpansionContentNode = false
             if let navigationContentNode = strongSelf.navigationBar.contentNode, case .expansion = navigationContentNode.mode {
-                strongSelf.navigationBar.updateBackgroundAlpha(1.0, transition: .immediate)
-            } else {
+                hasExpansionContentNode = true
+            }
+            if !hasExpansionContentNode, let headerItemNode = strongSelf.headerItemNode {
                 var previousContentOffsetValue: CGFloat?
                 if let previousContentOffset = strongSelf.previousContentOffset {
                     if case let .known(value) = previousContentOffset {
@@ -399,19 +410,9 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                     } else {
                         transition = .immediate
                     }
-                    if let headerItemNode = strongSelf.headerItemNode {
-                        headerItemNode.updateContentOffset(value, transition: transition)
-                        strongSelf.navigationBar.updateBackgroundAlpha(0.0, transition: .immediate)
-                    } else {
-                        strongSelf.navigationBar.updateBackgroundAlpha(min(30.0, value) / 30.0, transition: transition)
-                    }
+                    headerItemNode.updateContentOffset(value, transition: transition)
                 case .unknown, .none:
-                    if let headerItemNode = strongSelf.headerItemNode {
-                        headerItemNode.updateContentOffset(1000.0, transition: .immediate)
-                        strongSelf.navigationBar.updateBackgroundAlpha(0.0, transition: .immediate)
-                    } else {
-                        strongSelf.navigationBar.updateBackgroundAlpha(1.0, transition: .immediate)
-                    }
+                    headerItemNode.updateContentOffset(1000.0, transition: .immediate)
                 }
             }
             
@@ -432,6 +433,9 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         
         self.listNode.itemNodeHitTest = { [weak self] point in
             if let strongSelf = self {
+                if let band = strongSelf.selectableBand {
+                    return point.x > band.minX && point.x < band.maxX
+                }
                 return point.x > strongSelf.leftOverlayNode.frame.maxX && point.x < strongSelf.rightOverlayNode.frame.minX
             } else {
                 return true
@@ -475,7 +479,6 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
     override open func didLoad() {
         super.didLoad()
         
-        self.navigationBar.updateBackgroundAlpha(0.0, transition: .immediate)
         
         (self.view as? ItemListControllerNodeView)?.onLayout = { [weak self] in
             guard let strongSelf = self else {
@@ -648,16 +651,66 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         }
     }
     
+    /// The list's side margins: as wide as today's, and on a side with a side strip (iPhone Duo) at least
+    /// 16pt clear of the strip.
+    private func listSideMargins(layout: ContainerViewLayout) -> (left: CGFloat, right: CGFloat) {
+        let base: CGFloat = layout.size.width >= 320.0 ? max(16.0, floor((layout.size.width - 674.0) / 2.0)) : 0.0
+        return layout.listSideMargins(base: base)
+    }
+    
+    /// The side column's edge and lowest point, for the bottom panels' band rule.
+    private var sideColumnExtent: (edge: ContainerViewLayoutSideEdge, maxY: CGFloat)? {
+        return self.navigationBarSideColumn.map { (edge: $0.edge, maxY: $0.frame.maxY) }
+    }
+    
+    /// The toolbar's extra side insets beside a side strip (iPhone Duo): the band rule on a side with a
+    /// strip, none elsewhere, so nothing changes without a strip.
+    private func bottomPanelStripInsets(layout: ContainerViewLayout, bandMinY: CGFloat, bandMaxY: CGFloat) -> (left: CGFloat, right: CGFloat) {
+        let band = sideColumnBandInsets(layout: layout, bandMinY: bandMinY, bandMaxY: bandMaxY, column: self.sideColumnExtent)
+        return (
+            layout.sideStrip(edge: .left) != nil ? band.left : 0.0,
+            layout.sideStrip(edge: .right) != nil ? band.right : 0.0
+        )
+    }
+    
+    /// The layout a footer panel gets: its side safe insets are those of its band, from its previous top (the
+    /// bottom 1pt before its first layout) to the bottom, so it runs into a side strip where no corner block
+    /// reaches it (iPhone Duo). Without corner blocks this is `layout`.
+    private func footerLayout(_ layout: ContainerViewLayout) -> ContainerViewLayout {
+        let bandMinY = layout.size.height - max(1.0, self.lastFooterHeight)
+        let band = sideColumnBandInsets(layout: layout, bandMinY: bandMinY, bandMaxY: layout.size.height, column: self.sideColumnExtent)
+        var footerLayout = layout
+        footerLayout.safeInsets.left = band.left
+        footerLayout.safeInsets.right = band.right
+        return footerLayout
+    }
+    
+    /// The margin overlays: in the blocks style they cover the margins; in the plain style only a side strip
+    /// (iPhone Duo), so full-width separators and highlights stop at it.
+    private func updateMarginOverlays(layout: ContainerViewLayout, listInsets: UIEdgeInsets) {
+        let height = layout.size.height
+        self.selectableBand = (listInsets.left, layout.size.width - listInsets.right)
+        if case .plain? = self.listStyle {
+            let stripLeft: CGFloat = layout.sideStrip(edge: .left) != nil ? layout.safeInsets.left : 0.0
+            let stripRight: CGFloat = layout.sideStrip(edge: .right) != nil ? layout.safeInsets.right : 0.0
+            self.leftOverlayNode.frame = CGRect(x: 0.0, y: 0.0, width: stripLeft, height: height)
+            self.rightOverlayNode.frame = CGRect(x: layout.size.width - stripRight, y: 0.0, width: stripRight, height: height)
+            self.leftOverlayNode.isHidden = stripLeft.isZero
+            self.rightOverlayNode.isHidden = stripRight.isZero
+        } else {
+            self.leftOverlayNode.frame = CGRect(x: 0.0, y: 0.0, width: listInsets.left, height: height)
+            self.rightOverlayNode.frame = CGRect(x: layout.size.width - listInsets.right, y: 0.0, width: listInsets.right, height: height)
+        }
+    }
+    
     open func containerLayoutUpdated(_ layout: ContainerViewLayout, navigationBarHeight: CGFloat, transition: ContainedViewLayoutTransition, additionalInsets: UIEdgeInsets) {
         var insets = layout.insets(options: [.input])
         insets.top += navigationBarHeight
         insets.bottom = max(insets.bottom, additionalInsets.bottom)
         
-        let inset = max(16.0, floor((layout.size.width - 674.0) / 2.0))
-        if layout.size.width >= 375.0 {
-            insets.left += inset
-            insets.right += inset
-        }
+        let margins = self.listSideMargins(layout: layout)
+        insets.left += margins.left
+        insets.right += margins.right
         
         if self.rightOverlayNode.supernode == nil {
             self.listNodeContainer.insertSubnode(self.rightOverlayNode, aboveSubnode: self.listNode)
@@ -666,60 +719,168 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             self.listNodeContainer.insertSubnode(self.leftOverlayNode, aboveSubnode: self.listNode)
         }
 
-        if let toolbarItem = self.toolbarItem {
-            var tabBarHeight: CGFloat
-            let bottomInset: CGFloat = insets.bottom
-            if !layout.safeInsets.left.isZero {
-                tabBarHeight = 34.0 + bottomInset
-                insets.bottom += 34.0
+        if let toolbarData = self.toolbarItem, let theme = self.theme {
+            var panelsBottomInset: CGFloat = layout.insets(options: []).bottom
+            if layout.metrics.widthClass == .regular, let inputHeight = layout.inputHeight, inputHeight != 0.0 {
+                panelsBottomInset = inputHeight + 8.0
+            }
+            if panelsBottomInset == 0.0 {
+                panelsBottomInset = 8.0
             } else {
-                tabBarHeight = 49.0 + bottomInset
-                insets.bottom += 49.0
+                panelsBottomInset = max(panelsBottomInset, 8.0)
             }
             
-            let toolbarFrame = CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - tabBarHeight), size: CGSize(width: layout.size.width, height: tabBarHeight))
+            let sideInset: CGFloat = 20.0
+            let toolbarHeight = 44.0
+            let toolbarMinY = layout.size.height - panelsBottomInset - toolbarHeight
+            // iPhone Duo: the toolbar runs into a side strip where no corner block reaches its band.
+            let stripInsets = self.bottomPanelStripInsets(layout: layout, bandMinY: toolbarMinY, bandMaxY: toolbarMinY + toolbarHeight)
+            let toolbarFrame = CGRect(origin: CGPoint(x: sideInset + stripInsets.left, y: toolbarMinY), size: CGSize(width: layout.size.width - sideInset * 2.0 - stripInsets.left - stripInsets.right, height: toolbarHeight))
             
-            if let toolbarNode = self.toolbarNode {
-                transition.updateFrame(node: toolbarNode, frame: toolbarFrame)
-                toolbarNode.updateLayout(size: toolbarFrame.size, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, additionalSideInsets: layout.additionalInsets, bottomInset: layout.intrinsicInsets.bottom, toolbar: toolbarItem.toolbar, transition: transition)
-            } else if let theme = self.theme {
-                let toolbarNode = ToolbarNode(theme: ToolbarTheme(rootControllerTheme: theme), displaySeparator: true)
-                toolbarNode.frame = toolbarFrame
-                toolbarNode.updateLayout(size: toolbarFrame.size, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, additionalSideInsets: layout.additionalInsets, bottomInset: layout.intrinsicInsets.bottom, toolbar: toolbarItem.toolbar, transition: .immediate)
-                self.addSubnode(toolbarNode)
-                self.toolbarNode = toolbarNode
-                if case let .animated(duration, curve) = transition {
-                    toolbarNode.layer.animatePosition(from: CGPoint(x: 0.0, y: toolbarFrame.height), to: CGPoint(), duration: duration, mediaTimingFunction: curve.mediaTimingFunction, additive: true)
+            let toolbar: ComponentView<Empty>
+            var toolbarTransition = ComponentTransition(transition)
+            if let current = self.toolbar {
+                toolbar = current
+            } else {
+                toolbar = ComponentView()
+                self.toolbar = toolbar
+                toolbarTransition = .immediate
+            }
+            
+            let _ = toolbar.update(
+                transition: toolbarTransition,
+                component: AnyComponent(GlassControlPanelComponent(
+                    theme: theme,
+                    leftItem: toolbarData.toolbar.leftAction.flatMap { value in
+                        return GlassControlPanelComponent.Item(
+                            items: [GlassControlGroupComponent.Item(
+                                id: "left_" + value.title,
+                                content: .text(value.title),
+                                action: value.isEnabled ? { [weak self] in
+                                    guard let self, let toolbarData = self.toolbarItem else {
+                                        return
+                                    }
+                                    toolbarData.actions[0].action()
+                                } : nil
+                            )],
+                            background: .panel
+                        )
+                    },
+                    centralItem: toolbarData.toolbar.middleAction.flatMap { value in
+                        return GlassControlPanelComponent.Item(
+                            items: [GlassControlGroupComponent.Item(
+                                id: "right_" + value.title,
+                                content: .text(value.title),
+                                action: value.isEnabled ? { [weak self] in
+                                    guard let self, let toolbarData = self.toolbarItem else {
+                                        return
+                                    }
+                                    if toolbarData.actions.count == 1 {
+                                        toolbarData.actions[0].action()
+                                    } else if toolbarData.actions.count == 3 {
+                                        toolbarData.actions[1].action()
+                                    }
+                                } : nil
+                            )],
+                            background: .panel
+                        )
+                    },
+                    rightItem: toolbarData.toolbar.rightAction.flatMap { value in
+                        return GlassControlPanelComponent.Item(
+                            items: [GlassControlGroupComponent.Item(
+                                id: "right_" + value.title,
+                                content: .text(value.title),
+                                action: value.isEnabled ? { [weak self] in
+                                    guard let self, let toolbarData = self.toolbarItem else {
+                                        return
+                                    }
+                                    if toolbarData.actions.count == 2 {
+                                        toolbarData.actions[1].action()
+                                    } else if toolbarData.actions.count == 3 {
+                                        toolbarData.actions[2].action()
+                                    }
+                                } : nil
+                            )],
+                            background: .panel
+                        )
+                    },
+                    centerAlignmentIfPossible: true
+                )),
+                environment: {},
+                containerSize: toolbarFrame.size
+            )
+            
+            if let toolbarView = toolbar.view {
+                if toolbarView.superview == nil {
+                    self.view.addSubview(toolbarView)
+                    toolbarView.alpha = 0.0
                 }
+                toolbarTransition.setFrame(view: toolbarView, frame: toolbarFrame)
+                ComponentTransition(transition).setAlpha(view: toolbarView, alpha: 1.0)
             }
-                
-            self.toolbarNode?.left = {
-                toolbarItem.actions[0].action()
-            }
-            self.toolbarNode?.right = {
-                if toolbarItem.actions.count == 2 {
-                    toolbarItem.actions[1].action()
-                } else if toolbarItem.actions.count == 3 {
-                    toolbarItem.actions[2].action()
-                }
-            }
-            self.toolbarNode?.middle = {
-                if toolbarItem.actions.count == 1 {
-                    toolbarItem.actions[0].action()
-                } else if toolbarItem.actions.count == 3 {
-                    toolbarItem.actions[1].action()
-                }
-            }
-        } else if let toolbarNode = self.toolbarNode {
-            self.toolbarNode = nil
-            if case let .animated(duration, curve) = transition {
-                toolbarNode.layer.animatePosition(from: CGPoint(), to: CGPoint(x: 0.0, y: toolbarNode.frame.size.height), duration: duration, mediaTimingFunction: curve.mediaTimingFunction, removeOnCompletion: false, additive: true, completion: { [weak toolbarNode] _ in
-                    toolbarNode?.removeFromSupernode()
+        } else if let toolbar = self.toolbar {
+            self.toolbar = nil
+            if let toolbarView = toolbar.view {
+                ComponentTransition(transition).setAlpha(view: toolbarView, alpha: 0.0, completion: { [weak toolbarView] _ in
+                    toolbarView?.removeFromSuperview()
                 })
-            } else {
-                toolbarNode.removeFromSupernode()
             }
         }
+        
+//        if let toolbarItem = self.toolbarItem {
+//            var tabBarHeight: CGFloat
+//            let bottomInset: CGFloat = insets.bottom
+//            if !layout.safeInsets.left.isZero {
+//                tabBarHeight = 34.0 + bottomInset
+//                insets.bottom += 34.0
+//            } else {
+//                tabBarHeight = 49.0 + bottomInset
+//                insets.bottom += 49.0
+//            }
+//            
+//            let toolbarFrame = CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - tabBarHeight), size: CGSize(width: layout.size.width, height: tabBarHeight))
+//            
+//            if let toolbarNode = self.toolbarNode {
+//                transition.updateFrame(node: toolbarNode, frame: toolbarFrame)
+//                toolbarNode.updateLayout(size: toolbarFrame.size, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, additionalSideInsets: layout.additionalInsets, bottomInset: layout.intrinsicInsets.bottom, toolbar: toolbarItem.toolbar, transition: transition)
+//            } else if let theme = self.theme {
+//                let toolbarNode = ToolbarNode(theme: ToolbarTheme(rootControllerTheme: theme), displaySeparator: true)
+//                toolbarNode.frame = toolbarFrame
+//                toolbarNode.updateLayout(size: toolbarFrame.size, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, additionalSideInsets: layout.additionalInsets, bottomInset: layout.intrinsicInsets.bottom, toolbar: toolbarItem.toolbar, transition: .immediate)
+//                self.addSubnode(toolbarNode)
+//                self.toolbarNode = toolbarNode
+//                if case let .animated(duration, curve) = transition {
+//                    toolbarNode.layer.animatePosition(from: CGPoint(x: 0.0, y: toolbarFrame.height), to: CGPoint(), duration: duration, mediaTimingFunction: curve.mediaTimingFunction, additive: true)
+//                }
+//            }
+//                
+//            self.toolbarNode?.left = {
+//                toolbarItem.actions[0].action()
+//            }
+//            self.toolbarNode?.right = {
+//                if toolbarItem.actions.count == 2 {
+//                    toolbarItem.actions[1].action()
+//                } else if toolbarItem.actions.count == 3 {
+//                    toolbarItem.actions[2].action()
+//                }
+//            }
+//            self.toolbarNode?.middle = {
+//                if toolbarItem.actions.count == 1 {
+//                    toolbarItem.actions[0].action()
+//                } else if toolbarItem.actions.count == 3 {
+//                    toolbarItem.actions[1].action()
+//                }
+//            }
+//        } else if let toolbarNode = self.toolbarNode {
+//            self.toolbarNode = nil
+//            if case let .animated(duration, curve) = transition {
+//                toolbarNode.layer.animatePosition(from: CGPoint(), to: CGPoint(x: 0.0, y: toolbarNode.frame.size.height), duration: duration, mediaTimingFunction: curve.mediaTimingFunction, removeOnCompletion: false, additive: true, completion: { [weak toolbarNode] _ in
+//                    toolbarNode?.removeFromSupernode()
+//                })
+//            } else {
+//                toolbarNode.removeFromSupernode()
+//            }
+//        }
     
         if let headerItemNode = self.headerItemNode {
             let headerHeight = headerItemNode.updateLayout(layout: layout, transition: transition)
@@ -733,7 +894,8 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         
         var footerHeight: CGFloat = 0.0
         if let footerItemNode = self.footerItemNode {
-            footerHeight = footerItemNode.updateLayout(layout: layout, transition: transition)
+            footerHeight = footerItemNode.updateLayout(layout: self.footerLayout(layout), transition: transition)
+            self.lastFooterHeight = footerHeight
             insets.bottom = max(footerHeight, insets.bottom)
         }
         
@@ -744,8 +906,7 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         let (duration, curve) = listViewAnimationDurationAndCurve(transition: transition)
         self.listNode.transaction(deleteIndices: [], insertIndicesAndItems: [], updateIndicesAndItems: [], options: [.Synchronous, .LowLatency], scrollToItem: nil, updateSizeAndInsets: ListViewUpdateSizeAndInsets(size: layout.size, insets: insets, duration: duration, curve: curve), stationaryItemRange: nil, updateOpaqueState: nil, completion: { _ in })
         
-        self.leftOverlayNode.frame = CGRect(x: 0.0, y: 0.0, width: insets.left, height: layout.size.height)
-        self.rightOverlayNode.frame = CGRect(x: layout.size.width - insets.right, y: 0.0, width: insets.right, height: layout.size.height)
+        self.updateMarginOverlays(layout: layout, listInsets: insets)
         
         if let emptyStateNode = self.emptyStateNode {
             emptyStateNode.updateLayout(layout: layout, navigationBarHeight: navigationBarHeight, transition: transition)
@@ -837,6 +998,9 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                             self.leftOverlayNode.isHidden = false
                             self.rightOverlayNode.isHidden = false
                     }
+                }
+                if let (layout, _, _) = self.validLayout {
+                    self.updateMarginOverlays(layout: layout, listInsets: self.listNode.insets)
                 }
             }
             
@@ -961,7 +1125,8 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                         
                         let footerHeight: CGFloat
                         if let validLayout = self.validLayout {
-                            footerHeight = updatedNode.updateLayout(layout: validLayout.0, transition: .immediate)
+                            footerHeight = updatedNode.updateLayout(layout: self.footerLayout(validLayout.0), transition: .immediate)
+                            self.lastFooterHeight = footerHeight
                         } else {
                             footerHeight = 100.0
                         }
@@ -976,11 +1141,9 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                             insets.top += navigationBarHeight
                             insets.bottom = footerHeight
                             
-                            let inset = max(16.0, floor((layout.size.width - 674.0) / 2.0))
-                            if layout.size.width >= 375.0 {
-                                insets.left += inset
-                                insets.right += inset
-                            }
+                            let margins = self.listSideMargins(layout: layout)
+                            insets.left += margins.left
+                            insets.right += margins.right
                               
                             let (duration, curve) = listViewAnimationDurationAndCurve(transition: .immediate)
                             self.listNode.transaction(deleteIndices: [], insertIndicesAndItems: [], updateIndicesAndItems: [], options: [.Synchronous, .LowLatency], scrollToItem: nil, updateSizeAndInsets: ListViewUpdateSizeAndInsets(size: layout.size, insets: insets, duration: duration, curve: curve), stationaryItemRange: nil, updateOpaqueState: nil, completion: { _ in })
@@ -989,7 +1152,8 @@ open class ItemListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                 } else if let footerItemNode = self.footerItemNode {
                     let footerHeight: CGFloat
                     if let validLayout = self.validLayout {
-                        footerHeight = footerItemNode.updateLayout(layout: validLayout.0, transition: .immediate)
+                        footerHeight = footerItemNode.updateLayout(layout: self.footerLayout(validLayout.0), transition: .immediate)
+                        self.lastFooterHeight = footerHeight
                     } else {
                         footerHeight = 100.0
                     }

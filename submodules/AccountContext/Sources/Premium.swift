@@ -44,7 +44,9 @@ public enum PremiumIntroSource {
     case messageEffects
     case todo
     case copyProtection
-    case auth(String)
+    case aiTools
+    case richText
+    case auth(String, Int32)
     case premiumGift(TelegramMediaFile)
 }
 
@@ -55,6 +57,7 @@ public enum PremiumGiftSource: Equatable {
     case chatList([EnginePeer.Id: TelegramBirthday]?)
     case stars([EnginePeer.Id: TelegramBirthday]?)
     case starGiftTransfer([EnginePeer.Id: TelegramBirthday]?, StarGiftReference, StarGift.UniqueGift, Int64, Int32?, Bool)
+    case starGiftDeposit([EnginePeer.Id: TelegramBirthday]?, StarGift.UniqueGift)
     case channelBoost
     case deeplink(String?)
 }
@@ -85,6 +88,8 @@ public enum PremiumDemoSubject {
     case messageEffects
     case todo
     case copyProtection
+    case aiTools
+    case richText
     
     case businessLocation
     case businessHours

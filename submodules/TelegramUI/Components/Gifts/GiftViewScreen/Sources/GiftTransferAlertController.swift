@@ -3,7 +3,6 @@ import UIKit
 import AsyncDisplayKit
 import Display
 import ComponentFlow
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import AccountContext
@@ -34,10 +33,10 @@ public func giftTransferAlertController(
     let text: String
     let buttonText: String
     if transferStars > 0 {
-        text = strings.Gift_Transfer_Confirmation_Text("\(gift.title) #\(presentationStringsFormattedNumber(gift.number, presentationData.dateTimeFormat.groupingSeparator))", peer.displayTitle(strings: strings, displayOrder: presentationData.nameDisplayOrder), strings.Gift_Transfer_Confirmation_Text_Stars(Int32(clamping: transferStars))).string
+        text = strings.Gift_Transfer_Confirmation_Text("\(gift.title) #\(formatCollectibleNumber(gift.number, dateTimeFormat: presentationData.dateTimeFormat))", peer.displayTitle(strings: strings, displayOrder: presentationData.nameDisplayOrder), strings.Gift_Transfer_Confirmation_Text_Stars(Int32(clamping: transferStars))).string
         buttonText = "\(strings.Gift_Transfer_Confirmation_Transfer)  $  \(transferStars)"
     } else {
-        text = strings.Gift_Transfer_Confirmation_TextFree("\(gift.title) #\(presentationStringsFormattedNumber(gift.number, presentationData.dateTimeFormat.groupingSeparator))", peer.displayTitle(strings: strings, displayOrder: presentationData.nameDisplayOrder)).string
+        text = strings.Gift_Transfer_Confirmation_TextFree("\(gift.title) #\(formatCollectibleNumber(gift.number, dateTimeFormat: presentationData.dateTimeFormat))", peer.displayTitle(strings: strings, displayOrder: presentationData.nameDisplayOrder)).string
         buttonText = strings.Gift_Transfer_Confirmation_TransferFree
     }
     
@@ -64,27 +63,27 @@ public func giftTransferAlertController(
             let id: String?
             let title: String?
             let value: NSAttributedString
-            let percentage: Float?
+            let rarity: StarGift.UniqueGift.Attribute.Rarity?
             let tag: AnyObject?
             
             switch attribute {
-            case let .model(name, _, rarity, _):
+            case let .model(name, _, rarityValue, _):
                 id = "model"
                 title = strings.Gift_Unique_Model
                 value = NSAttributedString(string: name, font: tableFont, textColor: tableTextColor)
-                percentage = Float(rarity.permilleValue) * 0.1
+                rarity = rarityValue
                 tag = modelButtonTag
-            case let .backdrop(name, _, _, _, _, _, rarity):
+            case let .backdrop(name, _, _, _, _, _, rarityValue):
                 id = "backdrop"
                 title = strings.Gift_Unique_Backdrop
                 value = NSAttributedString(string: name, font: tableFont, textColor: tableTextColor)
-                percentage = Float(rarity.permilleValue) * 0.1
+                rarity = rarityValue
                 tag = backdropButtonTag
-            case let .pattern(name, _, rarity):
+            case let .pattern(name, _, rarityValue):
                 id = "pattern"
                 title = strings.Gift_Unique_Symbol
                 value = NSAttributedString(string: name, font: tableFont, textColor: tableTextColor)
-                percentage = Float(rarity.permilleValue) * 0.1
+                rarity = rarityValue
                 tag = symbolButtonTag
             case .originalInfo:
                 continue
@@ -99,17 +98,20 @@ public func giftTransferAlertController(
                     )
                 )
             )
-            if let percentage, let tag {
+            if let rarity, let tag {
+                let badge = giftAttributeRarityBadge(rarity: rarity, strings: strings, accentColor: presentationData.theme.list.itemAccentColor)
                 items.append(AnyComponentWithIdentity(
                     id: AnyHashable(1),
                     component: AnyComponent(Button(
                         content: AnyComponent(ButtonContentComponent(
                             context: context,
-                            text: formatPercentage(percentage),
-                            color: presentationData.theme.list.itemAccentColor
+                            text: badge.text,
+                            color: badge.color
                         )),
                         action: {
-                            showAttributeInfoImpl?(tag, strings.Gift_Unique_AttributeDescription(formatPercentage(percentage)).string)
+                            if let description = badge.description {
+                                showAttributeInfoImpl?(tag, description)
+                            }
                         }
                     ).tagged(tag))
                 ))

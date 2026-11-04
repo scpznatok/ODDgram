@@ -1,7 +1,8 @@
 import Foundation
 import SwiftSignalKit
 import Postbox
-import TelegramApi
+internal import TelegramApi
+import RangeSet
 
 public enum MediaResourceUserContentType: UInt8, Equatable {
     case other = 0
@@ -199,6 +200,12 @@ public final class EngineMediaResource: Equatable {
     }
 }
 
+/// A cached representation of a media resource (a derived file such as a scaled image or a
+/// video's first frame). The kinds are defined by the app; TelegramCore only stores and serves
+/// them, so it declares this protocol and never enumerates them.
+public protocol EngineMediaResourceRepresentation: CachedMediaResourceRepresentation {
+}
+
 public extension EngineMediaResource.ResourceData {
     convenience init(_ data: MediaResourceData) {
         self.init(path: data.path, availableSize: data.size, isComplete: data.complete)
@@ -241,7 +248,8 @@ public extension TelegramEngine {
             self.account = account
         }
 
-        public func preUpload(id: Int64, encrypt: Bool, tag: MediaResourceFetchTag?, source: Signal<EngineMediaResource.ResourceData, NoError>, onComplete: (()->Void)? = nil) {
+        @discardableResult
+        public func preUpload(id: Int64, encrypt: Bool, tag: MediaResourceFetchTag?, source: Signal<EngineMediaResource.ResourceData, NoError>, onComplete: (()->Void)? = nil) -> Disposable {
             return self.account.messageMediaPreuploadManager.add(network: self.account.network, postbox: self.account.postbox, id: id, encrypt: encrypt, tag: tag, source: source, onComplete: onComplete)
         }
 
@@ -253,24 +261,28 @@ public extension TelegramEngine {
             return _internal_collectStorageUsageStats(account: self.account)
         }
 
-        public func renderStorageUsageStatsMessages(stats: StorageUsageStats, categories: [StorageUsageStats.CategoryKey], existingMessages: [EngineMessage.Id: Message]) -> Signal<[EngineMessage.Id: Message], NoError> {
-            return _internal_renderStorageUsageStatsMessages(account: self.account, stats: stats, categories: categories, existingMessages: existingMessages)
-        }
-        
-        public func clearStorage(peerId: EnginePeer.Id?, categories: [StorageUsageStats.CategoryKey], includeMessages: [Message], excludeMessages: [Message]) -> Signal<Float, NoError> {
-            return _internal_clearStorage(account: self.account, peerId: peerId, categories: categories, includeMessages: includeMessages, excludeMessages: excludeMessages)
-        }
-        
-        public func clearStorage(peerIds: Set<EnginePeer.Id>, includeMessages: [Message], excludeMessages: [Message]) -> Signal<Float, NoError> {
-            _internal_clearStorage(account: self.account, peerIds: peerIds, includeMessages: includeMessages, excludeMessages: excludeMessages)
-        }
-        
-        public func clearStorage(messages: [Message]) -> Signal<Never, NoError> {
-            _internal_clearStorage(account: self.account, messages: messages)
+        public func renderStorageUsageStatsMessages(stats: StorageUsageStats, categories: [StorageUsageStats.CategoryKey], existingMessages: [EngineMessage.Id: EngineMessage]) -> Signal<[EngineMessage.Id: EngineMessage], NoError> {
+            let rawExisting = existingMessages.mapValues { $0._asMessage() }
+            return _internal_renderStorageUsageStatsMessages(account: self.account, stats: stats, categories: categories, existingMessages: rawExisting)
+            |> map { rawResult -> [EngineMessage.Id: EngineMessage] in
+                return rawResult.mapValues(EngineMessage.init)
+            }
         }
 
-        public func clearCachedMediaResources(mediaResourceIds: Set<MediaResourceId>) -> Signal<Float, NoError> {
-            return _internal_clearCachedMediaResources(account: self.account, mediaResourceIds: mediaResourceIds)
+        public func clearStorage(peerId: EnginePeer.Id?, categories: [StorageUsageStats.CategoryKey], includeMessages: [EngineMessage], excludeMessages: [EngineMessage]) -> Signal<Float, NoError> {
+            return _internal_clearStorage(account: self.account, peerId: peerId, categories: categories, includeMessages: includeMessages.map { $0._asMessage() }, excludeMessages: excludeMessages.map { $0._asMessage() })
+        }
+
+        public func clearStorage(peerIds: Set<EnginePeer.Id>, includeMessages: [EngineMessage], excludeMessages: [EngineMessage]) -> Signal<Float, NoError> {
+            _internal_clearStorage(account: self.account, peerIds: peerIds, includeMessages: includeMessages.map { $0._asMessage() }, excludeMessages: excludeMessages.map { $0._asMessage() })
+        }
+
+        public func clearStorage(messages: [EngineMessage]) -> Signal<Never, NoError> {
+            _internal_clearStorage(account: self.account, messages: messages.map { $0._asMessage() })
+        }
+
+        public func clearCachedMediaResources(mediaResourceIds: Set<EngineMediaResource.Id>) -> Signal<Float, NoError> {
+            return _internal_clearCachedMediaResources(account: self.account, mediaResourceIds: Set(mediaResourceIds.map { MediaResourceId($0.stringRepresentation) }))
         }
         
         public func reindexCacheInBackground(lowImpact: Bool) -> Signal<Never, NoError> {
@@ -414,6 +426,176 @@ public extension TelegramEngine {
         
         public func applicationIcons() -> Signal<TelegramApplicationIcons, NoError> {
             return _internal_applicationIcons(account: account)
+        }
+
+        public func fetch(
+            reference: MediaResourceReference,
+            userLocation: MediaResourceUserLocation,
+            userContentType: MediaResourceUserContentType,
+            range: (Range<Int64>, EngineMediaBoxFetchPriority)? = nil,
+            statsCategory: MediaResourceStatsCategory = .generic,
+            reportResultStatus: Bool = false,
+            preferBackgroundReferenceRevalidation: Bool = false,
+            continueInBackground: Bool = false
+        ) -> Signal<FetchResourceSourceType, FetchResourceError> {
+            return fetchedMediaResource(
+                mediaBox: self.account.postbox.mediaBox,
+                userLocation: userLocation,
+                userContentType: userContentType,
+                reference: reference,
+                range: range,
+                statsCategory: statsCategory,
+                reportResultStatus: reportResultStatus,
+                preferBackgroundReferenceRevalidation: preferBackgroundReferenceRevalidation,
+                continueInBackground: continueInBackground
+            )
+        }
+
+        public func fetch(
+            reference: MediaResourceReference,
+            userLocation: MediaResourceUserLocation,
+            userContentType: MediaResourceUserContentType,
+            ranges: [(Range<Int64>, EngineMediaBoxFetchPriority)]?,
+            statsCategory: MediaResourceStatsCategory = .generic,
+            reportResultStatus: Bool = false,
+            preferBackgroundReferenceRevalidation: Bool = false,
+            continueInBackground: Bool = false
+        ) -> Signal<FetchResourceSourceType, FetchResourceError> {
+            return fetchedMediaResource(
+                mediaBox: self.account.postbox.mediaBox,
+                userLocation: userLocation,
+                userContentType: userContentType,
+                reference: reference,
+                ranges: ranges,
+                statsCategory: statsCategory,
+                reportResultStatus: reportResultStatus,
+                preferBackgroundReferenceRevalidation: preferBackgroundReferenceRevalidation,
+                continueInBackground: continueInBackground
+            )
+        }
+
+        public func status(
+            resource: EngineMediaResource,
+            approximateSynchronousValue: Bool = false
+        ) -> Signal<EngineMediaResource.FetchStatus, NoError> {
+            return self.account.postbox.mediaBox.resourceStatus(resource._asResource(), approximateSynchronousValue: approximateSynchronousValue)
+            |> map { EngineMediaResource.FetchStatus($0) }
+        }
+
+        public func status(
+            id: EngineMediaResource.Id,
+            resourceSize: Int64
+        ) -> Signal<EngineMediaResource.FetchStatus, NoError> {
+            return self.account.postbox.mediaBox.resourceStatus(MediaResourceId(id.stringRepresentation), resourceSize: resourceSize)
+            |> map { EngineMediaResource.FetchStatus($0) }
+        }
+
+        public func data(
+            resource: EngineMediaResource,
+            pathExtension: String? = nil,
+            waitUntilFetchStatus: Bool = false,
+            incremental: Bool = false,
+            attemptSynchronously: Bool = false
+        ) -> Signal<EngineMediaResource.ResourceData, NoError> {
+            let option: ResourceDataRequestOption = incremental
+                ? .incremental(waitUntilFetchStatus: waitUntilFetchStatus)
+                : .complete(waitUntilFetchStatus: waitUntilFetchStatus)
+            return self.account.postbox.mediaBox.resourceData(
+                resource._asResource(),
+                pathExtension: pathExtension,
+                option: option,
+                attemptSynchronously: attemptSynchronously
+            )
+            |> map { EngineMediaResource.ResourceData($0) }
+        }
+
+        public func rangeData(resource: EngineMediaResource, size: Int64, range: Range<Int64>) -> Signal<(Data, Bool), NoError> {
+            return self.account.postbox.mediaBox.resourceData(resource._asResource(), size: size, in: range)
+        }
+
+        public func cachedRepresentation(resource: EngineMediaResource, representation: EngineMediaResourceRepresentation, pathExtension: String? = nil, complete: Bool, fetch: Bool = true, attemptSynchronously: Bool = false) -> Signal<EngineMediaResource.ResourceData, NoError> {
+            return self.account.postbox.mediaBox.cachedResourceRepresentation(resource._asResource(), representation: representation, pathExtension: pathExtension, complete: complete, fetch: fetch, attemptSynchronously: attemptSynchronously)
+            |> map { EngineMediaResource.ResourceData($0) }
+        }
+
+        public func cachedRepresentationCompletePath(id: EngineMediaResource.Id, representation: EngineMediaResourceRepresentation) -> String {
+            return self.account.postbox.mediaBox.cachedRepresentationCompletePath(MediaResourceId(id.stringRepresentation), representation: representation)
+        }
+
+        public func storeCachedRepresentation(resource: EngineMediaResource, representation: EngineMediaResourceRepresentation, data: Data) {
+            self.account.postbox.mediaBox.storeCachedResourceRepresentation(resource._asResource(), representation: representation, data: data)
+        }
+
+        public func cachedRepresentationPath(id: String, representationId: String, keepDuration: EngineCachedMediaRepresentationKeepDuration) -> String {
+            return self.account.postbox.mediaBox.cachedRepresentationPathForId(id, representationId: representationId, keepDuration: keepDuration)
+        }
+
+        public func fetchedResource(resource: EngineMediaResource) -> Signal<FetchResourceSourceType, FetchResourceError> {
+            return self.account.postbox.mediaBox.fetchedResource(resource._asResource(), parameters: nil)
+        }
+
+        public func storageTotalSize() -> Signal<Int64, NoError> {
+            return self.account.postbox.mediaBox.storageBox.totalSize()
+        }
+
+        public func cacheStorageTotalSize() -> Signal<Int64, NoError> {
+            return self.account.postbox.mediaBox.cacheStorageBox.totalSize()
+        }
+
+        public func resetStorageIndex() {
+            self.account.postbox.mediaBox.storageBox.reset()
+        }
+
+        public var mediaBasePath: String {
+            return self.account.postbox.mediaBox.basePath
+        }
+
+        public func resourcePath(resource: EngineMediaResource) -> String {
+            return self.account.postbox.mediaBox.resourcePath(resource._asResource())
+        }
+
+        public func shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id) -> String {
+            return self.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(MediaResourceId(id.stringRepresentation))
+        }
+
+        public func completedResourcePath(id: EngineMediaResource.Id, pathExtension: String? = nil) -> String? {
+            return self.account.postbox.mediaBox.completedResourcePath(id: MediaResourceId(id.stringRepresentation), pathExtension: pathExtension)
+        }
+
+        public func storeResourceData(id: EngineMediaResource.Id, data: Data, synchronous: Bool = false) {
+            self.account.postbox.mediaBox.storeResourceData(MediaResourceId(id.stringRepresentation), data: data, synchronous: synchronous)
+        }
+
+        public func cancelInteractiveResourceFetch(id: EngineMediaResource.Id) {
+            self.account.postbox.mediaBox.cancelInteractiveResourceFetch(resourceId: MediaResourceId(id.stringRepresentation))
+        }
+
+        public func moveResourceData(id: EngineMediaResource.Id, toTempPath: String) {
+            self.account.postbox.mediaBox.moveResourceData(MediaResourceId(id.stringRepresentation), toTempPath: toTempPath)
+        }
+
+        public func moveResourceData(id: EngineMediaResource.Id, fromTempPath: String) {
+            self.account.postbox.mediaBox.moveResourceData(MediaResourceId(id.stringRepresentation), fromTempPath: fromTempPath)
+        }
+
+        public func moveResourceData(from: EngineMediaResource.Id, to: EngineMediaResource.Id, synchronous: Bool = false) {
+            self.account.postbox.mediaBox.moveResourceData(from: MediaResourceId(from.stringRepresentation), to: MediaResourceId(to.stringRepresentation), synchronous: synchronous)
+        }
+
+        public func copyResourceData(id: EngineMediaResource.Id, fromTempPath: String) {
+            self.account.postbox.mediaBox.copyResourceData(MediaResourceId(id.stringRepresentation), fromTempPath: fromTempPath)
+        }
+
+        public func copyResourceData(from: EngineMediaResource.Id, to: EngineMediaResource.Id, synchronous: Bool = false) {
+            self.account.postbox.mediaBox.copyResourceData(from: MediaResourceId(from.stringRepresentation), to: MediaResourceId(to.stringRepresentation), synchronous: synchronous)
+        }
+
+        public func resourceRangesStatus(resource: EngineMediaResource) -> Signal<RangeSet<Int64>, NoError> {
+            return self.account.postbox.mediaBox.resourceRangesStatus(resource._asResource())
+        }
+
+        public func removeCachedResources(ids: [EngineMediaResource.Id], force: Bool = false, notify: Bool = false) -> Signal<Float, NoError> {
+            return self.account.postbox.mediaBox.removeCachedResources(ids.map { MediaResourceId($0.stringRepresentation) }, force: force, notify: notify)
         }
     }
 }

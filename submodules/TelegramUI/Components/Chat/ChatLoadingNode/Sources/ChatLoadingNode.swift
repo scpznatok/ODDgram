@@ -3,7 +3,6 @@ import UIKit
 import AsyncDisplayKit
 import SwiftSignalKit
 import Display
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import ActivityIndicator
@@ -240,7 +239,7 @@ public final class ChatLoadingPlaceholderNode: ASDisplayNode {
     }
     
     private var bottomInset: (Int, CGFloat)?
-    public func setup(_ historyNode: ListView, updating: Bool = false) {
+    public func setup(_ historyNode: ChatHistoryListNode, updating: Bool = false) {
         let listNode = historyNode
         
         var listItemNodes: [ASDisplayNode] = []
@@ -261,8 +260,11 @@ public final class ChatLoadingPlaceholderNode: ASDisplayNode {
                 if itemNode is ChatMessageAvatarHeaderNode {
                     animateScale = false
                 }
-                
-                let delayFactor = itemNode.frame.minY / heightNorm
+
+                // Through the list, not off the node: a header node's own frame is host-local under a
+                // hosting backend, which would collapse every delay below to 0 and fade the whole
+                // screen in on one beat.
+                let delayFactor = (listNode.itemHeaderNodeFrame(itemNode)?.minY ?? 0.0) / heightNorm
                 let delay = Double(delayFactor * 0.2)
                 
                 itemNode.allowsGroupOpacity = true
@@ -306,7 +308,7 @@ public final class ChatLoadingPlaceholderNode: ASDisplayNode {
     }
         
     private var didAnimateOut = false
-    public func animateOut(_ historyNode: ListView, completion: @escaping () -> Void = {}) {
+    public func animateOut(_ historyNode: ChatHistoryListNode, completion: @escaping () -> Void = {}) {
         guard let (size, isSidebarOpen, _, _) = self.validLayout else {
             return
         }
@@ -327,7 +329,7 @@ public final class ChatLoadingPlaceholderNode: ASDisplayNode {
                 return
             }
         
-            let delayFactor = listItemNode.frame.minY / heightNorm
+            let delayFactor = (listNode.itemNodeFrame(listItemNode)?.minY ?? 0.0) / heightNorm
             let delay = Double(delayFactor * 0.1)
             
             if skipCount > 0 {
@@ -367,8 +369,8 @@ public final class ChatLoadingPlaceholderNode: ASDisplayNode {
                     return
                 }
             }
-            
-            let delayFactor = itemNode.frame.minY / heightNorm
+
+            let delayFactor = (listNode.itemHeaderNodeFrame(itemNode)?.minY ?? 0.0) / heightNorm
             let delay = Double(delayFactor * 0.2)
 
             itemNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.15, delay: delay)
@@ -406,12 +408,6 @@ public final class ChatLoadingPlaceholderNode: ASDisplayNode {
     
     public func update(rect: CGRect, within containerSize: CGSize, transition: ContainedViewLayoutTransition = .immediate) {
         self.absolutePosition = (rect, containerSize)
-        if let backgroundContent = self.backgroundContent {
-            var backgroundFrame = backgroundContent.frame
-            backgroundFrame.origin.x += rect.minX
-            backgroundFrame.origin.y += rect.minY
-            backgroundContent.update(rect: backgroundFrame, within: containerSize, transition: transition)
-        }
     }
     
     public enum ChatType: Equatable {
@@ -421,16 +417,16 @@ public final class ChatLoadingPlaceholderNode: ASDisplayNode {
         case channel
     }
     private var chatType: ChatType = .channel
-    public func updatePresentationInterfaceState(renderedPeer: RenderedPeer?, chatLocation: ChatLocation) {
+    public func updatePresentationInterfaceState(renderedPeer: EngineRenderedPeer?, chatLocation: ChatLocation) {
         var chatType: ChatType = .channel
         if let peer = renderedPeer?.peer {
-            if peer is TelegramUser {
+            if case .user = peer {
                 chatType = .user
-            } else if peer is TelegramGroup {
+            } else if case .legacyGroup = peer {
                 chatType = .group
-            } else if let channel = peer as? TelegramChannel {
+            } else if case let .channel(channel) = peer {
                 if channel.isMonoForum {
-                    if let mainChannel = renderedPeer?.chatOrMonoforumMainPeer as? TelegramChannel, mainChannel.hasPermission(.manageDirect) {
+                    if case let .channel(mainChannel) = renderedPeer?.chatOrMonoforumMainPeer, mainChannel.hasPermission(.manageDirect) {
                         if chatLocation.threadId == nil {
                             chatType = .group
                         } else {

@@ -1,7 +1,6 @@
 import Foundation
 import Display
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import SwiftSignalKit
 import PassKit
@@ -19,30 +18,30 @@ import StoryContainerScreen
 public enum ChatMessageGalleryControllerData {
     case url(String)
     case pass(TelegramMediaFile)
-    case instantPage(InstantPageGalleryController, Int, Media)
+    case instantPage(InstantPageGalleryController, Int, EngineRawMedia)
     case map(TelegramMediaMap)
     case stickerPack(StickerPackReference, TelegramMediaFile?)
     case audio(TelegramMediaFile)
     case document(TelegramMediaFile, Bool)
     case gallery(Signal<GalleryController, NoError>)
     case secretGallery(SecretMediaPreviewController)
-    case chatAvatars(AvatarGalleryController, Media)
+    case chatAvatars(AvatarGalleryController, EngineRawMedia)
     case theme(TelegramMediaFile)
-    case other(Media)
+    case other(EngineRawMedia)
     case story(Signal<StoryContainerScreen, NoError>)
 }
 
-private func instantPageBlockMedia(pageId: MediaId, block: InstantPageBlock, media: [MediaId: Media], counter: inout Int) -> [InstantPageGalleryEntry] {
+private func instantPageBlockMedia(pageId: EngineMedia.Id, block: InstantPageBlock, media: [EngineMedia.Id: EngineMedia], counter: inout Int) -> [InstantPageGalleryEntry] {
     switch block {
-        case let .image(id, caption, _, _):
+        case let .image(id, caption, _, _, _):
             if let m = media[id] {
-                let result = [InstantPageGalleryEntry(index: Int32(counter), pageId: pageId, media: InstantPageMedia(index: counter, media: EngineMedia(m), url: nil, caption: caption.text, credit: caption.credit), caption: caption.text, credit: caption.credit, location: InstantPageGalleryEntryLocation(position: Int32(counter), totalCount: 0))]
+                let result = [InstantPageGalleryEntry(index: Int32(counter), pageId: pageId, media: InstantPageMedia(index: counter, media: m, url: nil, caption: caption.text, credit: caption.credit), caption: caption.text, credit: caption.credit, location: InstantPageGalleryEntryLocation(position: Int32(counter), totalCount: 0))]
                 counter += 1
                 return result
             }
-        case let .video(id, caption, _, _):
+        case let .video(id, caption, _, _, _):
             if let m = media[id] {
-                let result = [InstantPageGalleryEntry(index: Int32(counter), pageId: pageId, media: InstantPageMedia(index: counter, media: EngineMedia(m), url: nil, caption: caption.text, credit: caption.credit), caption: caption.text, credit: caption.credit, location: InstantPageGalleryEntryLocation(position: Int32(counter), totalCount: 0))]
+                let result = [InstantPageGalleryEntry(index: Int32(counter), pageId: pageId, media: InstantPageMedia(index: counter, media: m, url: nil, caption: caption.text, credit: caption.credit), caption: caption.text, credit: caption.credit, location: InstantPageGalleryEntryLocation(position: Int32(counter), totalCount: 0))]
                 counter += 1
                 return result
             }
@@ -64,14 +63,15 @@ private func instantPageBlockMedia(pageId: MediaId, block: InstantPageBlock, med
     return []
 }
 
-public func instantPageGalleryMedia(webpageId: MediaId, page: InstantPage.Accessor, galleryMedia: Media) -> [InstantPageGalleryEntry] {
+public func instantPageGalleryMedia(webpageId: EngineMedia.Id, page: InstantPage.Accessor, galleryMedia: EngineRawMedia) -> [InstantPageGalleryEntry] {
     var result: [InstantPageGalleryEntry] = []
     var counter: Int = 0
     
     let page = page._parse()
-    
+    let media = page.media
+
     for block in page.blocks {
-        result.append(contentsOf: instantPageBlockMedia(pageId: webpageId, block: block, media: page.media, counter: &counter))
+        result.append(contentsOf: instantPageBlockMedia(pageId: webpageId, block: block, media: media, counter: &counter))
     }
     
     var found = false
@@ -93,16 +93,35 @@ public func instantPageGalleryMedia(webpageId: MediaId, page: InstantPage.Access
     return result
 }
 
-public func chatMessageGalleryControllerData(context: AccountContext, chatLocation: ChatLocation?, chatFilterTag: MemoryBuffer?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>?, message: Message, mediaIndex: Int? = nil, navigationController: NavigationController?, standalone: Bool, reverseMessageGalleryOrder: Bool, mode: ChatControllerInteractionOpenMessageMode, source: GalleryControllerItemSource?, synchronousLoad: Bool, actionInteraction: GalleryControllerActionInteraction?) -> ChatMessageGalleryControllerData? {
+public func chatMessageGalleryControllerData(
+    context: AccountContext,
+    chatLocation: ChatLocation?,
+    chatFilterTag: EngineMemoryBuffer?,
+    chatLocationContextHolder: Atomic<ChatLocationContextHolder?>?,
+    message: EngineRawMessage,
+    mediaSubject: GalleryMediaSubject? = nil,
+    navigationController: NavigationController?,
+    standalone: Bool,
+    reverseMessageGalleryOrder: Bool,
+    mode: ChatControllerInteractionOpenMessageMode,
+    source: GalleryControllerItemSource?,
+    synchronousLoad: Bool,
+    actionInteraction: GalleryControllerActionInteraction?
+) -> ChatMessageGalleryControllerData? {
     var standalone = standalone
     if message.id.peerId.namespace == Namespaces.Peer.CloudUser && message.id.namespace != Namespaces.Message.Cloud {
         standalone = true
     }
+    var candidateMedia = message.effectiveMedia
+    if case let .richTextMedia(mediaId) = mediaSubject {
+        standalone = true
+        candidateMedia = candidateMedia.filter { $0.id == mediaId }
+    }
     
-    var galleryMedia: Media?
-    var otherMedia: Media?
+    var galleryMedia: EngineRawMedia?
+    var otherMedia: EngineRawMedia?
     var instantPageMedia: (TelegramMediaWebpage, [InstantPageGalleryEntry])?
-    if message.media.isEmpty, let entities = message.textEntitiesAttribute?.entities, entities.count == 1, let firstEntity = entities.first, case let .CustomEmoji(_, fileId) = firstEntity.type, let file = message.associatedMedia[MediaId(namespace: Namespaces.Media.CloudFile, id: fileId)] as? TelegramMediaFile {
+    if message.media.isEmpty, let entities = message.textEntitiesAttribute?.entities, entities.count == 1, let firstEntity = entities.first, case let .CustomEmoji(_, fileId) = firstEntity.type, let file = message.associatedMedia[EngineMedia.Id(namespace: Namespaces.Media.CloudFile, id: fileId)] as? TelegramMediaFile {
         for attribute in file.attributes {
             if case let .CustomEmoji(_, _, _, reference) = attribute {
                 if let reference = reference {
@@ -112,8 +131,11 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
             }
         }
     }
-    for media in message.media {
-        if let paidContent = media as? TelegramMediaPaidContent, let extendedMedia = paidContent.extendedMedia.first, case .full = extendedMedia {
+    for media in candidateMedia {
+        if let poll = media as? TelegramMediaPoll {
+            standalone = true
+            galleryMedia = poll
+        } else if let paidContent = media as? TelegramMediaPaidContent, let extendedMedia = paidContent.extendedMedia.first, case .full = extendedMedia {
             standalone = true
             galleryMedia = paidContent
         } else if let invoice = media as? TelegramMediaInvoice, let extendedMedia = invoice.extendedMedia, case let .full(fullMedia) = extendedMedia {
@@ -157,15 +179,26 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
                 }
             }
             
-            if let instantPage = content.instantPage, let galleryMedia = galleryMedia {
-                switch instantPageType(of: content) {
-                    case .album:
-                        let medias = instantPageGalleryMedia(webpageId: webpage.webpageId, page: instantPage, galleryMedia: galleryMedia)
-                        if medias.count > 1 {
+            if let instantPage = content.instantPage {
+                if case let .instantPageMedia(tappedMediaId) = mediaSubject {
+                    let parsedPage = instantPage._parse()
+                    if let tappedMedia = parsedPage.media[tappedMediaId]?._asMedia() {
+                        let medias = instantPageGalleryMedia(webpageId: webpage.webpageId, page: instantPage, galleryMedia: tappedMedia)
+                        if !medias.isEmpty {
                             instantPageMedia = (webpage, medias)
+                            galleryMedia = tappedMedia
                         }
-                    default:
-                        break
+                    }
+                } else if let galleryMedia = galleryMedia {
+                    switch instantPageType(of: content) {
+                        case .album:
+                            let medias = instantPageGalleryMedia(webpageId: webpage.webpageId, page: instantPage, galleryMedia: galleryMedia)
+                            if medias.count > 1 {
+                                instantPageMedia = (webpage, medias)
+                            }
+                        default:
+                            break
+                    }
                 }
             }
         } else if let mapMedia = media as? TelegramMediaMap {
@@ -203,13 +236,36 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
             }
         }
         
-        let gallery = InstantPageGalleryController(context: context, userLocation: chatLocation?.peerId.flatMap(MediaResourceUserLocation.peer) ?? .other, webPage: webPage, message: message, entries: instantPageMedia, centralIndex: centralIndex, fromPlayingVideo: autoplayingVideo, landscape: landscape, timecode: timecode, replaceRootController: { [weak navigationController] controller, ready in
+        let gallery = InstantPageGalleryController(context: context, userLocation: chatLocation?.peerId.flatMap(MediaResourceUserLocation.peer) ?? .other, webPage: webPage, message: EngineMessage(message), entries: instantPageMedia, centralIndex: centralIndex, fromPlayingVideo: autoplayingVideo, landscape: landscape, timecode: timecode, replaceRootController: { [weak navigationController] controller, ready in
             if let navigationController = navigationController {
                 navigationController.replaceTopController(controller, animated: false, ready: ready)
             }
         }, baseNavigationController: navigationController)
         return .instantPage(gallery, centralIndex, galleryMedia)
     } else if let galleryMedia = galleryMedia {
+        var galleryMedia = galleryMedia
+        if let poll = galleryMedia as? TelegramMediaPoll {
+            if mediaSubject == nil || mediaSubject == .pollDescription, let attachedMedia = poll.attachedMedia {
+                if let file = attachedMedia as? TelegramMediaFile, file.isMusic {
+                    galleryMedia = file
+                } else if let map = attachedMedia as? TelegramMediaMap {
+                    galleryMedia = map
+                }
+            } else if case let .pollOption(opaqueIdentifier) = mediaSubject, let optionMedia = poll.options.first(where: { $0.opaqueIdentifier == opaqueIdentifier })?.media {
+                if let file = optionMedia as? TelegramMediaFile, file.isMusic {
+                    galleryMedia = file
+                } else if let map = optionMedia as? TelegramMediaMap {
+                    galleryMedia = map
+                }
+            } else if case .pollSolution = mediaSubject, let solutionMedia = poll.results.solution?.media {
+                if let file = solutionMedia as? TelegramMediaFile, file.isMusic {
+                    galleryMedia = file
+                } else if let map = solutionMedia as? TelegramMediaMap {
+                    galleryMedia = map
+                }
+            }
+        }
+        
         if let mapMedia = galleryMedia as? TelegramMediaMap {
             return .map(mapMedia)
         } else if let file = galleryMedia as? TelegramMediaFile, (file.isSticker || file.isAnimatedSticker) {
@@ -225,7 +281,7 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
             return nil
         } else if let file = galleryMedia as? TelegramMediaFile, file.isMusic || file.isVoice || file.isInstantVideo {
             return .audio(file)
-        } else if let file = galleryMedia as? TelegramMediaFile, file.mimeType == "application/vnd.apple.pkpass" || (file.fileName != nil && file.fileName!.lowercased().hasSuffix(".pkpass")) {
+        } else if let file = galleryMedia as? TelegramMediaFile, file.isPass {
             return .pass(file)
         } else {
             if let file = galleryMedia as? TelegramMediaFile {
@@ -243,7 +299,7 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
                 
                 var source = source
                 if standalone {
-                    source = .standaloneMessage(message, nil)
+                    source = .standaloneMessage(message, mediaSubject)
                 }
                 
                 if internalDocumentItemSupportsMimeType(file.mimeType, fileName: file.fileName ?? "file") {
@@ -259,7 +315,7 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
             }
             
             if let adAttribute = message.adAttribute, adAttribute.hasContentMedia {
-                let gallery = GalleryController(context: context, source: .standaloneMessage(message, mediaIndex), invertItemOrder: reverseMessageGalleryOrder, streamSingleVideo: stream, fromPlayingVideo: autoplayingVideo, landscape: landscape, timecode: nil, playbackRate: 1.0, synchronousLoad: synchronousLoad, replaceRootController: { [weak navigationController] controller, ready in
+                let gallery = GalleryController(context: context, source: .standaloneMessage(message, mediaSubject), invertItemOrder: reverseMessageGalleryOrder, streamSingleVideo: stream, fromPlayingVideo: autoplayingVideo, landscape: landscape, timecode: nil, playbackRate: 1.0, synchronousLoad: synchronousLoad, replaceRootController: { [weak navigationController] controller, ready in
                     navigationController?.replaceTopController(controller, animated: false, ready: ready)
                 }, baseNavigationController: navigationController, actionInteraction: actionInteraction)
                 gallery.temporaryDoNotWaitForReady = autoplayingVideo
@@ -278,17 +334,30 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
                     }
                 }
                 
-                var openChatLocation = chatLocation ?? .peer(id: message.id.peerId)
-                var openChatLocationContextHolder = chatLocationContextHolder ?? Atomic<ChatLocationContextHolder?>(value: nil)
-                if chatLocation?.peerId != message.id.peerId {
-                    openChatLocation = .peer(id: message.id.peerId)
-                    openChatLocationContextHolder = Atomic<ChatLocationContextHolder?>(value: nil)
+                // A message from another chat (a channel post atop its comments thread) is browsed
+                // in its own chat. A message of the group a channel was migrated from stays in the
+                // channel: the channel's history views include the group's, and the group is read
+                // from the same cached data they use.
+                let isInChatLocationHistory: Signal<Bool, NoError>
+                if case let .peer(peerId)? = chatLocation, peerId != message.id.peerId {
+                    isInChatLocationHistory = context.engine.data.get(TelegramEngine.EngineData.Item.Peer.MigratedFromGroupId(id: peerId))
+                    |> map { groupId -> Bool in
+                        return groupId == message.id.peerId
+                    }
+                } else {
+                    isInChatLocationHistory = .single(chatLocation?.peerId == message.id.peerId)
                 }
                 
-                return .gallery(startState
+                return .gallery(combineLatest(startState, isInChatLocationHistory)
                 |> deliverOnMainQueue
-                |> map { startState in
-                    let gallery = GalleryController(context: context, source: source ?? (standalone ? .standaloneMessage(message, mediaIndex) : .peerMessagesAtId(messageId: message.id, chatLocation: openChatLocation, customTag: chatFilterTag, chatLocationContextHolder: openChatLocationContextHolder)), invertItemOrder: reverseMessageGalleryOrder, streamSingleVideo: stream, fromPlayingVideo: autoplayingVideo, landscape: landscape, timecode: startState.timecode, playbackRate: startState.rate, synchronousLoad: synchronousLoad, replaceRootController: { [weak navigationController] controller, ready in
+                |> map { [navigationController] startState, isInChatLocationHistory in
+                    var openChatLocation = chatLocation ?? .peer(id: message.id.peerId)
+                    var openChatLocationContextHolder = chatLocationContextHolder ?? Atomic<ChatLocationContextHolder?>(value: nil)
+                    if !isInChatLocationHistory {
+                        openChatLocation = .peer(id: message.id.peerId)
+                        openChatLocationContextHolder = Atomic<ChatLocationContextHolder?>(value: nil)
+                    }
+                    let gallery = GalleryController(context: context, source: source ?? (standalone ? .standaloneMessage(message, mediaSubject) : .peerMessagesAtId(messageId: message.id, chatLocation: openChatLocation, customTag: chatFilterTag, chatLocationContextHolder: openChatLocationContextHolder)), invertItemOrder: reverseMessageGalleryOrder, streamSingleVideo: stream, fromPlayingVideo: autoplayingVideo, landscape: landscape, timecode: startState.timecode, playbackRate: startState.rate, synchronousLoad: synchronousLoad, replaceRootController: { [weak navigationController] controller, ready in
                         navigationController?.replaceTopController(controller, animated: false, ready: ready)
                     }, baseNavigationController: navigationController, actionInteraction: actionInteraction)
                     gallery.temporaryDoNotWaitForReady = autoplayingVideo
@@ -305,25 +374,11 @@ public func chatMessageGalleryControllerData(context: AccountContext, chatLocati
 }
 
 public enum ChatMessagePreviewControllerData {
-    case instantPage(InstantPageGalleryController, Int, Media)
+    case instantPage(InstantPageGalleryController, Int, EngineRawMedia)
     case gallery(GalleryController)
 }
 
-public func chatMessagePreviewControllerData(context: AccountContext, chatLocation: ChatLocation?, chatFilterTag: MemoryBuffer?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>?, message: Message, standalone: Bool, reverseMessageGalleryOrder: Bool, navigationController: NavigationController?) -> ChatMessagePreviewControllerData? {
-    if let mediaData = chatMessageGalleryControllerData(context: context, chatLocation: chatLocation, chatFilterTag: chatFilterTag, chatLocationContextHolder: chatLocationContextHolder, message: message, navigationController: navigationController, standalone: standalone, reverseMessageGalleryOrder: reverseMessageGalleryOrder, mode: .default, source: nil, synchronousLoad: true, actionInteraction: nil) {
-        switch mediaData {
-            case .gallery:
-                break
-            case let .instantPage(gallery, centralIndex, galleryMedia):
-                return .instantPage(gallery, centralIndex, galleryMedia)
-            default:
-                break
-        }
-    }
-    return nil
-}
-
-public func chatMediaListPreviewControllerData(context: AccountContext, chatLocation: ChatLocation?, chatFilterTag: MemoryBuffer?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>?, message: Message, standalone: Bool, reverseMessageGalleryOrder: Bool, navigationController: NavigationController?) -> Signal<ChatMessagePreviewControllerData?, NoError> {
+public func chatMediaListPreviewControllerData(context: AccountContext, chatLocation: ChatLocation?, chatFilterTag: EngineMemoryBuffer?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?>?, message: EngineRawMessage, standalone: Bool, reverseMessageGalleryOrder: Bool, navigationController: NavigationController?) -> Signal<ChatMessagePreviewControllerData?, NoError> {
     if let mediaData = chatMessageGalleryControllerData(context: context, chatLocation: chatLocation, chatFilterTag: chatFilterTag, chatLocationContextHolder: chatLocationContextHolder, message: message, navigationController: navigationController, standalone: standalone, reverseMessageGalleryOrder: reverseMessageGalleryOrder, mode: .default, source: nil, synchronousLoad: true, actionInteraction: nil) {
         switch mediaData {
             case let .gallery(gallery):

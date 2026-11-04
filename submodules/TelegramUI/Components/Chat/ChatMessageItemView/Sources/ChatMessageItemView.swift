@@ -1,9 +1,9 @@
 import SGSimpleSettings
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
-import Postbox
 import TelegramCore
 import AccountContext
 import LocalizedPeerData
@@ -18,7 +18,6 @@ import ChatMessageItem
 import ChatMessageTransitionNode
 import AnimatedStickerNode
 import TelegramAnimatedStickerNode
-import LottieMetal
 
 public func chatMessageItemLayoutConstants(_ constants: (ChatMessageItemLayoutConstants, ChatMessageItemLayoutConstants), params: ListViewItemLayoutParams, presentationData: ChatPresentationData) -> ChatMessageItemLayoutConstants {
     var result: ChatMessageItemLayoutConstants
@@ -27,8 +26,8 @@ public func chatMessageItemLayoutConstants(_ constants: (ChatMessageItemLayoutCo
     } else {
         result = constants.0
     }
-    result.image.defaultCornerRadius = presentationData.chatBubbleCorners.mainRadius
-    result.image.mergedCornerRadius = (presentationData.chatBubbleCorners.mergeBubbleCorners && result.image.defaultCornerRadius >= 10.0) ?  presentationData.chatBubbleCorners.auxiliaryRadius : presentationData.chatBubbleCorners.mainRadius
+    result.image.defaultCornerRadius = max(0.0, presentationData.chatBubbleCorners.mainRadius - 1.0)
+    result.image.mergedCornerRadius = max(0.0, ((presentationData.chatBubbleCorners.mergeBubbleCorners && result.image.defaultCornerRadius >= 10.0) ? presentationData.chatBubbleCorners.auxiliaryRadius : presentationData.chatBubbleCorners.mainRadius) - 1.0)
     let minRadius: CGFloat = 4.0
     let maxRadius: CGFloat = 16.0
     let radiusTransition = (presentationData.chatBubbleCorners.mainRadius - minRadius) / (maxRadius - minRadius)
@@ -106,14 +105,14 @@ public final class ChatMessageAccessibilityData {
             }
         }
         
-        let dataForMessage: (Message, Bool) -> (String, String) = { message, isReply -> (String, String) in
+        let dataForMessage: (EngineRawMessage, Bool) -> (String, String) = { message, isReply -> (String, String) in
             var label: String = ""
             var value: String = ""
             
             if let chatPeer = message.peers[item.message.id.peerId] {
                 let authorName = message.author.flatMap(EnginePeer.init)?.displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder)
                 
-                let (_, _, messageText, _, _, _) = chatListItemStrings(strings: item.presentationData.strings, nameDisplayOrder: item.presentationData.nameDisplayOrder, dateTimeFormat: item.presentationData.dateTimeFormat, contentSettings: item.context.currentContentSettings.with { $0 }, messages: [EngineMessage(message)], chatPeer: EngineRenderedPeer(peer: EnginePeer(chatPeer)), accountPeerId: item.context.account.peerId)
+                let (_, _, messageText, _, _, _, _) = chatListItemStrings(strings: item.presentationData.strings, nameDisplayOrder: item.presentationData.nameDisplayOrder, dateTimeFormat: item.presentationData.dateTimeFormat, contentSettings: item.context.currentContentSettings.with { $0 }, messages: [EngineMessage(message)], chatPeer: EngineRenderedPeer(peer: EnginePeer(chatPeer)), accountPeerId: item.context.account.peerId)
                 
                 var text = messageText
                 
@@ -389,7 +388,8 @@ public final class ChatMessageAccessibilityData {
                                     inner: for optionVoters in voters {
                                         if optionVoters.opaqueIdentifier == poll.options[i].opaqueIdentifier {
                                             optionVoterCount[i] = optionVoters.count
-                                            maxOptionVoterCount = max(maxOptionVoterCount, optionVoters.count)
+                                            //TODO:correct
+                                            maxOptionVoterCount = max(maxOptionVoterCount, optionVoters.count ?? 0)
                                             break inner
                                         }
                                     }
@@ -623,21 +623,23 @@ public final class ChatMessageAccessibilityData {
 public enum InternalBubbleTapAction {
     public struct Action {
         public var action: () -> Void
+        public var actionWithLongTapRecognizer: ((TapLongTapOrDoubleTapGestureRecognizer) -> Void)?
         public var contextMenuOnLongPress: Bool
         
-        public init(_ action: @escaping () -> Void, contextMenuOnLongPress: Bool = false) {
+        public init(_ action: @escaping () -> Void, actionWithLongTapRecognizer: ((TapLongTapOrDoubleTapGestureRecognizer) -> Void)? = nil, contextMenuOnLongPress: Bool = false) {
             self.action = action
+            self.actionWithLongTapRecognizer = actionWithLongTapRecognizer
             self.contextMenuOnLongPress = contextMenuOnLongPress
         }
     }
     
     public struct OpenContextMenu {
-        public var tapMessage: Message
+        public var tapMessage: EngineRawMessage
         public var selectAll: Bool
         public var subFrame: CGRect
         public var disableDefaultPressAnimation: Bool
         
-        public init(tapMessage: Message, selectAll: Bool, subFrame: CGRect, disableDefaultPressAnimation: Bool = false) {
+        public init(tapMessage: EngineRawMessage, selectAll: Bool, subFrame: CGRect, disableDefaultPressAnimation: Bool = false) {
             self.tapMessage = tapMessage
             self.selectAll = selectAll
             self.subFrame = subFrame
@@ -656,6 +658,7 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
     open var item: ChatMessageItem?
     open var accessibilityData: ChatMessageAccessibilityData?
     open var safeInsets = UIEdgeInsets()
+    open var scrollTiltProvider: ((CFTimeInterval) -> Float)?
     
     open var awaitingAppliedReaction: (MessageReaction.Reaction?, () -> Void)?
     
@@ -686,6 +689,7 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         super.reuse()
         
         self.item = nil
+        self.scrollTiltProvider = nil
         self.frame = CGRect()
         self.wasFilteredKeywordTested = false
         self.matchedFilterKeyword = nil
@@ -710,14 +714,14 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         self.accessibilityData = accessibilityData
     }
     
-    override open func layoutForParams(_ params: ListViewItemLayoutParams, item: ListViewItem, previousItem: ListViewItem?, nextItem: ListViewItem?) {
+    override open func layoutForParams(_ params: ListViewItemLayoutParams, item: ListViewItem, neighbors: ListViewItemNeighbors) {
         if let item = item as? ChatMessageItem {
             let doLayout = self.asyncLayout()
-            let merged = item.mergedWithItems(top: previousItem, bottom: nextItem, isRotated: item.controllerInteraction.chatIsRotated)
+            let merged = item.merged(with: ChatHistoryItemNeighbors(neighbors), isRotated: item.controllerInteraction.chatIsRotated)
             let (layout, apply) = doLayout(item, params, merged.top, merged.bottom, merged.dateAtBottom)
             self.contentSize = layout.contentSize
             self.insets = layout.insets
-            apply(.None, ListViewItemApply(isOnScreen: false), false)
+            apply(.None, ListViewItemApply(), false)
         }
     }
     
@@ -741,7 +745,7 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         }
     }
     
-    public func matchesMessage(id: MessageId) -> Bool {
+    public func matchesMessage(id: EngineMessage.Id) -> Bool {
         if let item = self.item {
             for (message, _) in item.content {
                 if message.id == id {
@@ -752,18 +756,18 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         return false
     }
     
-    public func messages() -> [Message] {
+    public func messages() -> [EngineRawMessage] {
         guard let item = self.item else {
             return []
         }
-        var messages: [Message] = []
+        var messages: [EngineRawMessage] = []
         for (message, _) in item.content {
             messages.append(message)
         }
         return messages
     }
     
-    open func transitionNode(id: MessageId, media: Media, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    open func transitionNode(id: EngineMessage.Id, media: EngineRawMedia, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         return nil
     }
     
@@ -826,7 +830,7 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         if let item = self.item {
             switch button.action {
                 case .text:
-                    item.controllerInteraction.sendMessage(button.title)
+                    item.controllerInteraction.sendMessage(button.title, item.message.id)
                 case let .url(url):
                     var concealed = true
                     if url.hasPrefix("tg://") {
@@ -834,15 +838,15 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
                     }
                 item.controllerInteraction.openUrl(ChatControllerInteraction.OpenUrl(url: url, concealed: concealed, progress: progress))
                 case .requestMap:
-                    item.controllerInteraction.shareCurrentLocation()
+                    item.controllerInteraction.shareCurrentLocation(item.message.id)
                 case .requestPhone:
-                    item.controllerInteraction.shareAccountContact()
+                    item.controllerInteraction.shareAccountContact(item.message.id)
                 case .openWebApp:
                     item.controllerInteraction.requestMessageActionCallback(item.message, nil, true, false, progress)
                 case let .callback(requiresPassword, data):
                     item.controllerInteraction.requestMessageActionCallback(item.message, data, false, requiresPassword, progress)
                 case let .switchInline(samePeer, query, peerTypes):
-                    var botPeer: Peer?
+                    var botPeer: EngineRawPeer?
                     
                     var found = false
                     for attribute in item.message.attributes {
@@ -857,7 +861,7 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
                         botPeer = item.message.author
                     }
                     
-                    var peerId: PeerId?
+                    var peerId: EnginePeer.Id?
                     if samePeer {
                         peerId = item.message.id.peerId
                     }
@@ -867,7 +871,7 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
                 case .payment:
                     item.controllerInteraction.openCheckoutOrReceipt(item.message.id, nil)
                 case let .urlAuth(url, buttonId):
-                    item.controllerInteraction.requestMessageActionUrlAuth(url, .message(id: item.message.id, buttonId: buttonId))
+                    item.controllerInteraction.requestMessageActionUrlAuth(url, .message(id: item.message.callbackTargetMessageId, buttonId: buttonId))
                 case .setupPoll:
                     break
                 case let .openUserProfile(peerId):
@@ -878,11 +882,15 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
                         }
                     })
                 case let .openWebView(url, simple):
-                    item.controllerInteraction.openWebView(button.title, url, simple, .generic)
+                    item.controllerInteraction.openWebView(button.title, url, simple, .generic, progress)
                 case .requestPeer:
                     break
                 case let .copyText(payload):
                     item.controllerInteraction.copyText(payload)
+                case .disabled:
+                    // A forward stripped this button's behaviour; it renders dimmed and does
+                    // nothing. The tap is also blocked upstream in ChatMessageActionButtonsNode.
+                    break
             }
         }
     }
@@ -909,11 +917,15 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         return nil
     }
     
-    open func targetForStoryTransition(id: StoryId) -> UIView? {
+    open func targetForStoryTransition(id: EngineStoryId) -> UIView? {
         return nil
     }
     
     open func getStatusNode() -> ASDisplayNode? {
+        return nil
+    }
+    
+    open func getAuthorNameNode() -> ASDisplayNode? {
         return nil
     }
 
@@ -964,6 +976,22 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         }
     }
     
+    /// The space this row reserves in its top layout inset for the date (and topic) header attached to it,
+    /// which the first message of a day carries. Positioning on the message rather than its row leaves it
+    /// out: the header moves to an older message of the same day once that one loads. `compact` and
+    /// `regular` agree on both heights. A row that never reports its header here answers 0.
+    public var attachedDateHeaderInset: CGFloat {
+        let constants = ChatMessageItemLayoutConstants.compact
+        switch (self.attachedDateHeader.hasDate, self.attachedDateHeader.hasPeer) {
+        case (true, true):
+            return constants.timestampDateAndTopicHeaderHeight
+        case (true, false), (false, true):
+            return constants.timestampHeaderHeight
+        case (false, false):
+            return 0.0
+        }
+    }
+
     open func updateAttachedDateHeader(hasDate: Bool, hasPeer: Bool) {
         self.attachedDateHeader = (hasDate, hasPeer)
         for headerNode in self.attachedHeaderNodes {
@@ -1009,7 +1037,7 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         return nil
     }
     
-    private func playEffectAnimation(resource: MediaResource) {
+    private func playEffectAnimation(resource: EngineRawMediaResource) {
         guard let item = self.item else {
             return
         }
@@ -1035,22 +1063,16 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
         let incomingMessage = item.message.effectivelyIncoming(item.context.account.peerId)
 
         do {
-            let pathPrefix = item.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(resource.id)
+            let pathPrefix = item.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(resource.id))
             
             let additionalAnimationNode: AnimatedStickerNode
             var effectiveScale: CGFloat = 1.0
             #if targetEnvironment(simulator)
-            additionalAnimationNode = DirectAnimatedStickerNode()
+            additionalAnimationNode = DirectAnimatedStickerNode(lottieSettings: item.context.lottieRenderingSettings)
             effectiveScale = 1.4
             #else
-            additionalAnimationNode = DirectAnimatedStickerNode()
+            additionalAnimationNode = DirectAnimatedStickerNode(lottieSettings: item.context.lottieRenderingSettings)
             effectiveScale = 1.4
-            /*if "".isEmpty {
-                additionalAnimationNode = DirectAnimatedStickerNode()
-                effectiveScale = 1.4
-            } else {
-                additionalAnimationNode = LottieMetalAnimatedStickerNode()
-            }*/
             #endif
             additionalAnimationNode.updateLayout(size: animationSize)
             additionalAnimationNode.setup(source: source, width: Int(animationSize.width * effectiveScale), height: Int(animationSize.height * effectiveScale), playbackMode: .once, mode: .direct(cachePathPrefix: pathPrefix))

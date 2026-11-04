@@ -38,6 +38,7 @@ public struct Font {
         
         public static let italic = Traits(rawValue: 1 << 0)
         public static let monospacedNumbers = Traits(rawValue: 1 << 1)
+        public static let alternateDollarSign = Traits(rawValue: 1 << 2)
     }
     
     public enum Width {
@@ -177,14 +178,23 @@ public struct Font {
                 symbolicTraits.insert(.traitItalic)
             }
             var updatedDescriptor: UIFontDescriptor? = descriptor.withSymbolicTraits(symbolicTraits)
+            var featureSettings: [[String: Any]] = []
             if traits.contains(.monospacedNumbers) {
+                featureSettings.append([
+                    UIFontDescriptor.FeatureKey.type.rawValue: kNumberSpacingType,
+                    UIFontDescriptor.FeatureKey.selector.rawValue: kMonospacedNumbersSelector
+                ])
+            }
+            if traits.contains(.alternateDollarSign) {
+                featureSettings.append([
+                    kCTFontOpenTypeFeatureTag as String: "cv09",
+                    kCTFontOpenTypeFeatureValue as String: 1
+                ])
+            }
+            if !featureSettings.isEmpty {
                 updatedDescriptor = updatedDescriptor?.addingAttributes([
-                UIFontDescriptor.AttributeName.featureSettings: [
-                  [UIFontDescriptor.FeatureKey.featureIdentifier:
-                   kNumberSpacingType,
-                   UIFontDescriptor.FeatureKey.typeIdentifier:
-                   kMonospacedNumbersSelector]
-                ]])
+                    UIFontDescriptor.AttributeName.featureSettings: featureSettings
+                ])
             }
             switch design {
                 case .serif:
@@ -224,7 +234,7 @@ public struct Font {
         } else {
             let font: UIFont
             switch design {
-                case .regular:
+                case .regular, .round:
                     if traits.contains(.italic) {
                         if let descriptor = UIFont.systemFont(ofSize: size, weight: weight.weight).fontDescriptor.withSymbolicTraits([.traitItalic]) {
                             font = UIFont(descriptor: descriptor, size: size)
@@ -254,8 +264,6 @@ public struct Font {
                     } else {
                         font = UIFont(name: "Menlo", size: size - 1.0) ?? UIFont.systemFont(ofSize: size)
                     }
-                case .round:
-                    font = UIFont(name: ".SFCompactRounded-Semibold", size: size) ?? UIFont.systemFont(ofSize: size)
                 case .camera:
                     func encodeText(string: String, key: Int16) -> String {
                         let nsString = string as NSString
@@ -310,6 +318,14 @@ public struct Font {
     
     public static func semiboldItalic(_ size: CGFloat) -> UIFont {
         if let descriptor = UIFont.systemFont(ofSize: size).fontDescriptor.withSymbolicTraits([.traitBold, .traitItalic]) {
+            return UIFont(descriptor: descriptor, size: size)
+        } else {
+            return UIFont.italicSystemFont(ofSize: size)
+        }
+    }
+    
+    public static func mediumItalic(_ size: CGFloat) -> UIFont {
+        if let descriptor = UIFont.systemFont(ofSize: size, weight: .medium).fontDescriptor.withSymbolicTraits([.traitItalic]) {
             return UIFont(descriptor: descriptor, size: size)
         } else {
             return UIFont.italicSystemFont(ofSize: size)

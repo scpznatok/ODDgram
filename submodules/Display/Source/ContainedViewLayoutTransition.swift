@@ -9,11 +9,44 @@ extension CGRect {
     }
 }
 
+/// Is this layer already laid out at `frame`?
+///
+/// `CALayer.frame` cannot answer that. It is DERIVED — `origin.y == position.y - bounds.height *
+/// anchor.y` — so writing a frame and reading it back is lossy whenever the origin is not exactly
+/// representable, and an exact `equalTo` then answers "no" forever. The chat's bubble inset is 7/3:
+/// `2.3333333333333335` goes in and `2.333333333333332` comes back out (measured on device
+/// 2026-09-15). Every repeat layout pass over an unchanged bubble therefore re-entered the animated
+/// branch and restarted a fresh full-duration animation from the layer's PRESENTATION value, which
+/// on screen is a wobble.
+///
+/// So compare what the frame setter actually writes — `position` and `bounds` are STORED, not
+/// derived, and round-trip exactly. This is the same guard `ControlledTransition.NativeAnimator`
+/// already uses (`updatePosition`/`updateBounds`), which is why the wobble never appeared on the
+/// ListViewImpl backend: it animates items through the native animator, while the CoreList backend
+/// uses the legacy one and reaches this function.
+///
+/// A non-identity transform makes the derivation invalid — `layer.frame` is then the transformed
+/// bounding box — so those layers keep the original comparison. They are no worse off than before.
+func layerIsAlreadyAtFrame(_ layer: CALayer, _ frame: CGRect) -> Bool {
+    guard CATransform3DIsIdentity(layer.transform) else {
+        return layer.frame.equalTo(frame)
+    }
+    let anchorPoint = layer.anchorPoint
+    let expectedPosition = CGPoint(
+        x: frame.minX + frame.width * anchorPoint.x,
+        y: frame.minY + frame.height * anchorPoint.y
+    )
+    // The setter keeps the existing bounds origin and replaces only the size.
+    let expectedBounds = CGRect(origin: layer.bounds.origin, size: frame.size)
+    return layer.position == expectedPosition && layer.bounds == expectedBounds
+}
+
 public enum ContainedViewLayoutTransitionCurve: Equatable, Hashable {
     case linear
     case easeInOut
+    case easeIn
     case spring
-    case customSpring(damping: CGFloat, initialVelocity: CGFloat)
+    case customSpring(mass: CGFloat = 5.0, stiffness: CGFloat = 900.0, damping: CGFloat, initialVelocity: CGFloat)
     case custom(Float, Float, Float, Float)
     
     public static var slide: ContainedViewLayoutTransitionCurve {
@@ -28,14 +61,69 @@ public extension ContainedViewLayoutTransitionCurve {
             return offset
         case .easeInOut:
             return listViewAnimationCurveEaseInOut(offset)
+        case .easeIn:
+            return listViewAnimationCurveEaseIn(offset)
         case .spring:
             return listViewAnimationCurveSystem(offset)
-        case .customSpring:
-            return listViewAnimationCurveSystem(offset)
+        case let .customSpring(mass, stiffness, damping, initialVelocity):
+            return customSpringCurveValue(mass: mass, stiffness: stiffness, damping: damping, initialVelocity: initialVelocity, at: offset)
         case let .custom(c1x, c1y, c2x, c2y):
             return bezierPoint(CGFloat(c1x), CGFloat(c1y), CGFloat(c2x), CGFloat(c2y), offset)
         }
     }
+}
+
+/// Caches one solver `CASpringAnimation` per distinct parameter set: `solve(at:)` is sampled per frame by
+/// display-link driven animations, and building a spring animation each time would be wasteful.
+private final class CustomSpringCurveSolverCache {
+    private struct Key: Hashable {
+        let mass: CGFloat
+        let stiffness: CGFloat
+        let damping: CGFloat
+        let initialVelocity: CGFloat
+    }
+    
+    private let lock = NSLock()
+    private var animations: [Key: CASpringAnimation] = [:]
+    
+    func animation(mass: CGFloat, stiffness: CGFloat, damping: CGFloat, initialVelocity: CGFloat) -> CASpringAnimation {
+        let key = Key(mass: mass, stiffness: stiffness, damping: damping, initialVelocity: initialVelocity)
+        self.lock.lock()
+        defer {
+            self.lock.unlock()
+        }
+        if let animation = self.animations[key] {
+            return animation
+        }
+        let animation = CASpringAnimation(keyPath: "position")
+        animation.mass = mass
+        animation.stiffness = stiffness
+        animation.damping = damping
+        animation.initialVelocity = initialVelocity
+        // `springAnimationValueAt` takes a fraction of the animation's duration; `CALayer.makeAnimation` runs
+        // custom springs with `duration = settlingDuration` (then time-scales them), so sampling the same
+        // normalized time here reproduces the on-screen curve.
+        animation.duration = animation.settlingDuration
+        if self.animations.count >= 32 {
+            self.animations.removeAll()
+        }
+        self.animations[key] = animation
+        return animation
+    }
+}
+
+private let customSpringCurveSolverCache = CustomSpringCurveSolverCache()
+
+/// Value of a `.customSpring` curve at normalized time `t` (0.0 ... 1.0 maps onto the spring's settling duration).
+func customSpringCurveValue(mass: CGFloat, stiffness: CGFloat, damping: CGFloat, initialVelocity: CGFloat, at t: CGFloat) -> CGFloat {
+    if t <= 0.0 {
+        return 0.0
+    }
+    if t >= 1.0 {
+        return 1.0
+    }
+    let animation = customSpringCurveSolverCache.animation(mass: mass, stiffness: stiffness, damping: damping, initialVelocity: initialVelocity)
+    return springAnimationValueAt(animation, t)
 }
 
 public extension ContainedViewLayoutTransitionCurve {
@@ -45,10 +133,12 @@ public extension ContainedViewLayoutTransitionCurve {
                 return CAMediaTimingFunctionName.linear.rawValue
             case .easeInOut:
                 return CAMediaTimingFunctionName.easeInEaseOut.rawValue
+            case .easeIn:
+                return CAMediaTimingFunctionName.easeIn.rawValue
             case .spring:
                 return kCAMediaTimingFunctionSpring
-            case let .customSpring(damping, initialVelocity):
-                return "\(kCAMediaTimingFunctionCustomSpringPrefix)_\(damping)_\(initialVelocity)"
+            case let .customSpring(mass, stiffness, damping, initialVelocity):
+                return "\(kCAMediaTimingFunctionCustomSpringPrefix)_\(mass)_\(stiffness)_\(damping)_\(initialVelocity)"
             case .custom:
                 return CAMediaTimingFunctionName.easeInEaseOut.rawValue
         }
@@ -59,6 +149,8 @@ public extension ContainedViewLayoutTransitionCurve {
             case .linear:
                 return nil
             case .easeInOut:
+                return nil
+            case .easeIn:
                 return nil
             case .spring:
                 return nil
@@ -75,6 +167,8 @@ public extension ContainedViewLayoutTransitionCurve {
                 return [.curveLinear]
             case .easeInOut:
                 return [.curveEaseInOut]
+            case .easeIn:
+                return [.curveEaseIn]
             case .spring:
                 return UIView.AnimationOptions(rawValue: 7 << 16)
             case .customSpring:
@@ -115,8 +209,8 @@ private extension CALayer {
         let timingFunction: String
         let mediaTimingFunction: CAMediaTimingFunction?
         switch curve {
-        case .spring:
-            timingFunction = kCAMediaTimingFunctionSpring
+        case .spring, .customSpring:
+            timingFunction = curve.timingFunction
             mediaTimingFunction = nil
         default:
             timingFunction = CAMediaTimingFunctionName.easeInEaseOut.rawValue
@@ -179,7 +273,7 @@ public extension ContainedViewLayoutTransition {
             return
         }
         
-        if node.frame.equalTo(frame) && !force {
+        if layerIsAlreadyAtFrame(node.layer, frame) && !force {
             completion?(true)
         } else {
             switch self {
@@ -399,7 +493,7 @@ public extension ContainedViewLayoutTransition {
         }
     }
     
-    func updateBounds(layer: CALayer, bounds: CGRect, force: Bool = false, completion: ((Bool) -> Void)? = nil) {
+    func updateBounds(layer: CALayer, bounds: CGRect, beginWithCurrentState: Bool = false, force: Bool = false, completion: ((Bool) -> Void)? = nil) {
         if layer.bounds.equalTo(bounds) && !force {
             completion?(true)
         } else {
@@ -411,7 +505,12 @@ public extension ContainedViewLayoutTransition {
                     completion(true)
                 }
             case let .animated(duration, curve):
-                let previousBounds = layer.bounds
+                let previousBounds: CGRect
+                if beginWithCurrentState, layer.animation(forKey: "bounds") != nil, let presentation = layer.presentation() {
+                    previousBounds = presentation.bounds
+                } else {
+                    previousBounds = layer.bounds
+                }
                 layer.bounds = bounds
                 layer.animateBounds(from: previousBounds, to: bounds, duration: duration, timingFunction: curve.timingFunction, mediaTimingFunction: curve.mediaTimingFunction, force: force, completion: { result in
                     if let completion = completion {
@@ -450,7 +549,7 @@ public extension ContainedViewLayoutTransition {
         }
     }
     
-    func updatePosition(layer: CALayer, position: CGPoint, force: Bool = false, completion: ((Bool) -> Void)? = nil) {
+    func updatePosition(layer: CALayer, position: CGPoint, force: Bool = false, beginFromCurrentState: Bool = false, completion: ((Bool) -> Void)? = nil) {
         if layer.position.equalTo(position) && !force {
             completion?(true)
         } else {
@@ -462,7 +561,22 @@ public extension ContainedViewLayoutTransition {
                     completion(true)
                 }
             case let .animated(duration, curve):
-                let previousPosition = layer.position
+                let previousPosition: CGPoint
+                if beginFromCurrentState, let animationKeys = layer.animationKeys(), animationKeys.contains(where: { key in
+                    guard let animation = layer.animation(forKey: key) as? CAPropertyAnimation else {
+                        return false
+                    }
+                    if animation.keyPath == "position" {
+                        return true
+                    } else {
+                        return false
+                    }
+                }) {
+                    previousPosition = layer.presentation()?.position ?? layer.position
+                } else {
+                    previousPosition = layer.position
+                }
+                
                 layer.position = position
                 layer.animatePosition(from: previousPosition, to: position, duration: duration, timingFunction: curve.timingFunction, mediaTimingFunction: curve.mediaTimingFunction, completion: { result in
                     if let completion = completion {
@@ -872,7 +986,7 @@ public extension ContainedViewLayoutTransition {
             return
         }
         
-        if view.frame.equalTo(frame) && !force {
+        if layerIsAlreadyAtFrame(view.layer, frame) && !force {
             completion?(true)
         } else {
             switch self {
@@ -901,7 +1015,7 @@ public extension ContainedViewLayoutTransition {
     }
 
     func updateFrame(layer: CALayer, frame: CGRect, beginWithCurrentState: Bool = false, delay: Double = 0.0, completion: ((Bool) -> Void)? = nil) {
-        if layer.frame.equalTo(frame) {
+        if layerIsAlreadyAtFrame(layer, frame) {
             completion?(true)
         } else {
             switch self {
@@ -1085,6 +1199,46 @@ public extension ContainedViewLayoutTransition {
         }
     }
     
+    /// Per-corner radii — see `CornerRadii` and `CALayer.setCornerRadii`. Silently no-ops where the
+    /// underlying property is unavailable; check `CALayer.cornerRadiiSupported` if you need a
+    /// guaranteed clip and must fall back to a mask.
+    ///
+    func updateCornerRadii(layer: CALayer, cornerRadii radii: CornerRadii, completion: ((Bool) -> Void)? = nil) {
+        guard CALayer.cornerRadiiSupported else {
+            completion?(true)
+            return
+        }
+        let keyPath = layer.cornerRadiiKeyPath
+        if layer.cornerRadii == radii, layer.animation(forKey: keyPath) == nil {
+            completion?(true)
+            return
+        }
+
+        switch self {
+        case .immediate:
+            layer.removeAnimation(forKey: keyPath)
+            layer.setCornerRadii(radii)
+            completion?(true)
+        case let .animated(duration, curve):
+            // Resume from what is on screen when one animation interrupts another, exactly as the
+            // scalar `cornerRadius` path does.
+            let fromRadii: CornerRadii?
+            if layer.animation(forKey: keyPath) != nil, let presentationRadii = layer.presentation()?.cornerRadii {
+                fromRadii = presentationRadii
+            } else {
+                fromRadii = layer.cornerRadii
+            }
+            layer.setCornerRadii(radii)
+            guard let fromRadii else {
+                completion?(true)
+                return
+            }
+            layer.animate(from: fromRadii.boxedValue, to: radii.boxedValue, keyPath: keyPath, timingFunction: curve.timingFunction, duration: duration, mediaTimingFunction: curve.mediaTimingFunction, completion: { result in
+                completion?(result)
+            })
+        }
+    }
+
     func updateCornerRadius(layer: CALayer, cornerRadius: CGFloat, completion: ((Bool) -> Void)? = nil) {
         if layer.cornerRadius.isEqual(to: cornerRadius) {
             if let completion = completion {
@@ -2444,6 +2598,8 @@ public final class ControlledTransition {
             switch self.curve {
             case .spring:
                 mappedFraction = springAnimationSolver(progress)
+            case .customSpring:
+                mappedFraction = self.curve.solve(at: progress)
             case let .custom(c1x, c1y, c2x, c2y):
                 mappedFraction = bezierPoint(CGFloat(c1x), CGFloat(c1y), CGFloat(c2x), CGFloat(c2y), progress)
             default:
@@ -2758,7 +2914,7 @@ public final class ControlledTransition {
         }
         
         public func updatePosition(layer: CALayer, position: CGPoint, completion: ((Bool) -> Void)?) {
-            self.transition.updatePosition(layer: layer, position: position, completion: completion)
+            self.transition.updatePosition(layer: layer, position: position, beginFromCurrentState: true, completion: completion)
         }
         
         public func updateTransform(layer: CALayer, transform: CATransform3D, completion: ((Bool) -> Void)?) {
@@ -2778,11 +2934,11 @@ public final class ControlledTransition {
         }
         
         public func updateBounds(layer: CALayer, bounds: CGRect, completion: ((Bool) -> Void)?) {
-            self.transition.updateBounds(layer: layer, bounds: bounds, completion: completion)
+            self.transition.updateBounds(layer: layer, bounds: bounds, beginWithCurrentState: true, completion: completion)
         }
         
         public func updateFrame(layer: CALayer, frame: CGRect, completion: ((Bool) -> Void)?) {
-            self.transition.updateFrame(layer: layer, frame: frame, completion: completion)
+            self.transition.updateFrame(layer: layer, frame: frame, beginWithCurrentState: true, completion: completion)
         }
         
         public func updateCornerRadius(layer: CALayer, cornerRadius: CGFloat, completion: ((Bool) -> Void)?) {

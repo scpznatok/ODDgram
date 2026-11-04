@@ -1,6 +1,6 @@
 import Foundation
+import LottieSettings
 import UIKit
-import Postbox
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
@@ -18,10 +18,10 @@ public final class ChatMessageEventLogPreviousMessageContentNode: ChatMessageBub
         }
     }
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.contentNode = ChatMessageAttachedContentNode()
         
-        super.init()
+        super.init(lottieSettings: lottieSettings)
         
         self.addSubnode(self.contentNode)
     }
@@ -33,7 +33,7 @@ public final class ChatMessageEventLogPreviousMessageContentNode: ChatMessageBub
     override public func asyncLayoutContent() -> (_ item: ChatMessageBubbleContentItem, _ layoutConstants: ChatMessageItemLayoutConstants, _ preparePosition: ChatMessageBubblePreparePosition, _ messageSelection: Bool?, _ constrainedSize: CGSize, _ avatarInset: CGFloat) -> (ChatMessageBubbleContentProperties, CGSize?, CGFloat, (CGSize, ChatMessageBubbleContentPosition) -> (CGFloat, (CGFloat) -> (CGSize, (ListViewItemUpdateAnimation, Bool, ListViewItemApply?) -> Void))) {
         let contentNodeLayout = self.contentNode.asyncLayout()
         
-        return { item, layoutConstants, preparePosition, _, constrainedSize, _ in
+        return { [weak self] item, layoutConstants, preparePosition, _, constrainedSize, _ in
             var messageEntities: [MessageTextEntity]?
             
             for attribute in item.message.attributes {
@@ -50,7 +50,7 @@ public final class ChatMessageEventLogPreviousMessageContentNode: ChatMessageBub
             } else {
                 text = item.message.text
             }
-            let mediaAndFlags: ([Media], ChatMessageAttachedContentNodeMediaFlags)? = nil
+            let mediaAndFlags: ([EngineRawMedia], ChatMessageAttachedContentNodeMediaFlags)? = nil
             
             let (initialWidth, continueLayout) = contentNodeLayout(item.presentationData, item.controllerInteraction.automaticMediaDownloadSettings, item.associatedData, item.attributes, item.context, item.controllerInteraction, item.message, true, .peer(id: item.message.id.peerId), title, nil, nil, text, messageEntities, mediaAndFlags, nil, nil, nil, true, layoutConstants, preparePosition, constrainedSize, item.controllerInteraction.presentationContext.animationCache, item.controllerInteraction.presentationContext.animationRenderer)
             
@@ -105,11 +105,11 @@ public final class ChatMessageEventLogPreviousMessageContentNode: ChatMessageBub
         self.contentNode.updateTouchesAtPoint(point.flatMap { $0.offsetBy(dx: -contentNodeFrame.minX, dy: -contentNodeFrame.minY) })
     }
     
-    override public func updateHiddenMedia(_ media: [Media]?) -> Bool {
+    override public func updateHiddenMedia(_ media: [EngineRawMedia]?) -> Bool {
         return self.contentNode.updateHiddenMedia(media)
     }
     
-    override public func transitionNode(messageId: MessageId, media: Media, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    override public func transitionNode(messageId: EngineMessage.Id, media: EngineRawMedia, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         if self.item?.message.id != messageId {
             return nil
         }

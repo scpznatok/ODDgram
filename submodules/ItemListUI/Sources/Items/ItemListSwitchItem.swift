@@ -65,10 +65,10 @@ public class ItemListSwitchItem: ListViewItem, ItemListItem {
         self.tag = tag
     }
     
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         async {
             let node = ItemListSwitchItemNode(type: self.type)
-            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+            let (layout, apply) = node.asyncLayout()(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
             
             node.contentSize = layout.contentSize
             node.insets = layout.insets
@@ -81,13 +81,13 @@ public class ItemListSwitchItem: ListViewItem, ItemListItem {
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? ItemListSwitchItemNode {
                 let makeLayout = nodeValue.asyncLayout()
                 
                 async {
-                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topItem: previousItem as? ItemListItem, bottomItem: nextItem as? ItemListItem))
+                    let (layout, apply) = makeLayout(self, params, itemListNeighbors(item: self, topFacet: neighbors.previous?.base(ItemListNeighborFacet.self), bottomFacet: neighbors.next?.base(ItemListNeighborFacet.self)))
                     Queue.mainQueue().async {
                         completion(layout, { _ in
                             var animated = true
@@ -171,6 +171,10 @@ public class ItemListSwitchItemNode: ListViewItemNode, ItemListItemNode {
     public var tag: ItemListItemTag? {
         return self.item?.tag
     }
+
+    public var contextSourceView: UIView {
+        return self.textNode?.view ?? self.switchNode.view
+    }
     
     public init(type: ItemListSwitchItemNodeType) {
         self.backgroundNode = ASDisplayNode()
@@ -251,6 +255,20 @@ public class ItemListSwitchItemNode: ListViewItemNode, ItemListItemNode {
             })
         })
     }
+
+    public func updateHasContextMenu(hasContextMenu: Bool) {
+        let transition: ContainedViewLayoutTransition
+        if hasContextMenu {
+            transition = .immediate
+        } else {
+            transition = .animated(duration: 0.3, curve: .easeInOut)
+        }
+        if let textNode = self.textNode {
+            transition.updateAlpha(node: textNode, alpha: hasContextMenu ? 0.5 : 1.0)
+        } else {
+            transition.updateAlpha(node: self.switchNode, alpha: hasContextMenu ? 0.5 : 1.0)
+        }
+    }
     
     func asyncLayout() -> (_ item: ItemListSwitchItem, _ params: ListViewItemLayoutParams, _ insets: ItemListNeighbors) -> (ListViewItemNodeLayout, (Bool) -> Void) {
         let makeTitleLayout = TextNode.asyncLayout(self.titleNode)
@@ -259,7 +277,7 @@ public class ItemListSwitchItemNode: ListViewItemNode, ItemListItemNode {
         let currentItem = self.item
         var currentDisabledOverlayNode = self.disabledOverlayNode
         
-        return { item, params, neighbors in
+        return { [weak self] item, params, neighbors in
             var contentSize: CGSize
             var insets: UIEdgeInsets
             let separatorHeight = UIScreenPixel
@@ -486,12 +504,18 @@ public class ItemListSwitchItemNode: ListViewItemNode, ItemListItemNode {
                             
                             transition.updateFrame(node: strongSelf.backgroundNode, frame: CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: contentSize.height + min(insets.top, separatorHeight) + min(insets.bottom, separatorHeight))))
                             transition.updateFrame(node: strongSelf.highlightNode, frame: CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: params.width, height: contentSize.height + min(insets.top, separatorHeight) + min(insets.bottom, separatorHeight))))
-                            transition.updateFrame(node: strongSelf.maskNode, frame: strongSelf.backgroundNode.frame.insetBy(dx: params.leftInset, dy: 0.0))
+                            // Per side: the margins differ beside iPhone Duo's strip; equal margins give the symmetric frame.
+                            let backgroundFrame = strongSelf.backgroundNode.frame
+                            transition.updateFrame(node: strongSelf.maskNode, frame: CGRect(x: backgroundFrame.minX + params.leftInset, y: backgroundFrame.minY, width: backgroundFrame.width - params.leftInset - params.rightInset, height: backgroundFrame.height))
                             transition.updateFrame(node: strongSelf.topStripeNode, frame: CGRect(origin: CGPoint(x: 0.0, y: -min(insets.top, separatorHeight)), size: CGSize(width: layoutSize.width, height: separatorHeight)))
                             transition.updateFrame(node: strongSelf.bottomStripeNode, frame: CGRect(origin: CGPoint(x: bottomStripeInset, y: contentSize.height - separatorHeight), size: CGSize(width: layoutSize.width - params.rightInset - bottomStripeInset - separatorRightInset, height: separatorHeight)))
                     }
                     
-                    let titleFrame = CGRect(origin: CGPoint(x: leftInset, y: topInset), size: CGSize(width: titleConstrainedWidth, height: titleLayout.size.height))
+                    var titleOriginY = floorToScreenPixels((contentSize.height - titleLayout.size.height) / 2.0) + 1.0
+                    if textLayoutAndApply != nil {
+                        titleOriginY = topInset + 1.0
+                    }
+                    let titleFrame = CGRect(origin: CGPoint(x: leftInset, y: titleOriginY), size: CGSize(width: titleConstrainedWidth, height: titleLayout.size.height))
                     transition.updatePosition(node: strongSelf.titleNode, position: titleFrame.origin)
                     strongSelf.titleNode.bounds = CGRect(origin: CGPoint(), size: titleFrame.size)
                     
@@ -565,7 +589,14 @@ public class ItemListSwitchItemNode: ListViewItemNode, ItemListItemNode {
                             let iconOrigin: CGPoint
                             switch item.systemStyle {
                             case .glass:
-                                iconOrigin = CGPoint(x: item.value ? switchFrame.maxX - icon.size.width - 16.0 + UIScreenPixel : switchFrame.minX + 16.0 - UIScreenPixel, y: switchFrame.minY + 8.0)
+                                let offset: CGPoint
+                                if #available(iOS 26.0, *) {
+                                    offset = .zero
+                                } else {
+                                    offset = CGPoint(x: 5.0, y: 1.0)
+                                }
+                                
+                                iconOrigin = CGPoint(x: item.value ? switchFrame.maxX - icon.size.width - 16.0 + UIScreenPixel + offset.x : switchFrame.minX + 16.0 - UIScreenPixel - offset.x, y: switchFrame.minY + 8.0 + offset.y)
                             case .legacy:
                                 iconOrigin = CGPoint(x: item.value ? switchFrame.maxX - icon.size.width - 11.0 : switchFrame.minX + 11.0, y: switchFrame.minY + 9.0)
                             }

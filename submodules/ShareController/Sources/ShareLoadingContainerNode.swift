@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import SwiftSignalKit
@@ -11,7 +12,6 @@ import TelegramAnimatedStickerNode
 import AppBundle
 import TelegramUniversalVideoContent
 import TelegramCore
-import Postbox
 import AccountContext
 
 private func fileSize(_ path: String, useTotalFileAllocatedSize: Bool = false) -> Int64? {
@@ -235,15 +235,18 @@ public final class ShareProlongedLoadingContainerNode: ASDisplayNode, ShareConte
         return self.elapsedTime + 3.0 + 0.15
     }
         
-    public init(theme: PresentationTheme, strings: PresentationStrings, forceNativeAppearance: Bool, postbox: Postbox?, environment: ShareControllerEnvironment) {
+    public init(theme: PresentationTheme, strings: PresentationStrings, forceNativeAppearance: Bool, environment: ShareControllerEnvironment) {
         self.theme = theme
         self.strings = strings
         
-        self.animationNode = DefaultAnimatedStickerNodeImpl()
+        // ShareControllerEnvironment carries no AccountContext by design: it has
+        // isMainApp because the share sheet also runs inside the Share extension.
+        // Both animations here are bundled local files.
+        self.animationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: .noAccountFallback)
         self.animationNode.setup(source: AnimatedStickerNodeLocalFileSource(name: "ShareProgress"), width: 384, height: 384, playbackMode: .loop, mode: .direct(cachePathPrefix: nil))
         self.animationNode.visibility = true
         
-        self.doneAnimationNode = DefaultAnimatedStickerNodeImpl()
+        self.doneAnimationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: .noAccountFallback)
         self.doneAnimationNode.setup(source: AnimatedStickerNodeLocalFileSource(name: "ShareDone"), width: 384, height: 384, playbackMode: .once, mode: .direct(cachePathPrefix: nil))
         self.doneAnimationNode.visibility = false
         self.doneAnimationNode.isHidden = true
@@ -276,8 +279,7 @@ public final class ShareProlongedLoadingContainerNode: ASDisplayNode, ShareConte
             }
         }))
         
-        if let postbox, let mediaManager = environment.mediaManager, let path = getAppBundle().path(forResource: "BlankVideo", ofType: "m4v"), let size = fileSize(path) {
-            let _ = postbox
+        if let mediaManager = environment.mediaManager, let path = getAppBundle().path(forResource: "BlankVideo", ofType: "m4v"), let size = fileSize(path) {
             let _ = mediaManager
             
             let decoration = ChatBubbleVideoDecoration(corners: ImageCorners(), nativeSize: CGSize(width: 100.0, height: 100.0), contentMode: .aspectFit, backgroundColor: .black)

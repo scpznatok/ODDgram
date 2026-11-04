@@ -502,13 +502,8 @@ private func automaticThemeShouldSwitchNow(_ parameters: AutomaticThemeSwitchPar
                 return false
             }
         case let .brightness(threshold):
-            return UIScreen.main.brightness <= CGFloat(threshold)
+            return mainWindowScreen.brightness <= CGFloat(threshold)
     }
-}
-
-public func automaticThemeShouldSwitchNow(settings: AutomaticThemeSwitchSetting, systemUserInterfaceStyle: WindowUserInterfaceStyle) -> Bool {
-    let parameters = AutomaticThemeSwitchParameters(settings: settings)
-    return automaticThemeShouldSwitchNow(parameters, systemUserInterfaceStyle: systemUserInterfaceStyle)
 }
 
 private func automaticThemeShouldSwitch(_ settings: AutomaticThemeSwitchSetting, systemUserInterfaceStyle: WindowUserInterfaceStyle) -> Signal<Bool, NoError> {

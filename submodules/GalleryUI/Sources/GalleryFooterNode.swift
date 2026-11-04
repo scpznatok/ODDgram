@@ -78,7 +78,7 @@ public final class GalleryFooterNode: ASDisplayNode {
             self.currentThumbnailPanelHeight = thumbnailPanelHeight
             self.currentFooterContentNode = footerContentNode
             if let footerContentNode = footerContentNode {
-                footerContentNode.setVisibilityAlpha(self.visibilityAlpha, animated: transition.isAnimated)
+                footerContentNode.setVisibilityAlpha(self.visibilityAlpha, animated: false)
                 footerContentNode.controllerInteraction = self.controllerInteraction
                 footerContentNode.requestLayout = { [weak self] transition in
                     if let strongSelf = self, let (currentLayout, navigationBarHeight, currentThumbnailPanelHeight, isHidden) = strongSelf.currentLayout {
@@ -118,7 +118,11 @@ public final class GalleryFooterNode: ASDisplayNode {
             if footerContentNode.bounds.isEmpty {
                 footerTransition = .immediate
             }
-            let backgroundLayoutInfoValue = footerContentNode.updateLayout(size: layout.size, metrics: layout.metrics, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, bottomInset: cleanInsets.bottom, contentInset: effectiveThumbnailPanelHeight, transition: footerTransition)
+            // The footer is anchored at the bottom, so it spans iPhone Duo's side strip; it keeps clear only of a corner
+            // block at the bottom.
+            let bottomInsets = layout.bottomEdgeSideInsets()
+            footerContentNode.screenSideInsets = (layout.safeInsets.left, layout.safeInsets.right)
+            let backgroundLayoutInfoValue = footerContentNode.updateLayout(size: layout.size, metrics: layout.metrics, leftInset: bottomInsets.left, rightInset: bottomInsets.right, bottomInset: cleanInsets.bottom, contentInset: effectiveThumbnailPanelHeight, transition: footerTransition)
             backgroundLayoutInfo = backgroundLayoutInfoValue
             
             footerTransition.updateFrame(node: footerContentNode, frame: CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - backgroundLayoutInfoValue.height + verticalOffset), size: CGSize(width: layout.size.width, height: backgroundLayoutInfoValue.height)))

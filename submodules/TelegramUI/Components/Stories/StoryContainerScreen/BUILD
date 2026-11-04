@@ -1,9 +1,11 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
+# MARK: Swiftgram
 sgdeps = [
     "//Swiftgram/SGStrings:SGStrings",
     "//Swiftgram/SGSimpleSettings:SGSimpleSettings"
 ]
+#
 
 swift_library(
     name = "StoryContainerScreen",
@@ -14,8 +16,10 @@ swift_library(
     copts = [
         "-warnings-as-errors",
     ],
-    deps = sgdeps + [
+    deps = sgdeps + [ # MARK: Swiftgram
+        "//submodules/UrlWhitelist",
         "//submodules/Display",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/AsyncDisplayKit",
         "//submodules/ComponentFlow",
         "//submodules/Components/ViewControllerComponent",
@@ -39,10 +43,8 @@ swift_library(
         "//submodules/TelegramUI/Components/ChatTimerScreen",
         "//submodules/TextFormat",
         "//submodules/PhoneNumberFormat",
-        "//submodules/ComposePollUI",
         "//submodules/TelegramIntents",
         "//submodules/LegacyUI",
-        "//submodules/WebSearchUI",
         "//submodules/PremiumUI",
         "//submodules/ICloudResources",
         "//submodules/LegacyComponents",
@@ -85,7 +87,9 @@ swift_library(
         "//submodules/TelegramUI/Components/LottieComponentResourceContent",
         "//submodules/TextSelectionNode",
         "//submodules/Pasteboard",
+        "//submodules/TelegramUI/Components/Chat/ChatRichTextEditorComposer",
         "//submodules/Speak",
+        "//submodules/TelegramUI/Components/TextProcessingScreen",
         "//submodules/TranslateUI",
         "//submodules/TelegramNotices",
         "//submodules/MediaPlayer:UniversalMediaPlayer",

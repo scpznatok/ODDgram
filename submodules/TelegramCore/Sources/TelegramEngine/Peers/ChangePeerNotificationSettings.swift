@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 
 func _internal_togglePeerMuted(account: Account, peerId: PeerId, threadId: Int64?) -> Signal<Void, NoError> {
     return account.postbox.transaction { transaction -> Void in
@@ -62,7 +62,7 @@ func _internal_togglePeerMuted(account: Account, peerId: PeerId, threadId: Int64
     }
 }
 
-public func resolvedAreStoriesMuted(globalSettings: GlobalNotificationSettingsSet, peer: Peer, peerSettings: TelegramPeerNotificationSettings?, topSearchPeers: [PeerId]) -> Bool {
+public func resolvedAreStoriesMuted(globalSettings: GlobalNotificationSettingsSet, peer: EnginePeer, peerSettings: TelegramPeerNotificationSettings?, topSearchPeers: [PeerId]) -> Bool {
     let defaultIsMuted: Bool
     switch globalSettings.privateChats.storySettings.mute {
     case .muted:
@@ -114,7 +114,7 @@ func _internal_togglePeerStoriesMuted(account: Account, peerId: PeerId) -> Signa
         case .default:
             let globalNotificationSettings = transaction.getPreferencesEntry(key: PreferencesKeys.globalNotifications)?.get(GlobalNotificationSettings.self) ?? GlobalNotificationSettings.defaultSettings
             
-            if resolvedAreStoriesMuted(globalSettings: globalNotificationSettings.effective, peer: peer, peerSettings: previousSettings, topSearchPeers: topSearchPeers) {
+            if resolvedAreStoriesMuted(globalSettings: globalNotificationSettings.effective, peer: EnginePeer(peer), peerSettings: previousSettings, topSearchPeers: topSearchPeers) {
                 storySettings.mute = .unmuted
             } else {
                 storySettings.mute = .muted

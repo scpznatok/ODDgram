@@ -7,14 +7,12 @@ import AsyncDisplayKit
 import TelegramCore
 import Display
 import AccountContext
-import SolidRoundedButtonNode
 import ItemListUI
 import ItemListPeerItem
 import SectionHeaderItem
 import TelegramStringFormatting
 import MergeLists
 import ContextUI
-import ShareController
 import OverlayStatusController
 import PresentationDataUtils
 import DirectionalPanGesture
@@ -567,7 +565,7 @@ public final class InviteLinkViewController: ViewController {
             
             self.historyBackgroundNode.addSubnode(self.historyBackgroundContentNode)
             
-            self.listNode = ListView()
+            self.listNode = ListViewImpl()
             self.listNode.verticalScrollIndicatorColor = UIColor(white: 0.0, alpha: 0.3)
             self.listNode.verticalScrollIndicatorFollowsOverscroll = true
             self.listNode.accessibilityPageScrolledString = { row, count in
@@ -610,8 +608,10 @@ public final class InviteLinkViewController: ViewController {
                 guard let inviteLink = invite.link else {
                     return
                 }
-                let shareController = ShareController(context: context, subject: .url(inviteLink))
-                shareController.completed = { [weak self] peerIds in
+                let shareController = context.sharedContext.makeShareScreen(context: context, params: ShareControllerParams(subject: .url(inviteLink), actionCompleted: { [weak self] in
+                    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+                    self?.controller?.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.InviteLink_InviteLinkCopiedText), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .window(.root))
+                }, completed: { [weak self] peerIds in
                     if let strongSelf = self {
                         let _ = (strongSelf.context.engine.data.get(
                             EngineDataList(
@@ -622,7 +622,7 @@ public final class InviteLinkViewController: ViewController {
                             if let strongSelf = self {
                                 let peers = peerList.compactMap { $0 }
                                 let presentationData = strongSelf.context.sharedContext.currentPresentationData.with { $0 }
-                                
+
                                 let text: String
                                 var savedMessages = false
                                 if peerIds.count == 1, let peerId = peerIds.first, peerId == strongSelf.context.account.peerId {
@@ -643,7 +643,7 @@ public final class InviteLinkViewController: ViewController {
                                         text = ""
                                     }
                                 }
-                                
+
                                 strongSelf.controller?.present(UndoOverlayController(presentationData: presentationData, content: .forward(savedMessages: savedMessages, text: text), elevatedLayout: false, animateInAsReplacement: true, action: { action in
                                     if savedMessages, let self, action == .info {
                                         let _ = (self.context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: self.context.account.peerId))
@@ -662,11 +662,7 @@ public final class InviteLinkViewController: ViewController {
                             }
                         })
                     }
-                }
-                shareController.actionCompleted = { [weak self] in
-                    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                    self?.controller?.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.InviteLink_InviteLinkCopiedText), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .window(.root))
-                }
+                }))
                 self?.controller?.present(shareController, in: .window(.root))
             }, editLink: { [weak self] invite in
                 self?.editButtonPressed()
@@ -743,13 +739,20 @@ public final class InviteLinkViewController: ViewController {
                             }, action: { [weak self] _, f in
                                 f(.dismissWithoutContent)
                                 
-                                let _ = (context.account.postbox.loadedPeerWithId(peerId)
+                                let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+                                |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                                    if let peer {
+                                        return .single(peer)
+                                    } else {
+                                        return .never()
+                                    }
+                                }
                                 |> deliverOnMainQueue).start(next: { [weak self] peer in
                                     guard let strongSelf = self, let parentController = strongSelf.controller else {
                                         return
                                     }
                                     let isGroup: Bool
-                                    if let peer = peer as? TelegramChannel, case .broadcast = peer.info {
+                                    if case let .channel(channel) = peer, case .broadcast = channel.info {
                                         isGroup = false
                                     } else {
                                         isGroup = true
@@ -765,10 +768,17 @@ public final class InviteLinkViewController: ViewController {
                             }, action: { [weak self] _, f in
                                 f(.dismissWithoutContent)
                                 
-                                let _ = (context.account.postbox.loadedPeerWithId(peerId)
+                                let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+                                |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                                    if let peer {
+                                        return .single(peer)
+                                    } else {
+                                        return .never()
+                                    }
+                                }
                                 |> deliverOnMainQueue).start(next: { peer in
                                     let isGroup: Bool
-                                    if let peer = peer as? TelegramChannel, case .broadcast = peer.info {
+                                    if case let .channel(channel) = peer, case .broadcast = channel.info {
                                         isGroup = false
                                     } else {
                                         isGroup = true
@@ -825,11 +835,19 @@ public final class InviteLinkViewController: ViewController {
             }
                         
             if case let .link(_, _, _, _, _, adminId, date, _, _, usageLimit, _, _, _) = invite {
+                let creatorPeerSignal = context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: adminId))
+                |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                    if let peer {
+                        return .single(peer)
+                    } else {
+                        return .never()
+                    }
+                }
                 self.disposable = (combineLatest(
                     self.presentationDataPromise.get(),
                     self.importersContext.state,
                     requestsState,
-                    context.account.postbox.loadedPeerWithId(adminId)
+                    creatorPeerSignal
                 ) |> deliverOnMainQueue).start(next: { [weak self] presentationData, state, requestsState, creatorPeer in
                     if let strongSelf = self {
                         let usdRate = Double(configuration.usdWithdrawRate) / 1000.0 / 100.0
@@ -851,7 +869,7 @@ public final class InviteLinkViewController: ViewController {
                         }
                         
                         entries.append(.creatorHeader(presentationData.theme, presentationData.strings.InviteLink_CreatedBy.uppercased()))
-                        entries.append(.creator(presentationData.theme, presentationData.dateTimeFormat, EnginePeer(creatorPeer), date))
+                        entries.append(.creator(presentationData.theme, presentationData.dateTimeFormat, creatorPeer, date))
                                             
                         if !requestsState.importers.isEmpty || (state.isLoadingMore && requestsState.count > 0) {
                             entries.append(.requestHeader(presentationData.theme, presentationData.strings.MemberRequests_PeopleRequested(Int32(requestsState.count)).uppercased(), "", false))
@@ -1174,12 +1192,24 @@ public final class InviteLinkViewController: ViewController {
             let doneFrame = CGRect(origin: CGPoint(x: layout.size.width - doneSize.width - 16.0 - layout.safeInsets.right, y: 18.0), size: doneSize)
             transition.updateFrame(node: self.doneButton, frame: doneFrame)
             
-            let subtitleSize = self.subtitleNode.updateLayout(CGSize(width: layout.size.width - editSize.width - doneSize.width - 20.0, height: headerHeight))
-            let subtitleFrame = CGRect(origin: CGPoint(x: floor((layout.size.width - subtitleSize.width) / 2.0), y: 30.0 - UIScreenPixel), size: subtitleSize)
+            // Beside iPhone Duo's side strip (the side insets differ, which moves Done in) the title stays between the two
+            // buttons, centred on the screen while it fits; elsewhere it keeps its screen-centred layout.
+            let titleMinX = editFrame.maxX + 8.0
+            let titleMaxX = doneFrame.minX - 8.0
+            let titleIsBetweenButtons = layout.safeInsets.left != layout.safeInsets.right
+            let titleConstrainedWidth: CGFloat = titleIsBetweenButtons ? max(1.0, titleMaxX - titleMinX) : layout.size.width - editSize.width - doneSize.width - 20.0
+            func titleOriginX(width: CGFloat) -> CGFloat {
+                if titleIsBetweenButtons {
+                    return horizontallyCenteredOrigin(width: width, containerWidth: layout.size.width, minX: titleMinX, maxX: titleMaxX)
+                }
+                return floor((layout.size.width - width) / 2.0)
+            }
+            let subtitleSize = self.subtitleNode.updateLayout(CGSize(width: titleConstrainedWidth, height: headerHeight))
+            let subtitleFrame = CGRect(origin: CGPoint(x: titleOriginX(width: subtitleSize.width), y: 30.0 - UIScreenPixel), size: subtitleSize)
             transition.updateFrame(node: self.subtitleNode, frame: subtitleFrame)
             
-            let titleSize = self.titleNode.updateLayout(CGSize(width: layout.size.width - editSize.width - doneSize.width - 20.0, height: headerHeight))
-            let titleFrame = CGRect(origin: CGPoint(x: floor((layout.size.width - titleSize.width) / 2.0), y: subtitleSize.height.isZero ? 18.0 : 10.0 + UIScreenPixel), size: titleSize)
+            let titleSize = self.titleNode.updateLayout(CGSize(width: titleConstrainedWidth, height: headerHeight))
+            let titleFrame = CGRect(origin: CGPoint(x: titleOriginX(width: titleSize.width), y: subtitleSize.height.isZero ? 18.0 : 10.0 + UIScreenPixel), size: titleSize)
             transition.updateFrame(node: self.titleNode, frame: titleFrame)
         }
         

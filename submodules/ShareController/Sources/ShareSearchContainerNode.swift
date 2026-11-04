@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import AsyncDisplayKit
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import Display
 import TelegramPresentationData
@@ -286,8 +285,20 @@ final class ShareSearchContainerNode: ASDisplayNode, ShareContentContainerNode {
         let foundItems = combineLatest(self.searchQuery.get(), self.themePromise.get())
         |> mapToSignal { query, theme -> Signal<([ShareSearchPeerEntry]?, Bool), NoError> in
             if !query.isEmpty {
-                let accountPeer = context.stateManager.postbox.loadedPeerWithId(context.accountPeerId) |> take(1)
+                let accountPeer = context.engineData.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.accountPeerId))
+                |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                    if let peer {
+                        return .single(peer)
+                    } else {
+                        return .never()
+                    }
+                }
+                |> map { $0._asPeer() }
+                |> take(1)
                 let foundLocalPeers = context.stateManager.postbox.searchPeers(query: query.lowercased())
+                |> map { peers -> [EngineRenderedPeer] in
+                    return peers.map(EngineRenderedPeer.init)
+                }
                 let foundRemotePeers: Signal<([FoundPeer], [FoundPeer], Bool), NoError> = .single(([], [], true))
                 |> then(
                     _internal_searchPeers(accountPeerId: context.accountPeerId, postbox: context.stateManager.postbox, network: context.stateManager.network, query: query, scope: .everywhere)
@@ -298,7 +309,7 @@ final class ShareSearchContainerNode: ASDisplayNode, ShareContentContainerNode {
                 )
                 
                 struct FoundPeers {
-                    var foundLocalPeers: [RenderedPeer]
+                    var foundLocalPeers: [EngineRenderedPeer]
                     var foundRemotePeers: ([FoundPeer], [FoundPeer], Bool)
                 }
                 
@@ -320,18 +331,18 @@ final class ShareSearchContainerNode: ASDisplayNode, ShareContentContainerNode {
                     var result = Set<EnginePeer.Id>()
                     
                     for peer in foundPeers.foundLocalPeers {
-                        if let user = peer.peer as? TelegramUser, user.flags.contains(.requirePremium) {
+                        if case let .user(user) = peer.peer, user.flags.contains(.requirePremium) {
                             result.insert(user.id)
                         }
                     }
                     
                     for peer in foundPeers.foundRemotePeers.0 {
-                        if let user = peer.peer as? TelegramUser, user.flags.contains(.requirePremium) {
+                        if case let .user(user) = peer.peer, user.flags.contains(.requirePremium) {
                             result.insert(user.id)
                         }
                     }
                     for peer in foundPeers.foundRemotePeers.1 {
-                        if let user = peer.peer as? TelegramUser, user.flags.contains(.requirePremium) {
+                        if case let .user(user) = peer.peer, user.flags.contains(.requirePremium) {
                             result.insert(user.id)
                         }
                     }
@@ -374,7 +385,7 @@ final class ShareSearchContainerNode: ASDisplayNode, ShareContentContainerNode {
                         if let peer = renderedPeer.peers[renderedPeer.peerId], peer.id != accountPeer.id {
                             if !existingPeerIds.contains(renderedPeer.peerId) && canSendMessagesToPeer(peer) {
                                 existingPeerIds.insert(renderedPeer.peerId)
-                                entries.append(ShareSearchPeerEntry(index: index, peer: EngineRenderedPeer(renderedPeer), presence: nil, requiresPremiumForMessaging: peerRequiresPremiumForMessaging[peer.id] ?? false, requiresStars: nil, theme: theme, strings: strings, isGlobal: false))
+                                entries.append(ShareSearchPeerEntry(index: index, peer: renderedPeer, presence: nil, requiresPremiumForMessaging: peerRequiresPremiumForMessaging[peer.id] ?? false, requiresStars: nil, theme: theme, strings: strings, isGlobal: false))
                                 index += 1
                             }
                         }
@@ -392,16 +403,16 @@ final class ShareSearchContainerNode: ASDisplayNode, ShareContentContainerNode {
                             let peer = foundPeer.peer
                             if !existingPeerIds.contains(peer.id) && canSendMessagesToPeer(peer) {
                                 existingPeerIds.insert(peer.id)
-                                entries.append(ShareSearchPeerEntry(index: index, peer: EngineRenderedPeer(peer: EnginePeer(foundPeer.peer)), presence: nil, requiresPremiumForMessaging: peerRequiresPremiumForMessaging[peer.id] ?? false, requiresStars: nil, theme: theme, strings: strings, isGlobal: false))
+                                entries.append(ShareSearchPeerEntry(index: index, peer: EngineRenderedPeer(peer: foundPeer.peer), presence: nil, requiresPremiumForMessaging: peerRequiresPremiumForMessaging[peer.id] ?? false, requiresStars: nil, theme: theme, strings: strings, isGlobal: false))
                                 index += 1
                             }
                         }
-                        
+
                         for foundPeer in foundRemotePeers.1 {
                             let peer = foundPeer.peer
                             if !existingPeerIds.contains(peer.id) && canSendMessagesToPeer(peer) {
                                 existingPeerIds.insert(peer.id)
-                                entries.append(ShareSearchPeerEntry(index: index, peer: EngineRenderedPeer(peer: EnginePeer(peer)), presence: nil, requiresPremiumForMessaging: peerRequiresPremiumForMessaging[peer.id] ?? false, requiresStars: nil, theme: theme, strings: strings, isGlobal: true))
+                                entries.append(ShareSearchPeerEntry(index: index, peer: EngineRenderedPeer(peer: peer), presence: nil, requiresPremiumForMessaging: peerRequiresPremiumForMessaging[peer.id] ?? false, requiresStars: nil, theme: theme, strings: strings, isGlobal: true))
                                 index += 1
                             }
                         }
@@ -465,8 +476,8 @@ final class ShareSearchContainerNode: ASDisplayNode, ShareContentContainerNode {
             }
             var index = 0
             for (peer, requiresPremiumForMessaging) in recentPeerList {
-                if let mainPeer = peer.peers[peer.peerId], canSendMessagesToPeer(mainPeer._asPeer()) {
-                    recentItemList.append(.peer(index: index, theme: theme, peer: mainPeer, associatedPeer: mainPeer._asPeer().associatedPeerId.flatMap { peer.peers[$0] }, presence: nil, requiresPremiumForMessaging: requiresPremiumForMessaging, requiresStars: nil, strings: strings))
+                if let mainPeer = peer.peers[peer.peerId], canSendMessagesToPeer(mainPeer) {
+                    recentItemList.append(.peer(index: index, theme: theme, peer: mainPeer, associatedPeer: mainPeer.associatedPeerId.flatMap { peer.peers[$0] }, presence: nil, requiresPremiumForMessaging: requiresPremiumForMessaging, requiresStars: nil, strings: strings))
                     index += 1
                 }
             }

@@ -4,7 +4,6 @@ import AsyncDisplayKit
 import Display
 import ComponentFlow
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import Markdown
 import TextFormat
@@ -138,7 +137,8 @@ private final class SheetContent: CombinedComponent {
                         
             var text: String = ""
             var entities: TextEntitiesMessageAttribute?
-            var media: [Media] = []
+            var richText: RichTextMessageAttribute?
+            var media: [EngineRawMedia] = []
             var replyMarkup: ReplyMarkupMessageAttribute?
             
             switch component.preparedMessage.result {
@@ -153,8 +153,9 @@ private final class SheetContent: CombinedComponent {
                         media = [image]
                     }
                     replyMarkup = replyMarkupValue
-                case let .text(textValue, entitiesValue, disableUrlPreview, previewParameters, replyMarkupValue):
+                case let .text(textValue, entitiesValue, richTextValue, disableUrlPreview, previewParameters, replyMarkupValue):
                     text = textValue
+                    richText = richTextValue
                     entities = entitiesValue
                     let _ = disableUrlPreview
                     let _ = previewParameters
@@ -168,8 +169,10 @@ private final class SheetContent: CombinedComponent {
                 case let .invoice(invoice, replyMarkupValue):
                     media = [invoice]
                     replyMarkup = replyMarkupValue
-                default:
-                    break
+                case let .webpage(textValue, entitiesValue, _, _, replyMarkupValue):
+                    text = textValue
+                    entities = entitiesValue
+                    replyMarkup = replyMarkupValue
                 }
             case let .externalReference(reference):
                 switch reference.message {
@@ -180,9 +183,10 @@ private final class SheetContent: CombinedComponent {
                         media = [content]
                     }
                     replyMarkup = replyMarkupValue
-                case let .text(textValue, entitiesValue, disableUrlPreview, previewParameters, replyMarkupValue):
+                case let .text(textValue, entitiesValue, richTextValue, disableUrlPreview, previewParameters, replyMarkupValue):
                     text = textValue
                     entities = entitiesValue
+                    richText = richTextValue
                     let _ = disableUrlPreview
                     let _ = previewParameters
                     replyMarkup = replyMarkupValue
@@ -195,14 +199,17 @@ private final class SheetContent: CombinedComponent {
                 case let .invoice(invoice, replyMarkupValue):
                     media = [invoice]
                     replyMarkup = replyMarkupValue
-                default:
-                    break
+                case let .webpage(textValue, entitiesValue, _, _, replyMarkupValue):
+                    text = textValue
+                    entities = entitiesValue
+                    replyMarkup = replyMarkupValue
                 }
             }
             
             let messageItem = PeerNameColorChatPreviewItem.MessageItem(
                 text: text,
                 entities: entities,
+                richText: richText,
                 media: media,
                 replyMarkup: replyMarkup,
                 botAddress: component.botAddress
@@ -365,7 +372,7 @@ private final class WebAppMessagePreviewSheetComponent: CombinedComponent {
                         metrics: environment.metrics,
                         deviceMetrics: environment.deviceMetrics,
                         isDisplaying: environment.value.isVisible,
-                        isCentered: environment.metrics.widthClass == .regular,
+                        isCentered: environment.presentsFloatingPanels,
                         hasInputHeight: !environment.inputHeight.isZero,
                         regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                         dismiss: { animated in

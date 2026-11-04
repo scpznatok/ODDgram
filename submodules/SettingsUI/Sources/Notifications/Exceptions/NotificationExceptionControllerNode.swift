@@ -19,7 +19,6 @@ import ChatListUI
 import ItemListPeerActionItem
 import TelegramStringFormatting
 import NotificationPeerExceptionController
-import Postbox
 
 private final class NotificationExceptionState : Equatable {
     let mode: NotificationExceptionMode
@@ -491,7 +490,7 @@ final class NotificationExceptionsControllerNode: ViewControllerTracingNode {
         self.present = present
         self.pushController = pushController
         self.stateValue = Atomic(value: NotificationExceptionState(mode: mode))
-        self.listNode = ListView()
+        self.listNode = ListViewImpl()
         self.listNode.keepTopItemOverscrollBackground = ListViewKeepTopItemOverscrollBackground(color: presentationData.theme.chatList.backgroundColor, direction: true)
         self.listNode.accessibilityPageScrolledString = { row, count in
             return presentationData.strings.VoiceOver_ScrollStatus(row, count).string
@@ -568,17 +567,17 @@ final class NotificationExceptionsControllerNode: ViewControllerTracingNode {
             return context.engine.peers.updatePeerDisplayPreviewsSetting(peerId: peerId, threadId: nil, displayPreviews: displayPreviews) |> deliverOnMainQueue
         }
         
-        let updatePeerStoriesMuted: (PeerId, PeerStoryNotificationSettings.Mute) -> Signal<Void, NoError> = {
+        let updatePeerStoriesMuted: (EnginePeer.Id, PeerStoryNotificationSettings.Mute) -> Signal<Void, NoError> = {
             peerId, mute in
             return context.engine.peers.updatePeerStoriesMutedSetting(peerId: peerId, mute: mute) |> deliverOnMainQueue
         }
         
-        let updatePeerStoriesHideSender: (PeerId, PeerStoryNotificationSettings.HideSender) -> Signal<Void, NoError> = {
+        let updatePeerStoriesHideSender: (EnginePeer.Id, PeerStoryNotificationSettings.HideSender) -> Signal<Void, NoError> = {
             peerId, hideSender in
             return context.engine.peers.updatePeerStoriesHideSenderSetting(peerId: peerId, hideSender: hideSender) |> deliverOnMainQueue
         }
         
-        let updatePeerStorySound: (PeerId, PeerMessageSound) -> Signal<Void, NoError> = { peerId, sound in
+        let updatePeerStorySound: (EnginePeer.Id, PeerMessageSound) -> Signal<Void, NoError> = { peerId, sound in
             return context.engine.peers.updatePeerStorySoundInteractive(peerId: peerId, sound: sound) |> deliverOnMainQueue
         }
         
@@ -791,10 +790,10 @@ final class NotificationExceptionsControllerNode: ViewControllerTracingNode {
             self?.view.endEditing(true)
         }
         
-        let preferences = context.account.postbox.preferencesView(keys: [PreferencesKeys.globalNotifications])
-        
+        let preferences = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.ApplicationSpecificPreference(key: PreferencesKeys.globalNotifications))
+
         let previousEntriesHolder = Atomic<([NotificationExceptionEntry], PresentationTheme, PresentationStrings)?>(value: nil)
-        
+
         self.listDisposable = (combineLatest(context.sharedContext.presentationData, statePromise.get(), preferences, context.engine.peers.notificationSoundList()) |> deliverOnMainQueue).start(next: { [weak self] presentationData, state, prefs, notificationSoundList in
             let entries = notificationsExceptionEntries(presentationData: presentationData, notificationSoundList: notificationSoundList, state: state)
             let previousEntriesAndPresentationData = previousEntriesHolder.swap((entries, presentationData.theme, presentationData.strings))
@@ -985,7 +984,7 @@ private final class NotificationExceptionsSearchContainerNode: SearchDisplayCont
         self.dimNode = ASDisplayNode()
         self.dimNode.backgroundColor = .clear
         
-        self.listNode = ListView()
+        self.listNode = ListViewImpl()
         self.listNode.accessibilityPageScrolledString = { row, count in
             return presentationData.strings.VoiceOver_ScrollStatus(row, count).string
         }
@@ -1045,10 +1044,10 @@ private final class NotificationExceptionsSearchContainerNode: SearchDisplayCont
             
         }
         
-        let preferences = context.account.postbox.preferencesView(keys: [PreferencesKeys.globalNotifications])
-        
+        let preferences = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.ApplicationSpecificPreference(key: PreferencesKeys.globalNotifications))
+
         let previousEntriesHolder = Atomic<([NotificationExceptionEntry], PresentationTheme, PresentationStrings)?>(value: nil)
-        
+
         let stateQuery = stateAndPeers
         |> map { stateAndPeers -> String? in
             return stateAndPeers.1
@@ -1056,7 +1055,7 @@ private final class NotificationExceptionsSearchContainerNode: SearchDisplayCont
         |> distinctUntilChanged
         
         let searchSignal = stateQuery
-        |> mapToSignal { query -> Signal<(PresentationData, NotificationSoundList?, (NotificationExceptionState, String?), PreferencesView, [EngineRenderedPeer]), NoError> in
+        |> mapToSignal { query -> Signal<(PresentationData, NotificationSoundList?, (NotificationExceptionState, String?), EnginePreferencesEntry?, [EngineRenderedPeer]), NoError> in
             var contactsSignal: Signal<[EngineRenderedPeer], NoError> = .single([])
             if let query = query {
                 contactsSignal = context.account.postbox.searchPeers(query: query)

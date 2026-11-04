@@ -11,6 +11,7 @@ import ItemListUI
 import PresentationDataUtils
 import AccountContext
 import ChatListHeaderComponent
+import NavigationBarComponent
 import SearchBarNode
 import ContactsPeerItem
 import ViewControllerComponent
@@ -19,6 +20,8 @@ import BalancedTextComponent
 import MultilineTextComponent
 import ItemListPeerActionItem
 import ComponentDisplayAdapters
+import AppBundle
+import SideColumnLayout
 
 final class PeerSelectionScreenComponent: Component {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
@@ -48,6 +51,8 @@ final class PeerSelectionScreenComponent: Component {
     private enum ContentEntry: Comparable, Identifiable {
         enum Id: Hashable {
             case hide
+            case createGroup
+            case createChannel
             case item(EnginePeer.Id)
         }
         
@@ -55,29 +60,52 @@ final class PeerSelectionScreenComponent: Component {
             switch self {
             case .hide:
                 return .hide
+            case .createGroup:
+                return .createGroup
+            case .createChannel:
+                return .createChannel
             case let .item(peer, _, _):
                 return .item(peer.id)
             }
         }
         
         case hide
+        case createGroup
+        case createChannel
         case item(peer: EnginePeer, subscriberCount: Int?, sortIndex: Int)
         
         static func <(lhs: ContentEntry, rhs: ContentEntry) -> Bool {
+            let lhsSortIndex: Int
             switch lhs {
             case .hide:
-                return false
-            case let .item(lhsPeer, _, lhsSortIndex):
-                switch rhs {
-                case .hide:
-                    return false
-                case let .item(rhsPeer, _, rhsSortIndex):
-                    if lhsSortIndex != rhsSortIndex {
-                        return lhsSortIndex < rhsSortIndex
-                    }
-                    return lhsPeer.id < rhsPeer.id
-                }
+                lhsSortIndex = 0
+            case .createGroup:
+                lhsSortIndex = 1
+            case .createChannel:
+                lhsSortIndex = 2
+            case let .item(_, _, sortIndex):
+                lhsSortIndex = 3 + sortIndex
             }
+
+            let rhsSortIndex: Int
+            switch rhs {
+            case .hide:
+                rhsSortIndex = 0
+            case .createGroup:
+                rhsSortIndex = 1
+            case .createChannel:
+                rhsSortIndex = 2
+            case let .item(_, _, sortIndex):
+                rhsSortIndex = 3 + sortIndex
+            }
+
+            if lhsSortIndex != rhsSortIndex {
+                return lhsSortIndex < rhsSortIndex
+            }
+            if case let .item(lhsPeer, _, _) = lhs, case let .item(rhsPeer, _, _) = rhs {
+                return lhsPeer.id < rhsPeer.id
+            }
+            return false
         }
         
         func item(listNode: ContentListNode) -> ListViewItem {
@@ -85,6 +113,7 @@ final class PeerSelectionScreenComponent: Component {
             case .hide:
                 return ItemListPeerActionItem(
                     presentationData: ItemListPresentationData(listNode.presentationData),
+                    systemStyle: .glass,
                     icon: PresentationResourcesItemList.hideIconImage(listNode.presentationData.theme),
                     iconSignal: nil,
                     title: listNode.presentationData.strings.Settings_PersonalChannelRemove,
@@ -102,12 +131,62 @@ final class PeerSelectionScreenComponent: Component {
                         parentView.peerSelected(peer: nil)
                     }
                 )
+            case .createGroup:
+                return ItemListPeerActionItem(
+                    presentationData: ItemListPresentationData(listNode.presentationData),
+                    systemStyle: .glass,
+                    icon: generateTintedImage(image: UIImage(bundleImageName: "Contact List/CreateGroupActionIcon"), color: listNode.presentationData.theme.list.itemAccentColor),
+                    iconSignal: nil,
+                    title: listNode.presentationData.strings.Compose_NewGroup,
+                    additionalBadgeIcon: nil,
+                    alwaysPlain: true,
+                    hasSeparator: true,
+                    sectionId: 0,
+                    height: .generic,
+                    color: .accent,
+                    editing: false,
+                    action: { [weak listNode] in
+                        guard let listNode, let parentView = listNode.parentView else {
+                            return
+                        }
+                        parentView.openCreateGroup()
+                    }
+                )
+            case .createChannel:
+                return ItemListPeerActionItem(
+                    presentationData: ItemListPresentationData(listNode.presentationData),
+                    systemStyle: .glass,
+                    icon: generateTintedImage(image: UIImage(bundleImageName: "Contact List/CreateChannelActionIcon"), color: listNode.presentationData.theme.list.itemAccentColor),
+                    iconSignal: nil,
+                    title: listNode.presentationData.strings.Compose_NewChannel,
+                    additionalBadgeIcon: nil,
+                    alwaysPlain: true,
+                    hasSeparator: true,
+                    sectionId: 0,
+                    height: .generic,
+                    color: .accent,
+                    editing: false,
+                    action: { [weak listNode] in
+                        guard let listNode, let parentView = listNode.parentView else {
+                            return
+                        }
+                        parentView.openCreateChannel()
+                    }
+                )
             case let .item(peer, subscriberCount, _):
                 let statusText: String
                 if let subscriberCount, subscriberCount != 0 {
-                    statusText = listNode.presentationData.strings.Conversation_StatusSubscribers(Int32(subscriberCount))
+                    if case let .channel(channel) = peer, case .broadcast = channel.info {
+                        statusText = listNode.presentationData.strings.Conversation_StatusSubscribers(Int32(subscriberCount))
+                    } else {
+                        statusText = listNode.presentationData.strings.Conversation_StatusMembers(Int32(subscriberCount))
+                    }
                 } else {
-                    statusText = listNode.presentationData.strings.Channel_Status
+                    if case let .channel(channel) = peer, case .broadcast = channel.info {
+                        statusText = listNode.presentationData.strings.Channel_Status
+                    } else {
+                        statusText = listNode.presentationData.strings.Group_Status
+                    }
                 }
                 
                 return ContactsPeerItem(
@@ -142,7 +221,7 @@ final class PeerSelectionScreenComponent: Component {
         }
     }
     
-    private final class ContentListNode: ListView {
+    private final class ContentListNode: ListViewImpl {
         weak var parentView: View?
         let context: AccountContext
         var presentationData: PresentationData
@@ -199,12 +278,22 @@ final class PeerSelectionScreenComponent: Component {
     }
     
     final class View: UIView {
+        private enum CreatedPeerKind {
+            case group
+            case channel
+        }
+
         private var emptyState: ComponentView<Empty>?
         private var contentListNode: ContentListNode?
         private var emptySearchState: ComponentView<Empty>?
         private var loadingView: PeerSelectionLoadingView?
         
         private let navigationBarView = ComponentView<Empty>()
+
+        /// The chat-list-style header, for navigation transitions.
+        var navigationTransitionHeader: ChatListNavigationBar.View? {
+            return self.navigationBarView.view as? ChatListNavigationBar.View
+        }
         private var navigationHeight: CGFloat?
         
         private var searchBarNode: SearchBarNode?
@@ -217,6 +306,7 @@ final class PeerSelectionScreenComponent: Component {
         
         private var channels: [PeerSelectionScreen.ChannelInfo]?
         private var channelsDisposable: Disposable?
+        private let createActionDisposable = MetaDisposable()
         
         private var isSearchDisplayControllerActive: ChatListNavigationBar.ActiveSearch?
         private var searchQuery: String = ""
@@ -234,6 +324,7 @@ final class PeerSelectionScreenComponent: Component {
         
         deinit {
             self.channelsDisposable?.dispose()
+            self.createActionDisposable.dispose()
         }
 
         func scrollToTop() {
@@ -258,6 +349,82 @@ final class PeerSelectionScreenComponent: Component {
             }
             environment.controller()?.dismiss()
         }
+
+        func openCreateGroup() {
+            guard let component = self.component, component.initialData.mode == .community, let controller = self.environment?.controller() else {
+                return
+            }
+
+            let createController = component.context.sharedContext.makeCreateGroupController(
+                context: component.context,
+                peerIds: [],
+                initialTitle: nil,
+                mode: .supergroup,
+                completion: { [weak self] peerId, _ in
+                    self?.completeCreatedPeer(peerId: peerId, kind: .group)
+                }
+            )
+            controller.push(createController)
+        }
+
+        func openCreateChannel() {
+            guard let component = self.component, component.initialData.mode == .community, let controller = self.environment?.controller() else {
+                return
+            }
+
+            let createController = component.context.sharedContext.makeCreateChannelController(context: component.context, completion: { [weak self] peerId, _ in
+                self?.completeCreatedPeer(peerId: peerId, kind: .channel)
+            })
+            controller.push(createController)
+        }
+
+        private func completeCreatedPeer(peerId: EnginePeer.Id, kind: CreatedPeerKind) {
+            guard let component = self.component else {
+                return
+            }
+
+            self.createActionDisposable.set((component.context.engine.data.get(
+                TelegramEngine.EngineData.Item.Peer.Peer(id: peerId)
+            )
+            |> deliverOnMainQueue).startStrict(next: { [weak self] peer in
+                guard let self, let peer, case let .channel(channel) = peer else {
+                    return
+                }
+
+                switch kind {
+                case .group:
+                    guard case .group = channel.info else {
+                        return
+                    }
+                case .channel:
+                    guard case .broadcast = channel.info else {
+                        return
+                    }
+                }
+
+                self.completeCreatedPeer(peer: peer)
+            }))
+        }
+
+        private func completeCreatedPeer(peer: EnginePeer) {
+            guard let component = self.component, let controller = self.environment?.controller() else {
+                return
+            }
+
+            let channel = PeerSelectionScreen.ChannelInfo(peer: peer, subscriberCount: nil)
+            let completion = {
+                component.completion(channel)
+            }
+
+            if let navigationController = controller.navigationController as? NavigationController,
+               let index = navigationController.viewControllers.firstIndex(where: { $0 === controller }),
+               index > 0 {
+                let viewControllers = Array(navigationController.viewControllers.prefix(upTo: index))
+                navigationController.setViewControllers(viewControllers, animated: true, completion: completion)
+            } else {
+                controller.dismiss(completion: completion)
+            }
+        }
         
         private func updateNavigationBar(
             component: PeerSelectionScreenComponent,
@@ -266,29 +433,38 @@ final class PeerSelectionScreenComponent: Component {
             size: CGSize,
             insets: UIEdgeInsets,
             statusBarHeight: CGFloat,
+            trailingButtonsInset: CGFloat,
             isModal: Bool,
             transition: ComponentTransition,
             deferScrollApplication: Bool
         ) -> CGFloat {
-            let rightButtons: [AnyComponentWithIdentity<NavigationButtonComponentEnvironment>] = []
+            let rightButtons: [NavigationBarComponent.Button] = []
             
-            let closeTitle: String = strings.Common_Cancel
+            let title: String
+            let subtitle: String
+            switch component.initialData.mode {
+            case .personalChannel:
+                title = strings.Settings_PersonalChannelSelectTitle
+                subtitle = strings.Settings_PersonalChannelSelectSubtitle
+            case .community:
+                title = strings.Community_AddChat_Title
+                subtitle = strings.Community_AddChat_Description
+            }
             
             let headerContent: ChatListHeaderComponent.Content? = ChatListHeaderComponent.Content(
                 title: "",
-                navigationBackTitle: nil,
                 titleComponent: AnyComponent(VStack([
                     AnyComponentWithIdentity(id: 0, component: AnyComponent(MultilineTextComponent(
-                        text: .plain(NSAttributedString(string: strings.Settings_PersonalChannelSelectTitle, font: Font.semibold(17.0), textColor: theme.rootController.navigationBar.primaryTextColor))
+                        text: .plain(NSAttributedString(string: title, font: Font.semibold(17.0), textColor: theme.rootController.navigationBar.primaryTextColor))
                     ))),
                     AnyComponentWithIdentity(id: 1, component: AnyComponent(MultilineTextComponent(
-                        text: .plain(NSAttributedString(string: strings.Settings_PersonalChannelSelectSubtitle, font: Font.regular(12.0), textColor: theme.rootController.navigationBar.secondaryTextColor))
+                        text: .plain(NSAttributedString(string: subtitle, font: Font.regular(12.0), textColor: theme.rootController.navigationBar.secondaryTextColor))
                     )))
                 ], spacing: 2.0)),
                 chatListTitle: nil,
-                leftButton: isModal ? AnyComponentWithIdentity(id: "close", component: AnyComponent(NavigationButtonComponent(
-                    content: .text(title: closeTitle, isBold: false),
-                    pressed: { [weak self] _ in
+                leftButton: isModal ? NavigationBarComponent.Button(id: "close",
+                    content: .icon(imageName: "Navigation/Close"),
+                    action: { [weak self] _ in
                         guard let self else {
                             return
                         }
@@ -296,7 +472,7 @@ final class PeerSelectionScreenComponent: Component {
                             self.environment?.controller()?.dismiss()
                         }
                     }
-                ))) : nil,
+                ) : nil,
                 rightButtons: rightButtons,
                 backPressed: isModal ? nil : { [weak self] in
                     guard let self else {
@@ -316,7 +492,9 @@ final class PeerSelectionScreenComponent: Component {
                     theme: theme,
                     strings: strings,
                     statusBarHeight: statusBarHeight,
-                    sideInset: insets.left,
+                    leftInset: insets.left,
+                    rightInset: insets.right,
+                    trailingButtonsInset: trailingButtonsInset,
                     search: ChatListNavigationBar.Search(isEnabled: true),
                     activeSearch: self.isSearchDisplayControllerActive,
                     primaryContent: headerContent,
@@ -341,7 +519,9 @@ final class PeerSelectionScreenComponent: Component {
                     openStatusSetup: { _ in
                     },
                     allowAutomaticOrder: {
-                    }
+                    },
+                    // iPhone Duo: the back and icon buttons go into the side strip, as the chat list's do.
+                    sideColumn: pushedScreenSideColumnRegion(layout: self.environment?.controller()?.currentlyAppliedLayout)
                 )),
                 environment: {},
                 containerSize: size
@@ -408,7 +588,7 @@ final class PeerSelectionScreenComponent: Component {
             }
             
             if self.component == nil {
-                if let channels = component.initialData.channels, !channels.isEmpty {
+                if let channels = component.initialData.channels {
                     self.channels = channels.map { peer in
                         return PeerSelectionScreen.ChannelInfo(peer: peer.peer, subscriberCount: peer.subscriberCount)
                     }
@@ -461,6 +641,7 @@ final class PeerSelectionScreenComponent: Component {
                 size: availableSize,
                 insets: environment.safeInsets,
                 statusBarHeight: statusBarHeight,
+                trailingButtonsInset: environment.navigationBarTrailingButtonsInset,
                 isModal: isModal,
                 transition: transition,
                 deferScrollApplication: true
@@ -522,7 +703,9 @@ final class PeerSelectionScreenComponent: Component {
                         let timingFunction: String
                         switch curve {
                         case .easeInOut:
-                            timingFunction = CAMediaTimingFunctionName.easeOut.rawValue
+                            timingFunction = CAMediaTimingFunctionName.easeInEaseOut.rawValue
+                        case .easeIn:
+                            timingFunction = CAMediaTimingFunctionName.easeIn.rawValue
                         case .linear:
                             timingFunction = CAMediaTimingFunctionName.linear.rawValue
                         case .spring:
@@ -573,19 +756,23 @@ final class PeerSelectionScreenComponent: Component {
             contentListNode.update(size: availableSize, insets: UIEdgeInsets(top: navigationHeight, left: environment.safeInsets.left, bottom: listBottomInset, right: environment.safeInsets.right), transition: transition)
             
             var entries: [ContentEntry] = []
-            if component.initialData.channelId != nil && self.searchQuery.isEmpty {
+            if component.initialData.mode == .personalChannel && component.initialData.channelId != nil && self.searchQuery.isEmpty {
                 entries.append(.hide)
+            }
+            if component.initialData.mode == .community && self.searchQuery.isEmpty {
+                entries.append(.createGroup)
+                entries.append(.createChannel)
             }
             if let channels = self.channels {
                 for channel in channels {
                     if !self.searchQuery.isEmpty {
                         var matches = false
-                    inner: for nameComponent in channel.peer.compactDisplayTitle.lowercased().components(separatedBy: self.searchQueryComponentSeparationCharacterSet) {
-                        if nameComponent.lowercased().hasPrefix(self.searchQuery) {
-                            matches = true
-                            break inner
+                        inner: for nameComponent in channel.peer.compactDisplayTitle.lowercased().components(separatedBy: self.searchQueryComponentSeparationCharacterSet) {
+                            if nameComponent.lowercased().hasPrefix(self.searchQuery) {
+                                matches = true
+                                break inner
+                            }
                         }
-                    }
                         if !matches {
                             continue
                         }
@@ -692,13 +879,28 @@ final class PeerSelectionScreenComponent: Component {
 }
 
 public final class PeerSelectionScreen: ViewControllerComponentContainer {
+
+    /// Draws its own header (no Display bar); it takes part in navigation transitions itself.
+    override public var navigationBarTransitionSource: NavigationBarTransitionSource? {
+        guard self.isNodeLoaded else {
+            return nil
+        }
+        return (self.node.hostView.componentView as? PeerSelectionScreenComponent.View)?.navigationTransitionHeader
+    }
+    public enum Mode {
+        case personalChannel
+        case community
+    }
+
     public final class InitialData {
         public let channelId: EnginePeer.Id?
         public let channels: [TelegramAdminedPublicChannel]?
+        public let mode: Mode
         
-        init(channelId: EnginePeer.Id?, channels: [TelegramAdminedPublicChannel]?) {
+        init(channelId: EnginePeer.Id?, channels: [TelegramAdminedPublicChannel]?, mode: Mode) {
             self.channelId = channelId
             self.channels = channels
+            self.mode = mode
         }
     }
     
@@ -755,10 +957,14 @@ public final class PeerSelectionScreen: ViewControllerComponentContainer {
             if case let .known(value) = personalChannel, let value {
                 channelId = value.peerId
             }
-            return InitialData(channelId: channelId, channels: channels)
+            return InitialData(channelId: channelId, channels: channels, mode: .personalChannel)
         }
     }
-    
+
+    public static func communityInitialData(channels: [TelegramAdminedPublicChannel]) -> InitialData {
+        return InitialData(channelId: nil, channels: channels, mode: .community)
+    }
+
     @objc private func cancelPressed() {
         self.dismiss()
     }

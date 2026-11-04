@@ -4,7 +4,6 @@ import AsyncDisplayKit
 import Display
 import TelegramCore
 import SwiftSignalKit
-import Postbox
 import TelegramPresentationData
 import TelegramUIPreferences
 import AvatarNode
@@ -12,6 +11,10 @@ import AccountContext
 import ItemListUI
 
 final class CommandChatInputPanelItem: ListViewItem {
+    var neighborDescriptor: AnyEquatable {
+        return AnyEquatable.noNeighborInfluence
+    }
+
     fileprivate let context: AccountContext
     fileprivate let presentationData: ItemListPresentationData
     fileprivate let command: PeerCommand
@@ -26,12 +29,12 @@ final class CommandChatInputPanelItem: ListViewItem {
         self.commandSelected = commandSelected
     }
     
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         let configure = { () -> Void in
             let node = CommandChatInputPanelItemNode()
             
             let nodeLayout = node.asyncLayout()
-            let (top, bottom) = (previousItem != nil, nextItem != nil)
+            let (top, bottom) = (neighbors.previous != nil, neighbors.next != nil)
             let (layout, apply) = nodeLayout(self, params, top, bottom)
             
             node.contentSize = layout.contentSize
@@ -52,13 +55,13 @@ final class CommandChatInputPanelItem: ListViewItem {
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? CommandChatInputPanelItemNode {
                 let nodeLayout = nodeValue.asyncLayout()
                 
                 async {
-                    let (top, bottom) = (previousItem != nil, nextItem != nil)
+                    let (top, bottom) = (neighbors.previous != nil, neighbors.next != nil)
                     
                     let (layout, apply) = nodeLayout(self, params, top, bottom)
                     Queue.mainQueue().async {
@@ -86,6 +89,7 @@ final class CommandChatInputPanelItemNode: ListViewItemNode {
     private var item: CommandChatInputPanelItem?
     private let avatarNode: AvatarNode
     private let textNode: TextNode
+    private let ephemeralIconNode: ASImageNode
     private let separatorNode: ASDisplayNode
     private let highlightedBackgroundNode: ASDisplayNode
     private let arrowNode: ASButtonNode
@@ -95,6 +99,10 @@ final class CommandChatInputPanelItemNode: ListViewItemNode {
     init() {
         self.avatarNode = AvatarNode(font: avatarFont)
         self.textNode = TextNode()
+        self.ephemeralIconNode = ASImageNode()
+        self.ephemeralIconNode.isLayerBacked = true
+        self.ephemeralIconNode.displayWithoutProcessing = true
+        self.ephemeralIconNode.displaysAsynchronously = false
         
         self.separatorNode = ASDisplayNode()
         self.separatorNode.isLayerBacked = true
@@ -113,6 +121,7 @@ final class CommandChatInputPanelItemNode: ListViewItemNode {
         
         self.addSubnode(self.avatarNode)
         self.addSubnode(self.textNode)
+        self.addSubnode(self.ephemeralIconNode)
         self.addSubnode(self.arrowNode)
         
         self.arrowNode.addTarget(self, action: #selector(self.arrowButtonPressed), forControlEvents: [.touchUpInside])
@@ -120,10 +129,10 @@ final class CommandChatInputPanelItemNode: ListViewItemNode {
         self.addSubnode(self.activateAreaNode)
     }
     
-    override public func layoutForParams(_ params: ListViewItemLayoutParams, item: ListViewItem, previousItem: ListViewItem?, nextItem: ListViewItem?) {
+    override public func layoutForParams(_ params: ListViewItemLayoutParams, item: ListViewItem, neighbors: ListViewItemNeighbors) {
         if let item = item as? CommandChatInputPanelItem {
             let doLayout = self.asyncLayout()
-            let merged = (top: previousItem != nil, bottom: nextItem != nil)
+            let merged = (top: neighbors.previous != nil, bottom: neighbors.next != nil)
             let (layout, apply) = doLayout(item, params, merged.top, merged.bottom)
             self.contentSize = layout.contentSize
             self.insets = layout.insets
@@ -134,6 +143,8 @@ final class CommandChatInputPanelItemNode: ListViewItemNode {
     func asyncLayout() -> (_ item: CommandChatInputPanelItem, _ params: ListViewItemLayoutParams, _ mergedTop: Bool, _ mergedBottom: Bool) -> (ListViewItemNodeLayout, (ListViewItemUpdateAnimation) -> Void) {
         let makeTextLayout = TextNode.asyncLayout(self.textNode)
         
+        let currentItem = self.item
+        
         return { [weak self] item, params, mergedTop, mergedBottom in
             let textFont = Font.medium(floor(item.presentationData.fontSize.baseDisplaySize * 14.0 / 17.0))
             let descriptionFont = Font.regular(floor(item.presentationData.fontSize.baseDisplaySize * 14.0 / 17.0))
@@ -141,11 +152,25 @@ final class CommandChatInputPanelItemNode: ListViewItemNode {
             let leftInset: CGFloat = 55.0 + params.leftInset
             let rightInset: CGFloat = 10.0 + params.rightInset
             
-            let peerName = EnginePeer(item.command.peer).displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder)
+            let peerName = item.command.peer.displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder)
             
             let commandString = NSMutableAttributedString()
-            commandString.append(NSAttributedString(string: "/" + item.command.command.text, font: textFont, textColor: item.presentationData.theme.list.itemPrimaryTextColor))
+            let commandText = "/" + item.command.command.text
+            commandString.append(NSAttributedString(string: commandText, font: textFont, textColor: item.presentationData.theme.list.itemPrimaryTextColor))
             let command = commandString.string
+
+            let commandSize = (commandText as NSString).size(withAttributes: [
+                .font: textFont
+            ])
+            let ephemeralIconSize = CGSize(width: 14.0, height: 17.0)
+            
+            var updatedEphemeralIconImage: UIImage?
+            if item.command.command.isEphemeral {
+                if currentItem?.presentationData.theme !== item.presentationData.theme {
+                    updatedEphemeralIconImage = generateTintedImage(image: generateScaledImage(image: UIImage(bundleImageName: "Chat/Message/Hidden"), size: ephemeralIconSize, opaque: false), color: item.presentationData.theme.list.itemSecondaryTextColor)
+                }
+                commandString.append(NSAttributedString(string: "    ", font: textFont, textColor: item.presentationData.theme.list.itemSecondaryTextColor))
+            }
             
             if !item.command.command.description.isEmpty {
                 commandString.append(NSAttributedString(string: "  " + item.command.command.description, font: descriptionFont, textColor: item.presentationData.theme.list.itemSecondaryTextColor))
@@ -165,13 +190,18 @@ final class CommandChatInputPanelItemNode: ListViewItemNode {
                     strongSelf.highlightedBackgroundNode.backgroundColor = item.presentationData.theme.list.itemHighlightedBackgroundColor
                     
                     strongSelf.arrowNode.setImage(iconImage, for: [])
+                    if let _ = updatedEphemeralIconImage {
+                        strongSelf.ephemeralIconNode.image = updatedEphemeralIconImage
+                    }
+                    strongSelf.ephemeralIconNode.isHidden = !item.command.command.isEphemeral
                     
-                    strongSelf.avatarNode.setPeer(context: item.context, theme: item.presentationData.theme, peer: EnginePeer(item.command.peer), emptyColor: item.presentationData.theme.list.mediaPlaceholderColor)
+                    strongSelf.avatarNode.setPeer(context: item.context, theme: item.presentationData.theme, peer: item.command.peer, emptyColor: item.presentationData.theme.list.mediaPlaceholderColor)
                     
                     let _ = textApply()
                     
                     strongSelf.avatarNode.frame = CGRect(origin: CGPoint(x: params.leftInset + 12.0, y: floor((nodeLayout.contentSize.height - 30.0) / 2.0)), size: CGSize(width: 30.0, height: 30.0))
                     strongSelf.textNode.frame = CGRect(origin: CGPoint(x: leftInset, y: floor((nodeLayout.contentSize.height - textLayout.size.height) / 2.0)), size: textLayout.size)
+                    strongSelf.ephemeralIconNode.frame = CGRect(origin: CGPoint(x: leftInset + ceil(commandSize.width) + 3.0, y: floor((nodeLayout.contentSize.height - ephemeralIconSize.height) / 2.0)), size: ephemeralIconSize)
                     
                     let arrowSize = CGSize(width: 42.0, height: nodeLayout.contentSize.height)
                     strongSelf.arrowNode.frame = CGRect(origin: CGPoint(x: nodeLayout.size.width - arrowSize.width - params.rightInset, y: 0.0), size: arrowSize)

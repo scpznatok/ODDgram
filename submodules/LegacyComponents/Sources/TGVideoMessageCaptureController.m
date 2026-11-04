@@ -87,6 +87,8 @@ typedef enum
     TGModernButton *_switchButton;
     
     UIView *_wrapperView;
+    CGFloat _circleBandMinX;
+    CGFloat _circleBandWidth;
     
     UIView *_blurView;
     
@@ -321,14 +323,21 @@ typedef enum
         }
     }
     
-    CGFloat minSide = MIN(_wrapperView.frame.size.width, _wrapperView.frame.size.height);
+    // iPhone Duo: one side's safe inset is the side strip, with the status corner at its end; the circle is sized
+    // and centred in the band beside it. With equal side insets the band is the whole width, as before.
+    UIEdgeInsets safeAreaInset = [_context safeAreaInset];
+    bool sideInsetsDiffer = safeAreaInset.left != safeAreaInset.right;
+    _circleBandMinX = sideInsetsDiffer ? safeAreaInset.left : 0.0f;
+    _circleBandWidth = _wrapperView.frame.size.width - (sideInsetsDiffer ? safeAreaInset.left + safeAreaInset.right : 0.0f);
+    
+    CGFloat minSide = MIN(_circleBandWidth, _wrapperView.frame.size.height);
     bool isSE = _wrapperView.frame.size.width == 320.0 || _wrapperView.frame.size.height == 320.0;
     CGFloat diameter = isSE ? 216.0 : MIN(404.0, minSide - 24.0f);
     CGFloat shadowSize = 21.0f;
     
     CGFloat circleWrapperViewLength = diameter + shadowSize * 2.0;
     _circleWrapperView = [[UIView alloc] initWithFrame:(CGRect){
-        .origin.x = (_wrapperView.bounds.size.width - circleWrapperViewLength) / 2.0f,
+        .origin.x = _circleBandMinX + (_circleBandWidth - circleWrapperViewLength) / 2.0f,
         .origin.y = _wrapperView.bounds.size.height + circleWrapperViewLength * 0.3f,
         .size.width = circleWrapperViewLength,
         .size.height = circleWrapperViewLength
@@ -337,11 +346,7 @@ typedef enum
     _circleWrapperView.alpha = 0.0f;
     _circleWrapperView.clipsToBounds = false;
     [_wrapperView addSubview:_circleWrapperView];
-    
-    _shadowView = [[UIImageView alloc] initWithImage:TGComponentsImageNamed(@"VideoMessageShadow")];
-    _shadowView.frame = _circleWrapperView.bounds;
-    [_circleWrapperView addSubview:_shadowView];
-    
+        
     _circleView = [[UIView alloc] initWithFrame:CGRectInset(_circleWrapperView.bounds, shadowSize, shadowSize)];
     _circleView.clipsToBounds = true;
     _circleView.layer.cornerRadius = _circleView.frame.size.width / 2.0f;
@@ -610,7 +615,7 @@ typedef enum
     _circleWrapperView.transform = CGAffineTransformMakeScale(0.3f, 0.3f);
     
     CGPoint targetPosition = (CGPoint){
-        .x = _wrapperView.frame.size.width / 2.0f,
+        .x = _circleBandMinX + _circleBandWidth / 2.0f,
         .y = _wrapperView.frame.size.height / 2.0f - _controlsView.frame.size.height
     };
 #pragma clang diagnostic push
@@ -851,13 +856,13 @@ typedef enum
         }
         
         if (strongSelf.presentScheduleController) {
-            strongSelf.presentScheduleController(^(int32_t time) {
+            strongSelf.presentScheduleController(^(int32_t time, bool silentPosting) {
                 __strong TGVideoMessageCaptureController *strongSelf = weakSelf;
                 if (strongSelf == nil) {
                     return;
                 }
                 
-                [strongSelf finishWithURL:strongSelf->_url dimensions:CGSizeMake(240.0f, 240.0f) duration:strongSelf->_duration liveUploadData:strongSelf->_liveUploadData thumbnailImage:strongSelf->_thumbnailImage isSilent:false scheduleTimestamp:time];
+                [strongSelf finishWithURL:strongSelf->_url dimensions:CGSizeMake(240.0f, 240.0f) duration:strongSelf->_duration liveUploadData:strongSelf->_liveUploadData thumbnailImage:strongSelf->_thumbnailImage isSilent:silentPosting scheduleTimestamp:time];
                 
                 _automaticDismiss = true;
                 [strongSelf dismiss:false];

@@ -1,6 +1,6 @@
 import Foundation
 import Postbox
-import TelegramApi
+internal import TelegramApi
 
 extension BotMenuButton {
     init(apiBotMenuButton: Api.BotMenuButton) {
@@ -35,10 +35,17 @@ extension BotVerifierSettings {
         switch apiBotVerifierSettings {
         case let .botVerifierSettings(botVerifierSettingsData):
             let (flags, iconFileId, companyName, customDescription) = (botVerifierSettingsData.flags, botVerifierSettingsData.icon, botVerifierSettingsData.company, botVerifierSettingsData.customDescription)
+            var text: String?
+            var entities: [MessageTextEntity]?
+            if case let .textWithEntities(textWithEntitiesData) = customDescription {
+                text = textWithEntitiesData.text
+                entities = messageTextEntitiesFromApiEntities(textWithEntitiesData.entities)
+            }
             self.init(
                 iconFileId: iconFileId,
                 companyName: companyName,
-                customDescription: customDescription,
+                customDescription: text,
+                customDescriptionEntities: entities,
                 canModifyDescription: (flags & (1 << 1)) != 0
             )
         }
@@ -50,15 +57,15 @@ extension BotInfo {
         switch apiBotInfo {
             case let .botInfo(botInfoData):
                 let (_, _, description, descriptionPhoto, descriptionDocument, apiCommands, apiMenuButton, privacyPolicyUrl, appSettings, verifierSettings) = (botInfoData.flags, botInfoData.userId, botInfoData.description, botInfoData.descriptionPhoto, botInfoData.descriptionDocument, botInfoData.commands, botInfoData.menuButton, botInfoData.privacyPolicyUrl, botInfoData.appSettings, botInfoData.verifierSettings)
-                let photo: TelegramMediaImage? = descriptionPhoto.flatMap(telegramMediaImageFromApiPhoto)
+                let photo: TelegramMediaImage? = descriptionPhoto.flatMap { telegramMediaImageFromApiPhoto($0) }
                 let video: TelegramMediaFile? = descriptionDocument.flatMap { telegramMediaFileFromApiDocument($0, altDocuments: []) }
                 var commands: [BotCommand] = []
                 if let apiCommands = apiCommands {
                     commands = apiCommands.map { command in
                         switch command {
                             case let .botCommand(botCommandData):
-                                let (command, description) = (botCommandData.command, botCommandData.description)
-                                return BotCommand(text: command, description: description)
+                                let (flags, command, description) = (botCommandData.flags, botCommandData.command, botCommandData.description)
+                                return BotCommand(text: command, description: description, isEphemeral: (flags & (1 << 0)) != 0)
                         }
                     }
                 }

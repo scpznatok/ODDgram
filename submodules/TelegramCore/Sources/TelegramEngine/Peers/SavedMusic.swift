@@ -1,14 +1,14 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 public enum AddSavedMusicError {
     case generic
 }
 
-func revalidatedMusic<T>(account: Account, file: FileMediaReference, signal: @escaping (CloudDocumentMediaResource) -> Signal<T, MTRpcError>) -> Signal<T, MTRpcError> {
+public func revalidatedMusic<T>(account: Account, file: FileMediaReference, signal: @escaping (CloudDocumentMediaResource) -> Signal<T, MTRpcError>) -> Signal<T, MTRpcError> {
     guard let resource = file.media.resource as? CloudDocumentMediaResource else {
         return .fail(MTRpcError(errorCode: 500, errorDescription: "Internal"))
     }

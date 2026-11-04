@@ -2,14 +2,14 @@ import Foundation
 import CoreMedia
 import UIKit
 import SwiftSignalKit
-import Postbox
 import Display
 import TelegramCore
 import Compression
 import GZip
-import RLottieBinding
+import LottieBinding
+import LottieSettings
 import MediaResources
-import MobileCoreServices
+import UniformTypeIdentifiers
 import MediaResources
 import YuvConversion
 import AnimatedStickerNode
@@ -17,7 +17,7 @@ import ManagedFile
 import UniversalMediaPlayer
 import SoftwareVideo
 
-public func fetchCompressedLottieFirstFrameAJpeg(data: Data, size: CGSize, fitzModifier: EmojiFitzModifier? = nil, cacheKey: String) -> Signal<TempBoxFile, NoError> {
+public func fetchCompressedLottieFirstFrameAJpeg(data: Data, size: CGSize, fitzModifier: EmojiFitzModifier? = nil, cacheKey: String, lottieSettings: LottieRenderingSettings) -> Signal<EngineTempBoxFile, NoError> {
     return Signal({ subscriber in
         let queue = Queue()
         
@@ -30,7 +30,7 @@ public func fetchCompressedLottieFirstFrameAJpeg(data: Data, size: CGSize, fitzM
             
             let decompressedData = TGGUnzipData(data, 8 * 1024 * 1024)
             if let decompressedData = decompressedData {
-                if let player = LottieInstance(data: decompressedData, fitzModifier: fitzModifier?.lottieFitzModifier ?? .none, colorReplacements: nil, cacheKey: cacheKey) {
+                if let player = makeLottieInstance(data: decompressedData, fitzModifier: fitzModifier?.lottieFitzModifier ?? .none, colorReplacements: nil, cacheKey: cacheKey, settings: lottieSettings) {
                     if cancelled.with({ $0 }) {
                         return
                     }
@@ -71,7 +71,7 @@ public func fetchCompressedLottieFirstFrameAJpeg(data: Data, size: CGSize, fitzM
                         let colorData = NSMutableData()
                         let alphaData = NSMutableData()
                         
-                        if let colorDestination = CGImageDestinationCreateWithData(colorData as CFMutableData, kUTTypeJPEG, 1, nil), let alphaDestination = CGImageDestinationCreateWithData(alphaData as CFMutableData, kUTTypeJPEG, 1, nil) {
+                        if let colorDestination = CGImageDestinationCreateWithData(colorData as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil), let alphaDestination = CGImageDestinationCreateWithData(alphaData as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil) {
                             CGImageDestinationSetProperties(colorDestination, NSDictionary() as CFDictionary)
                             CGImageDestinationSetProperties(alphaDestination, NSDictionary() as CFDictionary)
                             
@@ -97,7 +97,7 @@ public func fetchCompressedLottieFirstFrameAJpeg(data: Data, size: CGSize, fitzM
                                 finalData.append(&alphaSize, length: 4)
                                 finalData.append(alphaData as Data)
                                 
-                                let tempFile = TempBox.shared.tempFile(fileName: "image.ajpg")
+                                let tempFile = EngineTempBox.shared.tempFile(fileName: "image.ajpg")
                                 let _ = try? finalData.write(to: URL(fileURLWithPath: tempFile.path), options: [])
                                 subscriber.putNext(tempFile)
                                 subscriber.putCompletion()
@@ -117,7 +117,7 @@ private let threadPool: ThreadPool = {
     return ThreadPool(threadCount: 3, threadPriority: 0.5)
 }()
 
-public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: EmojiFitzModifier? = nil, cacheKey: String) -> Signal<CachedMediaResourceRepresentationResult, NoError> {
+public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: EmojiFitzModifier? = nil, cacheKey: String, lottieSettings: LottieRenderingSettings) -> Signal<EngineCachedMediaResourceRepresentationResult, NoError> {
     return Signal({ subscriber in
         let cancelled = Atomic<Bool>(value: false)
         
@@ -133,7 +133,7 @@ public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: E
        
             let decompressedData = TGGUnzipData(data, 8 * 1024 * 1024)
             if let decompressedData = decompressedData {
-                if let player = LottieInstance(data: decompressedData, fitzModifier: fitzModifier?.lottieFitzModifier ?? .none, colorReplacements: nil, cacheKey: cacheKey) {
+                if let player = makeLottieInstance(data: decompressedData, fitzModifier: fitzModifier?.lottieFitzModifier ?? .none, colorReplacements: nil, cacheKey: cacheKey, settings: lottieSettings) {
                     let endFrame = Int(player.frameCount)
                     
                     if cancelled.with({ $0 }) {
@@ -144,7 +144,7 @@ public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: E
                     
                     var currentFrame: Int32 = 0
                     
-                    let tempFile = TempBox.shared.tempFile(fileName: "result.asticker")
+                    let tempFile = EngineTempBox.shared.tempFile(fileName: "result.asticker")
                     guard let file = ManagedFile(queue: nil, path: tempFile.path, mode: .readwrite) else {
                         return
                     }
@@ -258,7 +258,7 @@ public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: E
     })
 }
 
-public func cacheVideoStickerFrames(path: String, size: CGSize, cacheKey: String) -> Signal<CachedMediaResourceRepresentationResult, NoError> {
+public func cacheVideoStickerFrames(path: String, size: CGSize, cacheKey: String) -> Signal<EngineCachedMediaResourceRepresentationResult, NoError> {
     return Signal { subscriber in
         let cancelled = Atomic<Bool>(value: false)
 
@@ -278,7 +278,7 @@ public func cacheVideoStickerFrames(path: String, size: CGSize, cacheKey: String
             
             var currentFrame: Int32 = 0
             
-            let tempFile = TempBox.shared.tempFile(fileName: "result.vsticker")
+            let tempFile = EngineTempBox.shared.tempFile(fileName: "result.vsticker")
             guard let file = ManagedFile(queue: nil, path: tempFile.path, mode: .readwrite) else {
                 return
             }

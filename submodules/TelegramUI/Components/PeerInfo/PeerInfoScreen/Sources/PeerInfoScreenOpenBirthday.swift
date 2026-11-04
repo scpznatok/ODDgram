@@ -3,7 +3,6 @@ import UIKit
 import Display
 import AccountContext
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import AsyncDisplayKit
 import TelegramStringFormatting
@@ -50,7 +49,7 @@ extension PeerInfoScreenNode {
                     }
                     
                     self.state = self.state.withIsEditingBirthDate(true)
-                    self.headerNode.navigationButtonContainer.performAction?(.edit, nil, nil)
+                    self.performNavigationButtonAction?(.edit, nil, nil)
                 }
             })))
         }

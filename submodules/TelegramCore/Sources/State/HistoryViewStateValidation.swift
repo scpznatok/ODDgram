@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 
@@ -134,8 +134,16 @@ final class HistoryViewStateValidationContexts {
             }
             return
         }
+        if view.isAnchorOnlyWhileLoading {
+            // The view carries only its anchor while the hole around it is filled, and the fill re-stores
+            // that message from the server; validating it now would add a second request beside the fill.
+            if self.contexts[id] != nil {
+                self.contexts.removeValue(forKey: id)
+            }
+            return
+        }
         
-        guard view.tag == nil || view.tag == .tag(MessageTags.unseenPersonalMessage) || view.tag == .tag(MessageTags.unseenReaction) || view.tag == .tag(MessageTags.music) || view.tag == .tag(MessageTags.pinned) else {
+        guard view.tag == nil || view.tag == .tag(MessageTags.unseenPersonalMessage) || view.tag == .tag(MessageTags.unseenReaction) || view.tag == .tag(MessageTags.unseenPollVote) || view.tag == .tag(MessageTags.music) || view.tag == .tag(MessageTags.pinned) else {
             if self.contexts[id] != nil {
                 self.contexts.removeValue(forKey: id)
             }
@@ -540,6 +548,8 @@ private func validateChannelMessagesBatch(postbox: Postbox, network: Network, ac
                             requestSignal = network.request(Api.functions.messages.getUnreadMentions(flags: 0, peer: inputPeer, topMsgId: nil, offsetId: messageIds[messageIds.count - 1].id + 1, addOffset: 0, limit: Int32(messageIds.count), maxId: messageIds[messageIds.count - 1].id + 1, minId: messageIds[0].id - 1))
                         } else if tag == MessageTags.unseenReaction {
                             requestSignal = network.request(Api.functions.messages.getUnreadReactions(flags: 0, peer: inputPeer, topMsgId: nil, savedPeerId: nil, offsetId: messageIds[messageIds.count - 1].id + 1, addOffset: 0, limit: Int32(messageIds.count), maxId: messageIds[messageIds.count - 1].id + 1, minId: messageIds[0].id - 1))
+                        } else if tag == MessageTags.unseenPollVote {
+                            requestSignal = network.request(Api.functions.messages.getUnreadPollVotes(flags: 0, peer: inputPeer, topMsgId: nil, offsetId: messageIds[messageIds.count - 1].id + 1, addOffset: 0, limit: Int32(messageIds.count), maxId: messageIds[messageIds.count - 1].id + 1, minId: messageIds[0].id - 1))
                         } else if let filter = messageFilterForTagMask(tag) {
                             requestSignal = network.request(Api.functions.messages.search(flags: 0, peer: inputPeer, q: "", fromId: nil, savedPeerId: nil, savedReaction: nil, topMsgId: nil, filter: filter, minDate: 0, maxDate: 0, offsetId: messageIds[messageIds.count - 1].id + 1, addOffset: 0, limit: Int32(messageIds.count), maxId: messageIds[messageIds.count - 1].id + 1, minId: messageIds[0].id - 1, hash: hash))
                         } else {

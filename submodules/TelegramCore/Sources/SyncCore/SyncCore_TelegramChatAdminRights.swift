@@ -29,13 +29,19 @@ public struct TelegramChatAdminRightsFlags: OptionSet, Hashable {
     public static let canDeleteStories = TelegramChatAdminRightsFlags(rawValue: 1 << 16)
     public static let canManageDirect = TelegramChatAdminRightsFlags(rawValue: 1 << 17)
     public static let canManageRanks = TelegramChatAdminRightsFlags(rawValue: 1 << 18)
+    public static let canManageLinkedPeers = TelegramChatAdminRightsFlags(rawValue: 1 << 19)
+    public static let canManageWelcomeMessages = TelegramChatAdminRightsFlags(rawValue: 1 << 20)
     
     public static var all: TelegramChatAdminRightsFlags {
-        return [.canChangeInfo, .canPostMessages, .canEditMessages, .canDeleteMessages, .canBanUsers, .canInviteUsers, .canPinMessages, .canAddAdmins, .canBeAnonymous, .canManageCalls, .canManageTopics, .canPostStories, .canEditStories, .canDeleteStories, .canManageRanks]
+        return [.canChangeInfo, .canPostMessages, .canEditMessages, .canDeleteMessages, .canBanUsers, .canInviteUsers, .canPinMessages, .canAddAdmins, .canBeAnonymous, .canManageCalls, .canManageTopics, .canPostStories, .canEditStories, .canDeleteStories, .canManageRanks, .canManageLinkedPeers, .canManageWelcomeMessages]
     }
     
     public static var allChannel: TelegramChatAdminRightsFlags {
-        return [.canChangeInfo, .canPostMessages, .canEditMessages, .canDeleteMessages, .canBanUsers, .canInviteUsers, .canPinMessages, .canAddAdmins, .canManageCalls, .canManageTopics, .canPostStories, .canEditStories, .canDeleteStories, .canManageDirect]
+        return [.canChangeInfo, .canPostMessages, .canEditMessages, .canDeleteMessages, .canBanUsers, .canInviteUsers, .canPinMessages, .canAddAdmins, .canManageCalls, .canManageTopics, .canPostStories, .canEditStories, .canDeleteStories, .canManageDirect, .canManageWelcomeMessages]
+    }
+    
+    public static var allCommunity: TelegramChatAdminRightsFlags {
+        return [.canChangeInfo, .canBanUsers, .canManageLinkedPeers, .canAddAdmins]
     }
     
     public static let internal_groupSpecific: TelegramChatAdminRightsFlags = [
@@ -50,7 +56,8 @@ public struct TelegramChatAdminRightsFlags: OptionSet, Hashable {
         .canPostStories,
         .canEditStories,
         .canDeleteStories,
-        .canManageRanks
+        .canManageRanks,
+        .canManageWelcomeMessages
     ]
     
     public static let internal_broadcastSpecific: TelegramChatAdminRightsFlags = [
@@ -65,7 +72,8 @@ public struct TelegramChatAdminRightsFlags: OptionSet, Hashable {
         .canEditStories,
         .canDeleteStories,
         .canManageDirect,
-        .canBanUsers
+        .canBanUsers,
+        .canManageWelcomeMessages
     ]
     
     public static func peerSpecific(peer: EnginePeer) -> TelegramChatAdminRightsFlags {
@@ -77,6 +85,8 @@ public struct TelegramChatAdminRightsFlags: OptionSet, Hashable {
             } else {
                 return internal_groupSpecific
             }
+        } else if case .community = peer {
+            return allCommunity
         } else {
             return internal_groupSpecific
         }

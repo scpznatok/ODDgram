@@ -15,6 +15,10 @@ public protocol ItemListItem {
     var requestsNoInset: Bool { get }
 }
 
+public protocol ItemListRevealOptionsStatefulItem: ItemListItem {
+    var hasActiveRevealOptions: Bool { get }
+}
+
 public extension ItemListItem {
     //let accessoryItem: ListViewAccessoryItem?
     
@@ -62,53 +66,15 @@ public enum ItemListNeighbor {
 public struct ItemListNeighbors {
     public var top: ItemListNeighbor
     public var bottom: ItemListNeighbor
+    public var topHasActiveRevealOptions: Bool
+    public var bottomHasActiveRevealOptions: Bool
     
-    public init(top: ItemListNeighbor, bottom: ItemListNeighbor) {
+    public init(top: ItemListNeighbor, bottom: ItemListNeighbor, topHasActiveRevealOptions: Bool = false, bottomHasActiveRevealOptions: Bool = false) {
         self.top = top
         self.bottom = bottom
+        self.topHasActiveRevealOptions = topHasActiveRevealOptions
+        self.bottomHasActiveRevealOptions = bottomHasActiveRevealOptions
     }
-}
-
-public func itemListNeighbors(item: ItemListItem, topItem: ItemListItem?, bottomItem: ItemListItem?) -> ItemListNeighbors {
-    let topNeighbor: ItemListNeighbor
-    if let topItem = topItem {
-        if topItem.sectionId != item.sectionId {
-            let topInset: ItemListInsetWithOtherSection
-            if topItem.requestsNoInset {
-                topInset = .none
-            } else {
-                if topItem is ItemListTextItem {
-                    topInset = .reduced
-                } else {
-                    topInset = .full
-                }
-            }
-            topNeighbor = .otherSection(topInset)
-        } else {
-            topNeighbor = .sameSection(alwaysPlain: topItem.isAlwaysPlain)
-        }
-    } else {
-        topNeighbor = .none
-    }
-    
-    let bottomNeighbor: ItemListNeighbor
-    if let bottomItem = bottomItem {
-        if bottomItem.sectionId != item.sectionId {
-            let bottomInset: ItemListInsetWithOtherSection
-            if bottomItem.requestsNoInset {
-                bottomInset = .none
-            } else {
-                bottomInset = .full
-            }
-            bottomNeighbor = .otherSection(bottomInset)
-        } else {
-            bottomNeighbor = .sameSection(alwaysPlain: bottomItem.isAlwaysPlain)
-        }
-    } else {
-        bottomNeighbor = .none
-    }
-    
-    return ItemListNeighbors(top: topNeighbor, bottom: bottomNeighbor)
 }
 
 public func itemListNeighborsPlainInsets(_ neighbors: ItemListNeighbors) -> UIEdgeInsets {
@@ -164,7 +130,7 @@ public func itemListNeighborsGroupedInsets(_ neighbors: ItemListNeighbors, _ par
 }
 
 public func itemListHasRoundedBlockLayout(_ params: ListViewItemLayoutParams) -> Bool {
-    return params.width >= 350.0
+    return params.width >= 320.0
 }
 
 public final class ItemListPresentationData: Equatable {

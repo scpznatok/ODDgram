@@ -1,6 +1,6 @@
 import Foundation
+import LottieSettings
 import UIKit
-import Postbox
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
@@ -25,10 +25,10 @@ public final class ChatMessageInvoiceBubbleContentNode: ChatMessageBubbleContent
         }
     }
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.contentNode = ChatMessageAttachedContentNode()
         
-        super.init()
+        super.init(lottieSettings: lottieSettings)
         
         self.addSubnode(self.contentNode)
     }
@@ -40,7 +40,7 @@ public final class ChatMessageInvoiceBubbleContentNode: ChatMessageBubbleContent
     override public func asyncLayoutContent() -> (_ item: ChatMessageBubbleContentItem, _ layoutConstants: ChatMessageItemLayoutConstants, _ preparePosition: ChatMessageBubblePreparePosition, _ messageSelection: Bool?, _ constrainedSize: CGSize, _ avatarInset: CGFloat) -> (ChatMessageBubbleContentProperties, CGSize?, CGFloat, (CGSize, ChatMessageBubbleContentPosition) -> (CGFloat, (CGFloat) -> (CGSize, (ListViewItemUpdateAnimation, Bool, ListViewItemApply?) -> Void))) {
         let contentNodeLayout = self.contentNode.asyncLayout()
         
-        return { item, layoutConstants, preparePosition, _, constrainedSize, _ in
+        return { [weak self] item, layoutConstants, preparePosition, _, constrainedSize, _ in
             var invoice: TelegramMediaInvoice?
             for media in item.message.media {
                 if let media = media as? TelegramMediaInvoice {
@@ -52,7 +52,7 @@ public final class ChatMessageInvoiceBubbleContentNode: ChatMessageBubbleContent
             var title: String?
             var subtitle: NSAttributedString? = nil
             var text: String?
-            var mediaAndFlags: ([Media], ChatMessageAttachedContentNodeMediaFlags)?
+            var mediaAndFlags: ([EngineRawMedia], ChatMessageAttachedContentNodeMediaFlags)?
             
             var automaticDownloadSettings = item.controllerInteraction.automaticMediaDownloadSettings
             if let invoice = invoice {
@@ -128,11 +128,11 @@ public final class ChatMessageInvoiceBubbleContentNode: ChatMessageBubbleContent
         return ChatMessageBubbleContentTapAction(content: .none)
     }
     
-    override public func updateHiddenMedia(_ media: [Media]?) -> Bool {
+    override public func updateHiddenMedia(_ media: [EngineRawMedia]?) -> Bool {
         return self.contentNode.updateHiddenMedia(media)
     }
     
-    override public func transitionNode(messageId: MessageId, media: Media, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    override public func transitionNode(messageId: EngineMessage.Id, media: EngineRawMedia, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         if self.item?.message.id != messageId {
             return nil
         }

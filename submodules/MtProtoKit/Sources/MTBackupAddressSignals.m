@@ -15,6 +15,10 @@
 #import <MtProtoKit/MTSerialization.h>
 #import <MtProtoKit/MTLogging.h>
 #import <MtProtoKit/MTKeychain.h>
+#import "MTInternalInterfaces.h"
+@interface MTContext (CancelPending)
+- (void)cancelPendingActions;
+@end
 
 @interface MTTemporaryKeychain : NSObject<MTKeychain> {
     NSMutableDictionary<NSString *, id> *_dict;
@@ -95,10 +99,10 @@ static NSData *base64_decode(NSString *str) {
 + (MTSignal *)fetchBackupIpsResolveGoogle:(bool)isTesting phoneNumber:(NSString *)phoneNumber currentContext:(MTContext *)currentContext addressOverride:(NSString *)addressOverride {
     NSArray *hosts = @[
         @[@"dns.google.com", @""],
-        @[@"www.google.com", @"dns.google.com"],
     ];
     
     id<EncryptionProvider> encryptionProvider = currentContext.encryptionProvider;
+    __weak MTContext *weakCurrentContext = currentContext;
     
     NSMutableArray *signals = [[NSMutableArray alloc] init];
     for (NSArray *hostAndHostname in hosts) {
@@ -153,12 +157,16 @@ static NSData *base64_decode(NSString *str) {
                     for (NSString *string in strings) {
                         finalString = [finalString stringByAppendingString:[string stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"="]]];
                     }
+                    while (finalString.length % 4 != 0) {
+                        finalString = [finalString stringByAppendingString:@"="];
+                    }
                     
                     NSData *result = base64_decode(finalString);
                     NSMutableData *finalData = [[NSMutableData alloc] initWithData:result];
                     [finalData setLength:256];
                     MTBackupDatacenterData *datacenterData = MTIPDataDecode(encryptionProvider, finalData, phoneNumber);
-                    if (datacenterData != nil && [self checkIpData:datacenterData timestamp:(int32_t)[currentContext globalTime] source:@"resolveGoogle"]) {
+                    __strong MTContext *strongCurrentContext = weakCurrentContext;
+                    if (strongCurrentContext != nil && datacenterData != nil && [self checkIpData:datacenterData timestamp:(int32_t)[strongCurrentContext globalTime] source:@"resolveGoogle"]) {
                         return [MTSignal single:datacenterData];
                     }
                 }
@@ -193,90 +201,6 @@ static NSString *makeRandomPadding() {
     return string;
 }
 
-+ (MTSignal *)fetchBackupIpsResolveCloudflare:(bool)isTesting phoneNumber:(NSString *)phoneNumber currentContext:(MTContext *)currentContext addressOverride:(NSString *)addressOverride {
-    id<EncryptionProvider> encryptionProvider = currentContext.encryptionProvider;
-    
-    NSArray *hosts = @[
-        @[@"mozilla.cloudflare-dns.com", @""],
-    ];
-    
-    NSMutableArray *signals = [[NSMutableArray alloc] init];
-    for (NSArray *hostAndHostname in hosts) {
-        NSString *host = hostAndHostname[0];
-        NSString *hostName = hostAndHostname[1];
-        NSMutableDictionary *headers = [[NSMutableDictionary alloc] init];
-        headers[@"accept"] = @"application/dns-json";
-        if ([hostName length] != 0) {
-            headers[@"Host"] = hostName;
-        }
-        NSString *apvHost = @"apv3.stel.com";
-        if (addressOverride != nil) {
-            apvHost = addressOverride;
-        }
-        MTSignal *signal = [[[MTHttpRequestOperation dataForHttpUrl:[NSURL URLWithString:[NSString stringWithFormat:@"https://%@/dns-query?name=%@&type=16&random_padding=%@", host, isTesting ? @"tapv3.stel.com" : apvHost, makeRandomPadding()]] headers:headers] mapToSignal:^MTSignal *(MTHttpResponse *response) {
-            NSString *dateHeader = response.headers[@"Date"];
-            if ([dateHeader isKindOfClass:[NSString class]]) {
-                NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-                NSLocale *usLocale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US"];
-                [formatter setLocale:usLocale];
-                [formatter setDateFormat:@"EEE',' dd' 'MMM' 'yyyy HH':'mm':'ss zzz"];
-                NSDate *date = [formatter dateFromString:dateHeader];
-                if (date != nil) {
-                    double difference = [date timeIntervalSince1970] - [[NSDate date] timeIntervalSince1970];
-                    [MTContext setFixedTimeDifference:(int32_t)difference];
-                }
-            }
-            
-            NSData *data = response.data;
-            
-            NSDictionary *dict = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([dict respondsToSelector:@selector(objectForKey:)]) {
-                NSArray *answer = dict[@"Answer"];
-                NSMutableArray *strings = [[NSMutableArray alloc] init];
-                if ([answer respondsToSelector:@selector(objectAtIndex:)]) {
-                    for (NSDictionary *value in answer) {
-                        if ([value respondsToSelector:@selector(objectForKey:)]) {
-                            NSString *part = value[@"data"];
-                            if ([part respondsToSelector:@selector(characterAtIndex:)]) {
-                                [strings addObject:part];
-                            }
-                        }
-                    }
-                    [strings sortUsingComparator:^NSComparisonResult(NSString *lhs, NSString *rhs) {
-                        if (lhs.length > rhs.length) {
-                            return NSOrderedAscending;
-                        } else {
-                            return NSOrderedDescending;
-                        }
-                    }];
-                    
-                    NSString *finalString = @"";
-                    for (NSString *string in strings) {
-                        finalString = [finalString stringByAppendingString:[string stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"="]]];
-                    }
-                    
-                    NSData *result = base64_decode(finalString);
-                    NSMutableData *finalData = [[NSMutableData alloc] initWithData:result];
-                    [finalData setLength:256];
-                    MTBackupDatacenterData *datacenterData = MTIPDataDecode(encryptionProvider, finalData, phoneNumber);
-                    if (datacenterData != nil && [self checkIpData:datacenterData timestamp:(int32_t)[currentContext globalTime] source:@"resolveCloudflare"]) {
-                        return [MTSignal single:datacenterData];
-                    }
-                }
-            }
-            return [MTSignal complete];
-        }] catch:^MTSignal *(__unused id error) {
-            return [MTSignal complete];
-        }];
-        if (signals.count != 0) {
-            signal = [signal delay:signals.count onQueue:[[MTQueue alloc] init]];
-        }
-        [signals addObject:signal];
-    }
-    
-    return [[MTSignal mergeSignals:signals] take:1];
-}
-
 MTAtomic *sharedFetchConfigKeychains() {
     static MTAtomic *value = nil;
     static dispatch_once_t onceToken;
@@ -284,6 +208,22 @@ MTAtomic *sharedFetchConfigKeychains() {
         value = [[MTAtomic alloc] initWithValue:[[NSMutableDictionary alloc] init]];
     });
     return value;
+}
+
++ (bool)applyAddressList:(NSDictionary<NSNumber *, NSArray *> *)addressList toContext:(MTContext *)context {
+    __block bool updated = false;
+    [addressList enumerateKeysAndObjectsUsingBlock:^(NSNumber *nDatacenterId, NSArray *list, __unused BOOL *stop) {
+        MTDatacenterAddressSet *addressSet = [[MTDatacenterAddressSet alloc] initWithAddressList:list];
+        MTDatacenterAddressSet *currentAddressSet = [context addressSetForDatacenterWithId:[nDatacenterId integerValue]];
+        if (currentAddressSet == nil || ![addressSet isEqual:currentAddressSet]) {
+            if (MTLogEnabled()) {
+                MTLog(@"[Backup address fetch: updating datacenter %d address set to %@]", [nDatacenterId intValue], addressSet);
+            }
+            [context updateAddressSetForDatacenterWithId:[nDatacenterId integerValue] addressSet:addressSet forceUpdateSchemes:true];
+            updated = true;
+        }
+    }];
+    return updated;
 }
 
 + (MTSignal *)fetchConfigFromAddress:(MTBackupDatacenterAddress *)address currentContext:(MTContext *)currentContext mainDatacenterId:(NSInteger)mainDatacenterId {
@@ -342,23 +282,14 @@ MTAtomic *sharedFetchConfigKeychains() {
              if (error == nil) {
                  __strong MTContext *strongCurrentContext = weakCurrentContext;
                  if (strongCurrentContext != nil) {
-                     [result.addressList enumerateKeysAndObjectsUsingBlock:^(NSNumber *nDatacenterId, NSArray *list, __unused BOOL *stop) {
-                         MTDatacenterAddressSet *addressSet = [[MTDatacenterAddressSet alloc] initWithAddressList:list];
-                         
-                         MTDatacenterAddressSet *currentAddressSet = [context addressSetForDatacenterWithId:[nDatacenterId integerValue]];
-                         
-                         if (currentAddressSet == nil || ![addressSet isEqual:currentAddressSet])
-                         {
-                             if (MTLogEnabled()) {
-                                 MTLog(@"[Backup address fetch: updating datacenter %d address set to %@]", [nDatacenterId intValue], addressSet);
-                             }
-                             
-                             [strongCurrentContext updateAddressSetForDatacenterWithId:[nDatacenterId integerValue] addressSet:addressSet forceUpdateSchemes:true];
-                             [subscriber putNext:@true];
-                             [subscriber putCompletion];
-                         }
-                     }];
+                     // Compared against the app's context. The fetch context
+                     // built above knows no addresses, so against it every
+                     // datacenter looked changed and every connection was reset.
+                     bool updated = [MTBackupAddressSignals applyAddressList:result.addressList toContext:strongCurrentContext];
+                     // Answered either way, so the fetch ends and a later one can start.
+                     [subscriber putNext:@(updated)];
                  }
+                 [subscriber putCompletion];
              } else {
                  [subscriber putCompletion];
              }
@@ -369,21 +300,23 @@ MTAtomic *sharedFetchConfigKeychains() {
         id requestId = request.internalId;
         return [[MTBlockDisposable alloc] initWithBlock:^{
             [requestService removeRequestByInternalId:requestId];
-            [mtProto pause];
+            [mtProto stop];
+            [context cancelPendingActions];
         }];
     }];
 }
 
 + (MTSignal * _Nonnull)fetchBackupIps:(bool)isTestingEnvironment currentContext:(MTContext * _Nonnull)currentContext additionalSource:(MTSignal * _Nullable)additionalSource phoneNumber:(NSString * _Nullable)phoneNumber mainDatacenterId:(NSInteger)mainDatacenterId {
+    __weak MTContext *weakCurrentContext = currentContext;
     NSMutableArray *signals = [[NSMutableArray alloc] init];
     [signals addObject:[self fetchBackupIpsResolveGoogle:isTestingEnvironment phoneNumber:phoneNumber currentContext:currentContext addressOverride:currentContext.apiEnvironment.accessHostOverride]];
-    [signals addObject:[self fetchBackupIpsResolveCloudflare:isTestingEnvironment phoneNumber:phoneNumber currentContext:currentContext addressOverride:currentContext.apiEnvironment.accessHostOverride]];
     if (additionalSource != nil) {
         [signals addObject:[additionalSource mapToSignal:^MTSignal *(MTBackupDatacenterData *datacenterData) {
             if (![datacenterData isKindOfClass:[MTBackupDatacenterData class]]) {
                 return [MTSignal complete];
             }
-            if (datacenterData != nil && [self checkIpData:datacenterData timestamp:(int32_t)[currentContext globalTime] source:@"resolveExternal"]) {
+            __strong MTContext *strongCurrentContext = weakCurrentContext;
+            if (strongCurrentContext != nil && datacenterData != nil && [self checkIpData:datacenterData timestamp:(int32_t)[strongCurrentContext globalTime] source:@"resolveExternal"]) {
                 return [MTSignal single:datacenterData];
             } else {
                 return [MTSignal complete];
@@ -392,11 +325,12 @@ MTAtomic *sharedFetchConfigKeychains() {
     }
     
     return [[[MTSignal mergeSignals:signals] take:1] mapToSignal:^MTSignal *(MTBackupDatacenterData *data) {
-        if (data != nil && data.addressList.count != 0) {
+        __strong MTContext *strongCurrentContext = weakCurrentContext;
+        if (strongCurrentContext != nil && data != nil && data.addressList.count != 0) {
             NSMutableArray *signals = [[NSMutableArray alloc] init];
             NSTimeInterval delay = 0.0;
             for (MTBackupDatacenterAddress *address in data.addressList) {
-                MTSignal *signal = [self fetchConfigFromAddress:address currentContext:currentContext mainDatacenterId:mainDatacenterId];
+                MTSignal *signal = [self fetchConfigFromAddress:address currentContext:strongCurrentContext mainDatacenterId:mainDatacenterId];
                 if (delay > DBL_EPSILON) {
                     signal = [signal delay:delay onQueue:[[MTQueue alloc] init]];
                 }

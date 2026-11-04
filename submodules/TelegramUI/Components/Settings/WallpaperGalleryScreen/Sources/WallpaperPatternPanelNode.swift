@@ -8,7 +8,6 @@ import TelegramPresentationData
 import LegacyComponents
 import AccountContext
 import MergeLists
-import Postbox
 import SettingsThemeWallpaperNode
 
 private let itemSize = CGSize(width: 88.0, height: 88.0)
@@ -71,6 +70,10 @@ private struct WallpaperPatternEntry: Comparable, Identifiable {
 }
 
 private class WallpaperPatternItem: ListViewItem {
+    var neighborDescriptor: AnyEquatable {
+        return AnyEquatable.noNeighborInfluence
+    }
+
     let context: AccountContext
     let wallpaper: TelegramWallpaper
     let selected: Bool
@@ -83,7 +86,7 @@ private class WallpaperPatternItem: ListViewItem {
         self.action = action
     }
     
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         async {
             let node = WallpaperPatternItemNode()
             let (nodeLayout, apply) = node.asyncLayout()(self, params)
@@ -100,7 +103,7 @@ private class WallpaperPatternItem: ListViewItem {
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             assert(node() is WallpaperPatternItemNode)
             if let nodeValue = node() as? WallpaperPatternItemNode {
@@ -256,9 +259,9 @@ public final class WallpaperPatternPanelNode: ASDisplayNode {
         
         self.addSubnode(self.titleNode)
         self.addSubnode(self.labelNode)
-        self.disposable = ((telegramWallpapers(postbox: context.account.postbox, network: context.account.network)
+        self.disposable = ((context.engine.themes.wallpapers()
         |> map { wallpapers -> [TelegramWallpaper] in
-            var existingIds = Set<MediaId>()
+            var existingIds = Set<EngineMedia.Id>()
 
             return wallpapers.filter { wallpaper in
                 if case let .file(file) = wallpaper, wallpaper.isPattern, file.file.mimeType != "image/webp" {
@@ -294,6 +297,7 @@ public final class WallpaperPatternPanelNode: ASDisplayNode {
         self.scrollNode.view.showsHorizontalScrollIndicator = false
         self.scrollNode.view.showsVerticalScrollIndicator = false
         self.scrollNode.view.alwaysBounceHorizontal = true
+        self.scrollNode.view.scrollsToTop = false
         
         let sliderView = TGPhotoEditorSliderView()
         sliderView.disableSnapToPositions = true

@@ -9,6 +9,19 @@ public protocol ListSectionComponentChildView: AnyObject {
     var customUpdateIsHighlighted: ((Bool) -> Void)? { get set }
     var enumerateSiblings: (((UIView) -> Void) -> Void)? { get set }
     var separatorInset: CGFloat { get }
+    var separatorAlpha: CGFloat { get }
+}
+
+public extension ListSectionComponentChildView {
+    var separatorAlpha: CGFloat {
+        return 1.0
+    }
+}
+
+// Swipe surfaces fade both bordering separators without relaying out the section.
+public protocol ListSectionComponentChildRevealView: ListSectionComponentChildView {
+    var revealOptionsSeparatorAlpha: CGFloat { get }
+    var revealOptionsSeparatorAlphaUpdated: (() -> Void)? { get set }
 }
 
 public final class ListSectionContentView: UIView {
@@ -47,6 +60,7 @@ public final class ListSectionContentView: UIView {
         public let displaySeparators: Bool
         public let extendsItemHighlightToSection: Bool
         public let background: ListSectionComponent.Background
+        public let backgroundColor: UIColor?
         
         public init(
             theme: PresentationTheme,
@@ -54,7 +68,8 @@ public final class ListSectionContentView: UIView {
             isModal: Bool = false,
             displaySeparators: Bool,
             extendsItemHighlightToSection: Bool,
-            background: ListSectionComponent.Background
+            background: ListSectionComponent.Background,
+            backgroundColor: UIColor? = nil
         ) {
             self.theme = theme
             self.style = style
@@ -62,6 +77,7 @@ public final class ListSectionContentView: UIView {
             self.displaySeparators = displaySeparators
             self.extendsItemHighlightToSection = extendsItemHighlightToSection
             self.background = background
+            self.backgroundColor = backgroundColor
         }
     }
     
@@ -83,6 +99,7 @@ public final class ListSectionContentView: UIView {
     public var automaticallyLayoutExternalContentBackgroundView = true
     
     public var itemViews: [AnyHashable: ItemView] = [:]
+    private var orderedItemIds: [AnyHashable] = []
     private var highlightedItemId: AnyHashable?
     
     private var configuration: Configuration?
@@ -124,7 +141,7 @@ public final class ListSectionContentView: UIView {
                 backgroundColor = configuration.theme.list.itemHighlightedBackgroundColor
             } else {
                 transition = .easeInOut(duration: 0.2)
-                backgroundColor = configuration.isModal ? configuration.theme.list.itemModalBlocksBackgroundColor : configuration.theme.list.itemBlocksBackgroundColor
+                backgroundColor = configuration.backgroundColor ?? (configuration.isModal ? configuration.theme.list.itemModalBlocksBackgroundColor : configuration.theme.list.itemBlocksBackgroundColor)
             }
             
             self.externalContentBackgroundView.updateColor(color: backgroundColor, transition: transition)
@@ -137,9 +154,30 @@ public final class ListSectionContentView: UIView {
             }
         }
     }
+
+    private func revealSeparatorAlpha(at index: Int) -> CGFloat {
+        var alpha: CGFloat = 1.0
+        for adjacentIndex in index ... min(index + 1, self.orderedItemIds.count - 1) {
+            if let view = self.itemViews[self.orderedItemIds[adjacentIndex]]?.contents.view as? ListSectionComponentChildRevealView {
+                alpha = min(alpha, view.revealOptionsSeparatorAlpha)
+            }
+        }
+        return alpha
+    }
+
+    private func updateRevealSeparatorAlphas() {
+        guard let configuration = self.configuration else { return }
+        for (index, id) in self.orderedItemIds.enumerated() {
+            guard let itemView = self.itemViews[id] else { continue }
+            let baseAlpha = (itemView.contents.view as? ListSectionComponentChildView)?.separatorAlpha ?? 1.0
+            let alpha = configuration.displaySeparators && index != self.orderedItemIds.count - 1 ? baseAlpha * self.revealSeparatorAlpha(at: index) : 0.0
+            ComponentTransition.immediate.setAlpha(layer: itemView.separatorLayer, alpha: alpha)
+        }
+    }
     
     public func update(configuration: Configuration, width: CGFloat, leftInset: CGFloat, readyItems: [ReadyItem], transition: ComponentTransition) -> UpdateResult {
         self.configuration = configuration
+        self.orderedItemIds = readyItems.map(\.id)
         
         switch configuration.background {
         case .all, .range:
@@ -152,7 +190,13 @@ public final class ListSectionContentView: UIView {
         if self.highlightedItemId != nil && configuration.extendsItemHighlightToSection {
             backgroundColor = configuration.theme.list.itemHighlightedBackgroundColor
         } else {
-            backgroundColor = configuration.isModal ? configuration.theme.list.itemModalBlocksBackgroundColor : configuration.theme.list.itemBlocksBackgroundColor
+            if let customBackgroundColor = configuration.backgroundColor {
+                backgroundColor = customBackgroundColor
+            } else if case .plain = configuration.style {
+                backgroundColor = configuration.theme.list.plainBackgroundColor
+            } else {
+                backgroundColor = configuration.isModal ? configuration.theme.list.itemModalBlocksBackgroundColor : configuration.theme.list.itemBlocksBackgroundColor
+            }
         }
         self.externalContentBackgroundView.updateColor(color: backgroundColor, transition: transition)
         
@@ -162,6 +206,8 @@ public final class ListSectionContentView: UIView {
             cornerRadius = 26.0
         case .legacy:
             cornerRadius = 11.0
+        case .plain:
+            cornerRadius = 0.0
         }
         
         var innerContentHeight: CGFloat = 0.0
@@ -202,11 +248,18 @@ public final class ListSectionContentView: UIView {
                             }
                         }
                     }
+                    if let itemComponentView = itemComponentView as? ListSectionComponentChildRevealView {
+                        itemComponentView.revealOptionsSeparatorAlphaUpdated = { [weak self] in
+                            self?.updateRevealSeparatorAlphas()
+                        }
+                    }
                 }
                 var separatorInset: CGFloat = 0.0
-                let separatorRightInset: CGFloat = configuration.style == .glass ? 16.0 : 0.0
+                var itemSeparatorAlpha: CGFloat = 1.0
+                let separatorRightInset: CGFloat = [.glass, .plain].contains(configuration.style) ? 16.0 : 0.0
                 if let itemComponentView = itemComponentView as? ListSectionComponentChildView {
                     separatorInset = itemComponentView.separatorInset
+                    itemSeparatorAlpha = itemComponentView.separatorAlpha
                 }
                 
                 let itemSeparatorFrame = CGRect(origin: CGPoint(x: separatorInset, y: itemFrame.maxY - UIScreenPixel), size: CGSize(width: width - separatorInset - separatorRightInset, height: UIScreenPixel))
@@ -238,7 +291,7 @@ public final class ListSectionContentView: UIView {
                 let separatorAlpha: CGFloat
                 if configuration.displaySeparators {
                     if index != readyItems.count - 1 {
-                        separatorAlpha = 1.0
+                        separatorAlpha = itemSeparatorAlpha * self.revealSeparatorAlpha(at: index)
                     } else {
                         separatorAlpha = 0.0
                     }
@@ -255,6 +308,7 @@ public final class ListSectionContentView: UIView {
         for (id, itemView) in self.itemViews {
             if !validItemIds.contains(id) {
                 removedItemIds.append(id)
+                (itemView.contents.view as? ListSectionComponentChildRevealView)?.revealOptionsSeparatorAlphaUpdated = nil
                 
                 if let itemComponentView = itemView.contents.view, itemComponentView is ListSubSectionComponent.View {
                     itemView.clipsToBounds = true
@@ -340,11 +394,13 @@ public final class ListSectionComponent: Component {
     public enum Style {
         case glass
         case legacy
+        case plain
     }
     
     public let theme: PresentationTheme
     public let style: Style
     public let background: Background
+    public let backgroundColor: UIColor?
     public let header: AnyComponent<Empty>?
     public let footer: AnyComponent<Empty>?
     public let items: [AnyComponentWithIdentity<Empty>]
@@ -356,6 +412,7 @@ public final class ListSectionComponent: Component {
         theme: PresentationTheme,
         style: Style = .legacy,
         background: Background = .all,
+        backgroundColor: UIColor? = nil,
         header: AnyComponent<Empty>?,
         footer: AnyComponent<Empty>?,
         items: [AnyComponentWithIdentity<Empty>],
@@ -366,6 +423,7 @@ public final class ListSectionComponent: Component {
         self.theme = theme
         self.style = style
         self.background = background
+        self.backgroundColor = backgroundColor
         self.header = header
         self.footer = footer
         self.items = items
@@ -382,6 +440,9 @@ public final class ListSectionComponent: Component {
             return false
         }
         if lhs.background != rhs.background {
+            return false
+        }
+        if lhs.backgroundColor != rhs.backgroundColor {
             return false
         }
         if lhs.header != rhs.header {
@@ -516,7 +577,8 @@ public final class ListSectionComponent: Component {
                     isModal: component.isModal,
                     displaySeparators: component.displaySeparators,
                     extendsItemHighlightToSection: component.extendsItemHighlightToSection,
-                    background: component.background
+                    background: component.background,
+                    backgroundColor: component.backgroundColor
                 ),
                 width: availableSize.width,
                 leftInset: 0.0,
@@ -721,4 +783,3 @@ public final class ListSubSectionComponent: Component {
         return view.update(component: self, availableSize: availableSize, state: state, environment: environment, transition: transition)
     }
 }
-

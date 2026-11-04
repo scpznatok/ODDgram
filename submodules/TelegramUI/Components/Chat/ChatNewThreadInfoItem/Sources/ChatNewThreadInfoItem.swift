@@ -3,7 +3,6 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TextFormat
@@ -20,7 +19,12 @@ public final class ChatNewThreadInfoItem: ListViewItem {
     fileprivate let controllerInteraction: ChatControllerInteraction
     fileprivate let presentationData: ChatPresentationData
     fileprivate let context: AccountContext
-    
+
+    // Decodes to nil on the chat side, which is the same branch a missing neighbor takes.
+    public var neighborDescriptor: AnyEquatable {
+        return AnyEquatable.noNeighborInfluence
+    }
+
     public init(
         controllerInteraction: ChatControllerInteraction,
         presentationData: ChatPresentationData,
@@ -31,7 +35,7 @@ public final class ChatNewThreadInfoItem: ListViewItem {
         self.context = context
     }
     
-    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+    public func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
         let configure = {
             let node = ChatNewThreadInfoItemNode()
             
@@ -56,7 +60,7 @@ public final class ChatNewThreadInfoItem: ListViewItem {
         }
     }
     
-    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+    public func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
         Queue.mainQueue().async {
             if let nodeValue = node() as? ChatNewThreadInfoItemNode {
                 let nodeLayout = nodeValue.asyncLayout()
@@ -80,7 +84,7 @@ public final class ChatNewThreadInfoItemNode: ListViewItemNode, ASGestureRecogni
     public let offsetContainer: ASDisplayNode
     public let titleNode: TextNode
     public let subtitleNode: TextNode
-    let arrowView: UIImageView
+    var arrowView: UIImageView?
     let iconBackground: SimpleLayer
     var icon = ComponentView<Empty>()
     
@@ -105,8 +109,6 @@ public final class ChatNewThreadInfoItemNode: ListViewItemNode, ASGestureRecogni
         self.subtitleNode = TextNode()
         self.subtitleNode.isUserInteractionEnabled = false
         self.subtitleNode.displaysAsynchronously = false
-        
-        self.arrowView = UIImageView()
         
         super.init(layerBacked: false, rotated: true)
         
@@ -152,12 +154,6 @@ public final class ChatNewThreadInfoItemNode: ListViewItemNode, ASGestureRecogni
         super.updateAbsoluteRect(rect, within: containerSize)
         
         self.absolutePosition = (rect, containerSize)
-        if let backgroundContent = self.backgroundContent {
-            var backgroundFrame = backgroundContent.frame
-            backgroundFrame.origin.x += rect.minX
-            backgroundFrame.origin.y += containerSize.height - rect.minY
-            backgroundContent.update(rect: backgroundFrame, within: containerSize, transition: .immediate)
-        }
     }
     
     public func asyncLayout() -> (_ item: ChatNewThreadInfoItem, _ width: ListViewItemLayoutParams) -> (ListViewItemNodeLayout, (ListViewItemUpdateAnimation) -> Void) {
@@ -231,8 +227,14 @@ public final class ChatNewThreadInfoItemNode: ListViewItemNode, ASGestureRecogni
                     if strongSelf.iconBackground.superlayer == nil {
                         strongSelf.offsetContainer.layer.addSublayer(strongSelf.iconBackground)
                     }
-                    if strongSelf.arrowView.superview == nil {
-                        strongSelf.offsetContainer.view.addSubview(strongSelf.arrowView)
+                    
+                    let arrowView: UIImageView
+                    if let current = self?.arrowView {
+                        arrowView = current
+                    } else {
+                        arrowView = UIImageView()
+                        strongSelf.arrowView = arrowView
+                        strongSelf.offsetContainer.view.addSubview(arrowView)
                     }
                     
                     let iconComponent = AnyComponent(BundleIconComponent(
@@ -265,15 +267,15 @@ public final class ChatNewThreadInfoItemNode: ListViewItemNode, ASGestureRecogni
                     contentOriginY += subtitleLayout.size.height
                     contentOriginY += 20.0
                     
-                    if strongSelf.arrowView.image == nil {
-                        strongSelf.arrowView.image = generateTintedImage(image: UIImage(bundleImageName: "Chat/Input/Search/DownButton"), color: .white)?.withRenderingMode(.alwaysTemplate)
+                    if arrowView.image == nil {
+                        arrowView.image = generateTintedImage(image: UIImage(bundleImageName: "Chat/Input/Search/DownButton"), color: .white)?.withRenderingMode(.alwaysTemplate)
                     }
-                    strongSelf.arrowView.tintColor = primaryTextColor.withMultipliedAlpha(0.5)
-                    if let image = strongSelf.arrowView.image {
+                    arrowView.tintColor = primaryTextColor.withMultipliedAlpha(0.5)
+                    if let image = arrowView.image {
                         let scaleFactor: CGFloat = 0.8
                         let imageSize = CGSize(width: floor(image.size.width * scaleFactor), height: floor(image.size.height * scaleFactor))
                         let arrowFrame = CGRect(origin: CGPoint(x: backgroundFrame.origin.x + floor((backgroundSize.width - imageSize.width) / 2.0), y: backgroundFrame.minY + backgroundFrame.height - 8.0 - imageSize.height), size: imageSize)
-                        strongSelf.arrowView.frame = arrowFrame
+                        arrowView.frame = arrowFrame
                     }
                     
                     if strongSelf.backgroundContent == nil, let backgroundContent = item.controllerInteraction.presentationContext.backgroundNode?.makeBubbleBackground(for: .free) {
@@ -285,12 +287,6 @@ public final class ChatNewThreadInfoItemNode: ListViewItemNode, ASGestureRecogni
                     if let backgroundContent = strongSelf.backgroundContent {
                         backgroundContent.cornerRadius = item.presentationData.chatBubbleCorners.mainRadius
                         backgroundContent.frame = backgroundFrame
-                        if let (rect, containerSize) = strongSelf.absolutePosition {
-                            var backgroundFrame = backgroundContent.frame
-                            backgroundFrame.origin.x += rect.minX
-                            backgroundFrame.origin.y += containerSize.height - rect.minY
-                            backgroundContent.update(rect: backgroundFrame, within: containerSize, transition: .immediate)
-                        }
                     }
                 }
             })

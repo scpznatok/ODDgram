@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import ComponentFlow
-import Postbox
 import TelegramCore
 import AccountContext
 import PlainButtonComponent
@@ -526,7 +525,9 @@ final class VideoChatParticipantsComponent: Component {
                 var listFrame = CGRect(origin: CGPoint(x: separateVideoGridFrame.maxX + layout.columnSpacing, y: 0.0), size: CGSize(width: listWidth, height: containerSize.height))
                 if isUIHidden || layout.isMainColumnHidden {
                     listFrame.origin.x = containerSize.width + columnsLeftInset
-                    separateVideoGridFrame = CGRect(origin: CGPoint(x: floor((containerSize.width - columnsWidth) * 0.5), y: 0.0), size: CGSize(width: columnsWidth, height: containerSize.height))
+                    // Centred between the side safe insets: beside a side strip (iPhone Duo) a screen-centred grid reaches into
+                    // the strip and under its status corner block. Equal insets keep it screen-centred.
+                    separateVideoGridFrame = CGRect(origin: CGPoint(x: floor((containerSize.width - columnsWidth + safeInsets.left - safeInsets.right) * 0.5), y: 0.0), size: CGSize(width: columnsWidth, height: containerSize.height))
                 }
                 
                 self.separateVideoGridFrame = separateVideoGridFrame
@@ -693,7 +694,7 @@ final class VideoChatParticipantsComponent: Component {
         
         private var appliedGridIsEmpty: Bool = true
         
-        private var isPinchToZoomActive: Bool = false
+        private(set) var isPinchToZoomActive: Bool = false
         
         private var stopRequestingNonCentralVideo: Bool = false
         private var stopRequestingNonCentralVideoTimer: Foundation.Timer?
@@ -1113,7 +1114,7 @@ final class VideoChatParticipantsComponent: Component {
                             self.isPinchToZoomActive = true
                             self.state?.updated(transition: .immediate, isLocal: true)
                             let pinchController = makePinchController(sourceNode: sourceNode, getContentAreaInScreenSpace: {
-                                return UIScreen.main.bounds
+                                return mainWindowScreenBounds
                             })
                             component.call.accountContext.sharedContext.mainWindow?.presentInGlobalOverlay(pinchController)
                         } : nil,
@@ -1934,7 +1935,7 @@ final class VideoChatParticipantsComponent: Component {
                 transition: transition,
                 component: AnyComponent(RoundedRectangle(
                     color: UIColor(white: 0.1, alpha: 1.0),
-                    cornerRadius: 16.0
+                    cornerRadius: 26.0
                 )),
                 environment: {},
                 containerSize: CGSize(width: itemLayout.listFrame.width - itemLayout.layout.mainColumn.insets.left - itemLayout.layout.mainColumn.insets.right, height: itemLayout.list.contentHeight())

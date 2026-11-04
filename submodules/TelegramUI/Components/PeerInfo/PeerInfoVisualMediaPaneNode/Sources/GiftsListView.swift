@@ -1,10 +1,10 @@
+import LottieSettings
 import AsyncDisplayKit
 import UIKit
 import Display
 import ComponentFlow
 import TelegramCore
 import SwiftSignalKit
-import Postbox
 import TelegramPresentationData
 import AccountContext
 import ContextUI
@@ -30,7 +30,7 @@ import ContextUI
 
 final class GiftsListView: UIView {
     private let context: AccountContext
-    private let peerId: PeerId
+    private let peerId: EnginePeer.Id
     let profileGifts: ProfileGiftsContext
     private let giftsCollections: ProfileGiftsCollectionsContext?
     
@@ -127,7 +127,7 @@ final class GiftsListView: UIView {
     var contextAction: ((ProfileGiftsContext.State.StarGift, UIView, ContextGesture) -> Void)?
     var addToCollection: (() -> Void)?
     
-    init(context: AccountContext, peerId: PeerId, profileGifts: ProfileGiftsContext, giftsCollections: ProfileGiftsCollectionsContext?, canSelect: Bool, ignoreCollection: Int32? = nil, remainingSelectionCount: Int32 = 0) {
+    init(context: AccountContext, peerId: EnginePeer.Id, profileGifts: ProfileGiftsContext, giftsCollections: ProfileGiftsCollectionsContext?, canSelect: Bool, ignoreCollection: Int32? = nil, remainingSelectionCount: Int32 = 0) {
         self.context = context
         self.peerId = peerId
         self.profileGifts = profileGifts
@@ -499,7 +499,11 @@ final class GiftsListView: UIView {
                     }
                 case let .unique(gift):
                     subject = .uniqueGift(gift: gift, price: nil)
-                    peer = nil
+                    if !(product.text ?? "").isEmpty && !product.nameHidden {
+                        peer = product.fromPeer.flatMap { .peer($0) }
+                    } else {
+                        peer = nil
+                    }
                     resellAmount = gift.resellAmounts?.first(where: { $0.currency == .stars })
                     
                     if !(gift.resellAmounts ?? []).isEmpty {
@@ -633,11 +637,11 @@ final class GiftsListView: UIView {
                                             }
                                             return self.profileGifts.upgradeStarGift(formId: formId, reference: reference, keepOriginalInfo: keepOriginalInfo)
                                         },
-                                        buyGift: { [weak self] slug, peerId, price in
+                                        buyGift: { [weak self] slug, peerId, price, hideName, text, entities in
                                             guard let self else {
                                                 return .never()
                                             }
-                                            return self.profileGifts.buyStarGift(slug: slug, peerId: peerId, price: price)
+                                            return self.profileGifts.buyStarGift(slug: slug, peerId: peerId, price: price, hideName: hideName, text: text, entities: entities)
                                         },
                                         updateResellStars: { [weak self] reference, price in
                                             guard let self else {
@@ -788,9 +792,11 @@ final class GiftsListView: UIView {
         
         let panelTransition = ComponentTransition.immediate
         let fadeTransition = ComponentTransition.easeInOut(duration: 0.25)
+        let contentTopInset = topInset
+        var emptyResultsMinY: CGFloat = 0.0
         if self.resultsAreEmpty && self.isCollection {
             let sideInset: CGFloat = 44.0
-            let topInset: CGFloat = 52.0
+            let topInset: CGFloat = contentTopInset
             let emptyTextSpacing: CGFloat = 18.0
             
             self.emptyResultsClippingView.isHidden = false
@@ -820,12 +826,13 @@ final class GiftsListView: UIView {
                 environment: {},
                 containerSize: CGSize(width: params.size.width - sideInset * 2.0, height: params.size.height)
             )
-            let buttonAttributedString = NSAttributedString(string: presentationData.strings.PeerInfo_Gifts_EmptyCollection_Action, font: Font.semibold(17.0), textColor: .white, paragraphAlignment: .center)
+            let buttonAttributedString = NSAttributedString(string: presentationData.strings.PeerInfo_Gifts_EmptyCollection_Action, font: Font.semibold(17.0), textColor: presentationData.theme.list.itemCheckColors.foregroundColor, paragraphAlignment: .center)
             let emptyResultsActionSize = self.emptyResultsAction.update(
                 transition: .immediate,
                 component: AnyComponent(
                     ButtonComponent(
                         background: ButtonComponent.Background(
+                            style: .glass,
                             color: presentationData.theme.list.itemCheckColors.fillColor,
                             foreground: presentationData.theme.list.itemCheckColors.foregroundColor,
                             pressedColor: presentationData.theme.list.itemCheckColors.fillColor.withMultipliedAlpha(0.8)
@@ -841,12 +848,13 @@ final class GiftsListView: UIView {
                     )
                 ),
                 environment: {},
-                containerSize: CGSize(width: 240.0, height: 50.0)
+                containerSize: CGSize(width: 240.0, height: 52.0)
             )
   
             let emptyTotalHeight = emptyResultsTitleSize.height + emptyTextSpacing + emptyResultsTextSize.height + emptyTextSpacing + emptyResultsActionSize.height
             let emptyTitleY = topInset + floorToScreenPixels((visibleHeight - topInset - bottomInset - emptyTotalHeight) / 2.0)
             
+            emptyResultsMinY = emptyTitleY
             let emptyResultsTitleFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((params.size.width - emptyResultsTitleSize.width) / 2.0), y: emptyTitleY), size: emptyResultsTitleSize)
             let emptyResultsTextFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((params.size.width - emptyResultsTextSize.width) / 2.0), y: emptyResultsTitleFrame.maxY + emptyTextSpacing), size: emptyResultsTextSize)
             let emptyResultsActionFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((params.size.width - emptyResultsActionSize.width) / 2.0), y: emptyResultsTextFrame.maxY + emptyTextSpacing), size: emptyResultsActionSize)
@@ -881,7 +889,7 @@ final class GiftsListView: UIView {
         } else if self.filteredResultsAreEmpty {
             let sideInset: CGFloat = 44.0
             let emptyAnimationHeight = 148.0
-            let topInset: CGFloat = 0.0
+            let topInset: CGFloat = contentTopInset
             let bottomInset: CGFloat = bottomPanelHeight
             let emptyAnimationSpacing: CGFloat = 20.0
             let emptyTextSpacing: CGFloat = 18.0
@@ -929,7 +937,8 @@ final class GiftsListView: UIView {
             let emptyResultsAnimationSize = self.emptyResultsAnimation.update(
                 transition: .immediate,
                 component: AnyComponent(LottieComponent(
-                    content: LottieComponent.AppBundleContent(name: "ChatListNoResults")
+                    content: LottieComponent.AppBundleContent(name: "ChatListNoResults"),
+                    lottieSettings: self.context.lottieRenderingSettings
                 )),
                 environment: {},
                 containerSize: CGSize(width: emptyAnimationHeight, height: emptyAnimationHeight)
@@ -938,6 +947,7 @@ final class GiftsListView: UIView {
             let emptyTotalHeight = emptyAnimationHeight + emptyAnimationSpacing + emptyResultsTitleSize.height + emptyResultsActionSize.height + emptyTextSpacing
             let emptyAnimationY = topInset + floorToScreenPixels((visibleHeight - topInset - bottomInset - emptyTotalHeight) / 2.0)
             
+            emptyResultsMinY = emptyAnimationY
             let emptyResultsAnimationFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((params.size.width - emptyResultsAnimationSize.width) / 2.0), y: emptyAnimationY), size: emptyResultsAnimationSize)
             
             let emptyResultsTitleFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((params.size.width - emptyResultsTitleSize.width) / 2.0), y: emptyResultsAnimationFrame.maxY + emptyAnimationSpacing), size: emptyResultsTitleSize)
@@ -996,7 +1006,7 @@ final class GiftsListView: UIView {
             }
         }
         
-        fadeTransition.setAlpha(view: self.emptyResultsClippingView, alpha: visibleHeight < 300.0 ? 0.0 : 1.0)
+        fadeTransition.setAlpha(view: self.emptyResultsClippingView, alpha: emptyResultsMinY < contentTopInset ? 0.0 : 1.0)
         
         if self.peerId == self.context.account.peerId, !self.canSelect && !self.filteredResultsAreEmpty && self.profileGifts.collectionId == nil && self.emptyResultsClippingView.isHidden {
             let footerText: ComponentView<Empty>

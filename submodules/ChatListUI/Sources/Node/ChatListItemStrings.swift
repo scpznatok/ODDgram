@@ -77,16 +77,16 @@ private func paidContentGroupType(paidContent: TelegramMediaPaidContent) -> Mess
     return currentType
 }
 
-public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: PresentationPersonNameOrder, dateTimeFormat: PresentationDateTimeFormat, contentSettings: ContentSettings, messages: [EngineMessage], chatPeer: EngineRenderedPeer, accountPeerId: EnginePeer.Id, enableMediaEmoji: Bool = true, isPeerGroup: Bool = false) -> (peer: EnginePeer?, hideAuthor: Bool, messageText: String, messageEntities: [MessageTextEntity], spoilers: [NSRange]?, customEmojiRanges: [(NSRange, ChatTextInputTextCustomEmojiAttribute)]?) {
+public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: PresentationPersonNameOrder, dateTimeFormat: PresentationDateTimeFormat, contentSettings: ContentSettings, messages: [EngineMessage], chatPeer: EngineRenderedPeer, accountPeerId: EnginePeer.Id, enableMediaEmoji: Bool = true, isPeerGroup: Bool = false) -> (peer: EnginePeer?, hideAuthor: Bool, messageText: String, messageEntities: [MessageTextEntity], spoilers: [NSRange]?, customEmojiRanges: [(NSRange, ChatTextInputTextCustomEmojiAttribute)]?, richTextPreview: NSAttributedString?) {
     let peer: EnginePeer?
     
     let message = messages.last
     
     if let restrictionReason = message?._asMessage().restrictionReason(platform: "ios", contentSettings: contentSettings) {
-        return (nil, false, restrictionReason, [], nil, nil)
+        return (nil, false, restrictionReason, [], nil, nil, nil)
     }
     if let restrictionReason = chatPeer.chatMainPeer?.restrictionText(platform: "ios", contentSettings: contentSettings) {
-        return (nil, false, restrictionReason, [], nil, nil)
+        return (nil, false, restrictionReason, [], nil, nil, nil)
     }
     
     var hideAuthor = false
@@ -94,6 +94,7 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
     var messageEntities: [MessageTextEntity] = []
     var spoilers: [NSRange]?
     var customEmojiRanges: [(NSRange, ChatTextInputTextCustomEmojiAttribute)]?
+    var richTextPreview: NSAttributedString?
     if let message = message {
         if let messageMain = messageMainPeer(message) {
             peer = messageMain
@@ -103,9 +104,29 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
         
         messageText = ""
         for message in messages {
+            if let richText = message.richText {
+                let preview = richText.instantPage.previewAttributedText(strings: strings, dateTimeFormat: dateTimeFormat, associatedMedia: { message.associatedMedia[$0].map(EngineMedia.init) })
+                if !preview.string.isEmpty {
+                    messageText = preview.string
+                    richTextPreview = preview
+                    messageEntities = []
+                    break
+                }
+            }
             if !message.text.isEmpty {
                 messageText = message.text
+                richTextPreview = nil
                 messageEntities = message._asMessage().textEntitiesAttribute?.entities ?? []
+                for entity in messageEntities {
+                    if case let .CustomEmoji(_, fileId) = entity.type {
+                        if customEmojiRanges == nil {
+                            customEmojiRanges = []
+                        }
+                        let range = NSRange(location: entity.range.lowerBound, length: entity.range.upperBound - entity.range.lowerBound)
+                        let attribute = ChatTextInputTextCustomEmojiAttribute(interactivelySelectedFromPackId: nil, fileId: fileId, file: message.associatedMedia[EngineMedia.Id(namespace: Namespaces.Media.CloudFile, id: fileId)] as? TelegramMediaFile)
+                        customEmojiRanges?.append((range, attribute))
+                    }
+                }
                 break
             }
         }
@@ -129,6 +150,7 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                 if !messageText.isEmpty {
                     textIsReady = true
                 } else {
+                    richTextPreview = nil
                     messageText = strings.ChatList_MessagePhotos(count)
                     textIsReady = true
                 }
@@ -136,6 +158,7 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                 if !messageText.isEmpty {
                     textIsReady = true
                 } else {
+                    richTextPreview = nil
                     messageText = strings.ChatList_MessageVideos(count)
                     textIsReady = true
                 }
@@ -143,6 +166,7 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                 if !messageText.isEmpty {
                     textIsReady = true
                 } else {
+                    richTextPreview = nil
                     messageText = strings.ChatList_MessageMusic(count)
                     textIsReady = true
                 }
@@ -150,6 +174,7 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                 if !messageText.isEmpty {
                     textIsReady = true
                 } else {
+                    richTextPreview = nil
                     messageText = strings.ChatList_MessageFiles(count)
                     textIsReady = true
                 }
@@ -181,24 +206,35 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                             switch type {
                             case .photos:
                                 if message.text.isEmpty {
+                                    richTextPreview = nil
                                     messageText = strings.Message_Photo
                                 } else if enableMediaEmoji {
+                                    richTextPreview = nil
                                     messageText = "🖼 \(messageText)"
                                 }
                             case .videos:
                                 if message.text.isEmpty {
+                                    richTextPreview = nil
                                     messageText = strings.Message_Video
                                 } else if enableMediaEmoji {
+                                    richTextPreview = nil
                                     messageText = "📹 \(messageText)"
                                 }
                             default:
                                 break
                             }
                         }
-                    case _ as TelegramMediaImage:
+                    case let imageMedia as TelegramMediaImage:
                         if message.text.isEmpty {
-                            messageText = strings.Message_Photo
+                            if imageMedia.flags.contains(.isLivePhoto) {
+                                richTextPreview = nil
+                                messageText = strings.Message_LivePhoto
+                            } else {
+                                richTextPreview = nil
+                                messageText = strings.Message_Photo
+                            }
                         } else if enableMediaEmoji {
+                            richTextPreview = nil
                             messageText = "🖼 \(messageText)"
                         }
                     case let fileMedia as TelegramMediaFile:
@@ -206,19 +242,20 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                         inner: for attribute in fileMedia.attributes {
                             switch attribute {
                                 case .Animated:
+                                    richTextPreview = nil
                                     messageText = strings.Message_Animation
                                     processed = true
                                     break inner
                                 case let .Audio(isVoice, _, title, performer, _):
                                     if !message.text.isEmpty {
-                                        messageText = "🎤 \(messageText)"
-                                        processed = true
-                                    } else if isVoice {
-                                        if message.text.isEmpty {
-                                            messageText = strings.Message_Audio
-                                        } else {
+                                        if enableMediaEmoji {
+                                            richTextPreview = nil
                                             messageText = "🎤 \(messageText)"
                                         }
+                                        processed = true
+                                    } else if isVoice {
+                                        richTextPreview = nil
+                                        messageText = strings.Message_Audio
                                         processed = true
                                         break inner
                                     } else {
@@ -234,42 +271,39 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                                         } else {
                                             descriptionString = strings.Message_Audio
                                         }
+                                        richTextPreview = nil
                                         messageText = descriptionString
                                         processed = true
                                         break inner
                                     }
                                 case let .Sticker(displayText, _, _):
                                     if displayText.isEmpty {
+                                        richTextPreview = nil
                                         messageText = strings.Message_Sticker
                                         processed = true
                                         break inner
                                     } else {
+                                        richTextPreview = nil
                                         messageText = strings.Message_StickerText(displayText).string
                                         processed = true
                                         break inner
                                     }
                                 case let .Video(_, _, flags, _, _, _):
                                     if flags.contains(.instantRoundVideo) {
+                                        richTextPreview = nil
                                         messageText = strings.Message_VideoMessage
                                         processed = true
                                         break inner
                                     } else {
                                         if message.text.isEmpty {
-                                            if flags.contains(.isLivePhoto) {
-                                                //TODO:localize
-                                                messageText = "Live Photo"
-                                            } else {
-                                                messageText = strings.Message_Video
-                                            }
+                                            richTextPreview = nil
+                                            messageText = strings.Message_Video
                                             processed = true
                                         } else {
                                             if enableMediaEmoji {
                                                 if !fileMedia.isAnimated {
-                                                    if flags.contains(.isLivePhoto) {
-                                                        messageText = "🖼 \(messageText)"
-                                                    } else {
-                                                        messageText = "📹 \(messageText)"
-                                                    }
+                                                    richTextPreview = nil
+                                                    messageText = "📹 \(messageText)"
                                                 }
                                             }
                                             processed = true
@@ -282,14 +316,20 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                         }
                         if !processed {
                             if !message.text.isEmpty {
-                                messageText = "📎 \(messageText)"
+                                if enableMediaEmoji {
+                                    richTextPreview = nil
+                                    messageText = "📎 \(messageText)"
+                                }
                             } else {
                                 if fileMedia.isAnimatedSticker {
+                                    richTextPreview = nil
                                     messageText = strings.Message_Sticker
                                 } else {
                                     if let fileName = fileMedia.fileName {
+                                        richTextPreview = nil
                                         messageText = fileName
                                     } else {
+                                        richTextPreview = nil
                                         messageText = strings.Message_File
                                     }
                                 }
@@ -297,18 +337,32 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                         }
                     case let location as TelegramMediaMap:
                         if location.liveBroadcastingTimeout != nil {
+                            richTextPreview = nil
                             messageText = strings.Message_LiveLocation
                         } else {
+                            richTextPreview = nil
                             messageText = strings.Message_Location
                         }
                     case _ as TelegramMediaContact:
+                        richTextPreview = nil
                         messageText = strings.Message_Contact
                     case let game as TelegramMediaGame:
-                        messageText = "🎮 \(game.title)"
+                        richTextPreview = nil
+                        messageText = game.title
                     case let invoice as TelegramMediaInvoice:
+                        richTextPreview = nil
                         messageText = invoice.title
                     case let action as TelegramMediaAction:
                         switch action.action {
+                            case .gramTransfer where message.effectivelyIncoming(accountPeerId):
+                                if let preview = incomingGramTransferPreview(message: message, accountPeerId: accountPeerId, strings: strings, dateTimeFormat: dateTimeFormat) {
+                                    hideAuthor = true
+                                    richTextPreview = nil
+                                    messageText = preview.text
+                                    messageEntities = []
+                                    spoilers = nil
+                                    customEmojiRanges = nil
+                                }
                             case let .conferenceCall(conferenceCall):
                                 let incoming = message.flags.contains(.Incoming)
                                 
@@ -316,38 +370,53 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                                 let currentTime = Int32(Date().timeIntervalSince1970)
                                 
                                 if conferenceCall.flags.contains(.isMissed) {
+                                    richTextPreview = nil
                                     messageText = strings.Chat_CallMessage_DeclinedGroupCall
                                 } else if conferenceCall.duration == nil && message.timestamp < currentTime - missedTimeout {
+                                    richTextPreview = nil
                                     messageText = strings.Chat_CallMessage_MissedGroupCall
                                 } else {
                                     if incoming {
+                                        richTextPreview = nil
                                         messageText = strings.Chat_CallMessage_IncomingGroupCall
                                     } else {
+                                        richTextPreview = nil
                                         messageText = strings.Chat_CallMessage_OutgoingGroupCall
                                     }
                                 }
-                            case let .phoneCall(_, discardReason, _, isVideo):
+                            case let .phoneCall(_, discardReason, duration, isVideo):
                                 hideAuthor = !isPeerGroup
                                 let incoming = message.flags.contains(.Incoming)
+                                let callConnected = (duration ?? 0) > 0
                                 if let discardReason = discardReason {
                                     switch discardReason {
                                         case .disconnect:
-                                            if isVideo {
-                                                messageText = strings.Notification_VideoCallCanceled
-                                            } else {
-                                                messageText = strings.Notification_CallCanceled
+                                            // A connected call whose transport died at the end is
+                                            // not a cancelled call (see ChatMessageCallBubbleContentNode).
+                                            if !callConnected {
+                                                if isVideo {
+                                                    richTextPreview = nil
+                                                    messageText = strings.Notification_VideoCallCanceled
+                                                } else {
+                                                    richTextPreview = nil
+                                                    messageText = strings.Notification_CallCanceled
+                                                }
                                             }
                                         case .missed, .busy:
                                             if incoming {
                                                 if isVideo {
+                                                    richTextPreview = nil
                                                     messageText = strings.Notification_VideoCallMissed
                                                 } else {
+                                                    richTextPreview = nil
                                                     messageText = strings.Notification_CallMissed
                                                 }
                                             } else {
                                                 if isVideo {
+                                                    richTextPreview = nil
                                                     messageText = strings.Notification_VideoCallCanceled
                                                 } else {
+                                                    richTextPreview = nil
                                                     messageText = strings.Notification_CallCanceled
                                                 }
                                             }
@@ -359,14 +428,18 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                                 if messageText.isEmpty {
                                     if incoming {
                                         if isVideo {
+                                            richTextPreview = nil
                                             messageText = strings.Notification_VideoCallIncoming
                                         } else {
+                                            richTextPreview = nil
                                             messageText = strings.Notification_CallIncoming
                                         }
                                     } else {
                                         if isVideo {
+                                            richTextPreview = nil
                                             messageText = strings.Notification_VideoCallOutgoing
                                         } else {
+                                            richTextPreview = nil
                                             messageText = strings.Notification_CallOutgoing
                                         }
                                     }
@@ -379,6 +452,7 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                                     hideAuthor = true
                                 }
                                 if let (text, textSpoilers, customEmojiRangesValue) = plainServiceMessageString(strings: strings, nameDisplayOrder: nameDisplayOrder, dateTimeFormat: dateTimeFormat, message: message, accountPeerId: accountPeerId, forChatList: true, forForumOverview: false) {
+                                    richTextPreview = nil
                                     messageText = text
                                     spoilers = textSpoilers
                                     customEmojiRanges = customEmojiRangesValue
@@ -386,64 +460,69 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                         }
                     case _ as TelegramMediaExpiredContent:
                         if let (text, _, _) = plainServiceMessageString(strings: strings, nameDisplayOrder: nameDisplayOrder, dateTimeFormat: dateTimeFormat, message: message, accountPeerId: accountPeerId, forChatList: true, forForumOverview: false) {
+                            richTextPreview = nil
                             messageText = text
                         }
                     case let poll as TelegramMediaPoll:
-                        let pollPrefix = "📊 "
-                        let entityOffset = (pollPrefix as NSString).length
-                        messageText = "\(pollPrefix)\(poll.text)"
+                        richTextPreview = nil
+                        messageText = poll.text
+                        customEmojiRanges = []
                         for entity in poll.textEntities {
                             if case let .CustomEmoji(_, fileId) = entity.type {
-                                if customEmojiRanges == nil {
-                                    customEmojiRanges = []
-                                }
-                                let range = NSRange(location: entityOffset + entity.range.lowerBound, length: entity.range.upperBound - entity.range.lowerBound)
+                                let range = NSRange(location: entity.range.lowerBound, length: entity.range.upperBound - entity.range.lowerBound)
                                 let attribute = ChatTextInputTextCustomEmojiAttribute(interactivelySelectedFromPackId: nil, fileId: fileId, file: message.associatedMedia[EngineMedia.Id(namespace: Namespaces.Media.CloudFile, id: fileId)] as? TelegramMediaFile)
                                 customEmojiRanges?.append((range, attribute))
                             }
                         }
                     case let dice as TelegramMediaDice:
+                        richTextPreview = nil
                         messageText = dice.emoji
                     case let story as TelegramMediaStory:
                         if story.isMention, let peer {
                             if message.flags.contains(.Incoming) {
+                                richTextPreview = nil
                                 messageText = strings.Conversation_StoryMentionTextIncoming(peer.compactDisplayTitle).string
                             } else {
+                                richTextPreview = nil
                                 messageText = strings.Conversation_StoryMentionTextOutgoing(peer.compactDisplayTitle).string
                             }
                         } else {
+                            richTextPreview = nil
                             messageText = strings.Notification_Story
                         }
                     case _ as TelegramMediaGiveaway:
                         if let forwardInfo = message.forwardInfo, let author = forwardInfo.author {
+                            richTextPreview = nil
                             messageText = strings.Message_GiveawayStartedOther(EnginePeer(author).compactDisplayTitle).string
                         } else {
                             if let author = message.author, case let .channel(channel) = author, case .group = channel.info {
+                                richTextPreview = nil
                                 messageText = strings.Message_GiveawayStartedGroup
                             } else {
+                                richTextPreview = nil
                                 messageText = strings.Message_GiveawayStarted
                             }
                         }
                     case let results as TelegramMediaGiveawayResults:
                         if results.winnersCount == 0 {
+                            richTextPreview = nil
                             messageText = strings.Message_GiveawayEndedNoWinners
                         } else {
+                            richTextPreview = nil
                             messageText = strings.Message_GiveawayEndedWinners(results.winnersCount)
                         }
                     case let webpage as TelegramMediaWebpage:
                         if messageText.isEmpty, case let .Loaded(content) = webpage.content {
+                            richTextPreview = nil
                             messageText = content.displayUrl
                         }
                     case let todo as TelegramMediaTodo:
-                        let pollPrefix = "☑️ "
-                        let entityOffset = (pollPrefix as NSString).length
-                        messageText = "\(pollPrefix)\(todo.text)"
+                        richTextPreview = nil
+                        messageText = todo.text
+                        customEmojiRanges = []
                         for entity in todo.textEntities {
                             if case let .CustomEmoji(_, fileId) = entity.type {
-                                if customEmojiRanges == nil {
-                                    customEmojiRanges = []
-                                }
-                                let range = NSRange(location: entityOffset + entity.range.lowerBound, length: entity.range.upperBound - entity.range.lowerBound)
+                                let range = NSRange(location: entity.range.lowerBound, length: entity.range.upperBound - entity.range.lowerBound)
                                 let attribute = ChatTextInputTextCustomEmojiAttribute(interactivelySelectedFromPackId: nil, fileId: fileId, file: message.associatedMedia[EngineMedia.Id(namespace: Namespaces.Media.CloudFile, id: fileId)] as? TelegramMediaFile)
                                 customEmojiRanges?.append((range, attribute))
                             }
@@ -455,6 +534,7 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
         }
     } else {
         peer = chatPeer.chatMainPeer
+        richTextPreview = nil
         messageText = ""
         if chatPeer.peerId.namespace == Namespaces.Peer.SecretChat {
             if case let .secretChat(secretChat) = chatPeer.peers[chatPeer.peerId] {
@@ -462,17 +542,22 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
                     case .active:
                         switch secretChat.role {
                             case .creator:
+                                richTextPreview = nil
                                 messageText = strings.DialogList_EncryptedChatStartedOutgoing(peer?.compactDisplayTitle ?? "").string
                             case .participant:
+                                richTextPreview = nil
                                 messageText = strings.DialogList_EncryptedChatStartedIncoming(peer?.compactDisplayTitle ?? "").string
                         }
                     case .terminated:
+                        richTextPreview = nil
                         messageText = strings.DialogList_EncryptionRejected
                     case .handshake:
                         switch secretChat.role {
                             case .creator:
+                                richTextPreview = nil
                                 messageText = strings.DialogList_AwaitingEncryption(peer?.compactDisplayTitle ?? "").string
                             case .participant:
+                                richTextPreview = nil
                                 messageText = strings.DialogList_EncryptionProcessing
                         }
                 }
@@ -480,5 +565,8 @@ public func chatListItemStrings(strings: PresentationStrings, nameDisplayOrder: 
         }
     }
     
-    return (peer, hideAuthor, messageText, messageEntities, spoilers, customEmojiRanges)
+    if richTextPreview?.string != messageText {
+        richTextPreview = nil
+    }
+    return (peer, hideAuthor, messageText, messageEntities, spoilers, customEmojiRanges, richTextPreview)
 }

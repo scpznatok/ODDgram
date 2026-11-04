@@ -51,32 +51,36 @@ public struct ListViewItemConfigureNodeFlags: OptionSet {
 }
 
 public final class ListViewItemApply {
-    public private(set) var isOnScreen: Bool
     public let timestamp: Double?
     public private(set) var invertOffsetDirection: Bool = false
-    
-    public init(isOnScreen: Bool, timestamp: Double? = nil) {
-        self.isOnScreen = isOnScreen
+
+    public init(timestamp: Double? = nil) {
         self.timestamp = timestamp
     }
-    
+
     public func setInvertOffsetDirection() {
         self.invertOffsetDirection = true
     }
-    
-    public func setIsOffscreen() {
-        self.isOnScreen = false
-    }
 }
 
-public protocol ListViewItem {
-    func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, previousItem: ListViewItem?, nextItem: ListViewItem?, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void)
-    func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, previousItem: ListViewItem?, nextItem: ListViewItem?, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void)
+public protocol ListViewItem: AnyObject {
+    /// Everything a *neighbor* is permitted to know about this item.
+    ///
+    /// Load-bearing: a descriptor must encode everything a neighbor reads. Backends relayout a row
+    /// exactly when this value changes on either side, so a fact omitted here goes stale on screen.
+    /// Recover payloads with `AnyEquatable.base(_:)`, passing a facet protocol.
+    ///
+    /// Use `AnyEquatable.noNeighborInfluence` for items whose neighbors read nothing about them.
+    var neighborDescriptor: AnyEquatable { get }
+
+    func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void, params: ListViewItemLayoutParams, synchronousLoads: Bool, neighbors: ListViewItemNeighbors, completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void)
+    func updateNode(async: @escaping (@escaping () -> Void) -> Void, node: @escaping () -> ListViewItemNode, params: ListViewItemLayoutParams, neighbors: ListViewItemNeighbors, animation: ListViewItemUpdateAnimation, completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void)
     
     var accessoryItem: ListViewAccessoryItem? { get }
     var headerAccessoryItem: ListViewAccessoryItem? { get }
     var selectable: Bool { get }
     var approximateHeight: CGFloat { get }
+    var pinToEdgeWithInset: Bool { get }
     
     func selected(listView: ListView)
 }
@@ -96,6 +100,10 @@ public extension ListViewItem {
     
     var approximateHeight: CGFloat {
         return 44.0
+    }
+    
+    var pinToEdgeWithInset: Bool {
+        return false
     }
     
     func selected(listView: ListView) {

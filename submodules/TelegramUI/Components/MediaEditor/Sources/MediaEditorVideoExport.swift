@@ -228,6 +228,12 @@ public final class MediaEditorVideoExport {
         var skippingUpdate = false
         var initialized = false
     }
+    
+    private struct BounceFrame {
+        let pixelBuffer: CVPixelBuffer
+        let timestamp: CMTime
+    }
+    
     private var additionalVideoOutput: [Int: VideoOutput] = [:]
     
     private var mainComposeFramerate: Float?
@@ -248,8 +254,11 @@ public final class MediaEditorVideoExport {
             }
         }
     }
+    private var sourceDurationValue: CMTime?
     
     private var imageArguments: (frameRate: Double, position: CMTime)?
+    private var bounceFrames: [BounceFrame] = []
+    private var bounceReverseFrameIndex: Int?
     
     private let pauseDispatchGroup = DispatchGroup()
     private var cancelled = false
@@ -257,6 +266,13 @@ public final class MediaEditorVideoExport {
     private var startTimestamp = CACurrentMediaTime()
     
     private let composerSemaphore = DispatchSemaphore(value: 0)
+    
+    /// Upper bound on producing one frame. No frame legitimately comes close to this; the bound is
+    /// there so that a producer which fails to call its completion fails the export instead of
+    /// parking this queue forever — which is how such an omission presented: a Post spinner that
+    /// never stopped and a pending story that blocked every story behind it.
+    private static let frameProductionTimeout: Double = 30.0
+    private var frameProductionTimedOut = false
     
     public init(postbox: Postbox, subject: Subject, configuration: Configuration, outputPath: String, textScale: CGFloat = 1.0) {
         self.postbox = postbox
@@ -316,6 +332,111 @@ public final class MediaEditorVideoExport {
         }
     }
     
+    private var isBounceEnabled: Bool {
+        guard self.configuration.values.videoBounce else {
+            return false
+        }
+        if case .video = self.subject {
+            return true
+        } else {
+            return false
+        }
+    }
+    
+    private var sourceStartTime: CMTime {
+        return self.reader?.timeRange.start ?? .zero
+    }
+    
+    private func outputTimestamp(for sourceTimestamp: CMTime) -> CMTime {
+        if self.isBounceEnabled {
+            return CMTimeSubtract(sourceTimestamp, self.sourceStartTime)
+        } else {
+            return sourceTimestamp
+        }
+    }
+    
+    private func updateProgress(at timestamp: CMTime) {
+        guard let duration = self.durationValue, duration.seconds > 0.0 else {
+            return
+        }
+        let progressTimestamp: Double
+        if self.isBounceEnabled {
+            progressTimestamp = timestamp.seconds
+        } else {
+            progressTimestamp = timestamp.seconds - self.sourceStartTime.seconds
+        }
+        let progress = min(max(progressTimestamp / duration.seconds, 0.0), 1.0)
+        self.statusValue = .progress(Float(progress))
+    }
+    
+    private func startBounceReversePassIfNeeded() -> Bool {
+        guard self.isBounceEnabled, self.bounceReverseFrameIndex == nil, !self.bounceFrames.isEmpty else {
+            return false
+        }
+        self.bounceReverseFrameIndex = self.bounceFrames.count - 1
+        return true
+    }
+    
+    private func bounceTimestamp(for forwardTimestamp: CMTime) -> CMTime {
+        guard let sourceDuration = self.sourceDurationValue, let outputDuration = self.durationValue else {
+            return forwardTimestamp
+        }
+        let mirroredTimestamp = CMTimeAdd(sourceDuration, CMTimeSubtract(sourceDuration, forwardTimestamp))
+        return CMTimeMinimum(mirroredTimestamp, outputDuration)
+    }
+    
+    private func outputAudioBuffer(from buffer: CMSampleBuffer) -> CMSampleBuffer? {
+        guard self.isBounceEnabled else {
+            return buffer
+        }
+        
+        let sampleCount = CMSampleBufferGetNumSamples(buffer)
+        guard sampleCount > 0 else {
+            return buffer
+        }
+        
+        var timingInfo = Array(
+            repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid),
+            count: sampleCount
+        )
+        var timingInfoCount: CMItemCount = 0
+        let status = timingInfo.withUnsafeMutableBufferPointer { timingInfoBuffer in
+            CMSampleBufferGetSampleTimingInfoArray(
+                buffer,
+                entryCount: sampleCount,
+                arrayToFill: timingInfoBuffer.baseAddress,
+                entriesNeededOut: &timingInfoCount
+            )
+        }
+        guard status == noErr else {
+            return nil
+        }
+        
+        let sourceStartTime = self.sourceStartTime
+        for index in 0 ..< Int(timingInfoCount) {
+            timingInfo[index].presentationTimeStamp = CMTimeSubtract(timingInfo[index].presentationTimeStamp, sourceStartTime)
+            if timingInfo[index].decodeTimeStamp.isValid {
+                timingInfo[index].decodeTimeStamp = CMTimeSubtract(timingInfo[index].decodeTimeStamp, sourceStartTime)
+            }
+        }
+        
+        var adjustedBuffer: CMSampleBuffer?
+        let copyStatus = timingInfo.withUnsafeMutableBufferPointer { timingInfoBuffer in
+            CMSampleBufferCreateCopyWithNewTiming(
+                allocator: kCFAllocatorDefault,
+                sampleBuffer: buffer,
+                sampleTimingEntryCount: Int(timingInfoCount),
+                sampleTimingArray: timingInfoBuffer.baseAddress,
+                sampleBufferOut: &adjustedBuffer
+            )
+        }
+        guard copyStatus == noErr else {
+            return nil
+        }
+        
+        return adjustedBuffer
+    }
+    
     private func setup() {
         Logger.shared.log("VideoExport", "Setting up")
         
@@ -371,7 +492,7 @@ public final class MediaEditorVideoExport {
         } else if let additionalPath = self.configuration.values.additionalVideoPath {
             let asset = AVURLAsset(url: URL(fileURLWithPath: additionalPath))
             additionalAsset = asset
-            signals = [.single(.video(asset: asset, rect: nil, scale: 1.0, offset: .zero, rotation: textureRotatonForAVAsset(asset, mirror: true), duration: asset.duration.seconds, trimRange: nil, trimOffset: nil, volume: nil))]
+            signals = [.single(.video(asset: asset, rect: nil, scale: 1.0, offset: .zero, rotation: textureRotatonForAVAsset(asset, mirror: false), duration: asset.duration.seconds, trimRange: nil, trimOffset: nil, volume: nil))]
         }
 
         var audioAsset: AVAsset?
@@ -393,40 +514,41 @@ public final class MediaEditorVideoExport {
             mainInput = .sticker(file)
         }
         
-        let duration: CMTime
+        let sourceDuration: CMTime
         if self.configuration.isSticker {
-            duration = CMTime(seconds: self.configuration.preferredDuration ?? 3.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+            sourceDuration = CMTime(seconds: self.configuration.preferredDuration ?? 3.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         } else if let mainAsset {
             if let trimmedDuration = self.configuration.timeRange?.duration {
-                duration = trimmedDuration
+                sourceDuration = trimmedDuration
             } else {
                 if isStory && mainAsset.duration.seconds > 60.0 {
-                    duration = CMTime(seconds: 60.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+                    sourceDuration = CMTime(seconds: 60.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
                 } else {
-                    duration = mainAsset.duration
+                    sourceDuration = mainAsset.duration
                 }
             }
         } else if let additionalAsset {
             if let trimmedDuration = self.configuration.additionalVideoTimeRange?.duration {
-                duration = trimmedDuration
+                sourceDuration = trimmedDuration
             } else {
                 if additionalAsset.duration.seconds > 60.0 {
-                    duration = CMTime(seconds: 60.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+                    sourceDuration = CMTime(seconds: 60.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
                 } else {
-                    duration = additionalAsset.duration
+                    sourceDuration = additionalAsset.duration
                 }
             }
         } else {
             if let audioDuration = self.configuration.audioTimeRange?.duration {
-                duration = audioDuration
+                sourceDuration = audioDuration
             } else {
-                duration = CMTime(seconds: 5.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+                sourceDuration = CMTime(seconds: 5.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
             }
         }
-        if self.configuration.values.videoBounce, case .video = self.subject {
-            self.durationValue = CMTimeAdd(duration, duration)
+        self.sourceDurationValue = sourceDuration
+        if self.isBounceEnabled {
+            self.durationValue = CMTimeAdd(sourceDuration, sourceDuration)
         } else {
-            self.durationValue = duration
+            self.durationValue = sourceDuration
         }
         
         let _ = (combineLatest(signals)
@@ -443,7 +565,7 @@ public final class MediaEditorVideoExport {
             return
         }
         
-        var duration = self.durationValue?.seconds
+        var duration = self.sourceDurationValue?.seconds
         if case .image = self.subject {
             duration = nil
         }
@@ -494,7 +616,7 @@ public final class MediaEditorVideoExport {
         var additionalTracks: [AdditionalTrack] = []
         var audioMix: AVMutableAudioMix?
         
-        if hasVideoOrAudio, let duration = self.durationValue {
+        if hasVideoOrAudio, let duration = self.sourceDurationValue {
             composition = AVMutableComposition()
             var audioMixParameters: [AVMutableAudioMixInputParameters] = []
             
@@ -516,49 +638,17 @@ public final class MediaEditorVideoExport {
                 self.mainVideoScale = scale
                 self.mainVideoOffset = offset
                 self.textureRotation = rotation
-                var mainTimeRange = CMTimeRange(start: .zero, duration: asset.duration)
-                if let timeRange = self.configuration.timeRange {
-                    mainTimeRange = timeRange
-                } else if isStory && asset.duration.seconds > 60.0 {
-                    mainTimeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: 60.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC)))
-                }
                 if let videoAssetTrack = asset.tracks(withMediaType: .video).first {
                     if let compositionTrack = composition?.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
                         mainVideoTrack = compositionTrack
                         compositionTrack.preferredTransform = videoAssetTrack.preferredTransform
-
-                        try? compositionTrack.insertTimeRange(mainTimeRange, of: videoAssetTrack, at: .zero)
-
-                        if self.configuration.values.videoBounce {
-                            let sourceFrameRate: Float
-                            if videoAssetTrack.nominalFrameRate > 0.0 {
-                                sourceFrameRate = videoAssetTrack.nominalFrameRate
-                            } else if self.configuration.frameRate > 0.0 {
-                                sourceFrameRate = self.configuration.frameRate
-                            } else {
-                                sourceFrameRate = 30.0
-                            }
-                            let roundedFrameRate = max(1, Int(round(sourceFrameRate)))
-                            let frameDuration = CMTime(value: 1, timescale: Int32(roundedFrameRate))
-
-                            var insertionTime = mainTimeRange.duration
-                            var cursor = CMTimeSubtract(CMTimeRangeGetEnd(mainTimeRange), frameDuration)
-                            while CMTimeCompare(cursor, mainTimeRange.start) >= 0 {
-                                let remaining = CMTimeSubtract(CMTimeRangeGetEnd(mainTimeRange), cursor)
-                                let segmentDuration = CMTimeCompare(frameDuration, remaining) <= 0 ? frameDuration : remaining
-                                if segmentDuration.seconds > 0.0 {
-                                    let segmentRange = CMTimeRange(start: cursor, duration: segmentDuration)
-                                    try? compositionTrack.insertTimeRange(segmentRange, of: videoAssetTrack, at: insertionTime)
-                                    insertionTime = CMTimeAdd(insertionTime, segmentDuration)
-                                }
-                                cursor = CMTimeSubtract(cursor, frameDuration)
-                            }
-                        }
+                        
+                        try? compositionTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: videoAssetTrack, at: .zero)
                     }
                 }
-                if let audioAssetTrack = asset.tracks(withMediaType: .audio).first, !self.configuration.values.videoIsMuted {
+                if let audioAssetTrack = asset.tracks(withMediaType: .audio).first, !self.configuration.values.videoIsMuted, !self.isBounceEnabled {
                     if let compositionTrack = composition?.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                        try? compositionTrack.insertTimeRange(mainTimeRange, of: audioAssetTrack, at: .zero)
+                        try? compositionTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: audioAssetTrack, at: .zero)
                         
                         if let volume = self.configuration.values.videoVolume, volume != 1.0 {
                             let trackParameters = AVMutableAudioMixInputParameters(track: compositionTrack)
@@ -568,7 +658,7 @@ public final class MediaEditorVideoExport {
                         }
                     }
                 }
-                if !self.configuration.values.videoBounce, let timeRange = self.configuration.timeRange {
+                if let timeRange = self.configuration.timeRange {
                     readerRange = timeRange
                 }
             }
@@ -591,7 +681,7 @@ public final class MediaEditorVideoExport {
                                 try? compositionTrack.insertTimeRange(timeRange, of: videoAssetTrack, at: startTime)
                             }
                         }
-                        if let audioAssetTrack = asset.tracks(withMediaType: .audio).first, volume ?? 1.0 > 0.01 {
+                        if let audioAssetTrack = asset.tracks(withMediaType: .audio).first, volume ?? 1.0 > 0.01, !self.isBounceEnabled {
                             if let compositionTrack = composition?.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
                                 try? compositionTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: startTime)
                                 
@@ -627,7 +717,7 @@ public final class MediaEditorVideoExport {
                         try? compositionTrack.insertTimeRange(timeRange, of: videoAssetTrack, at: startTime)
                     }
                 }
-                if let audioAssetTrack = asset.tracks(withMediaType: .audio).first, self.configuration.values.additionalVideoVolume ?? 1.0 > 0.01 {
+                if let audioAssetTrack = asset.tracks(withMediaType: .audio).first, self.configuration.values.additionalVideoVolume ?? 1.0 > 0.01, !self.isBounceEnabled {
                     if let compositionTrack = composition?.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
                         try? compositionTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: startTime)
                         
@@ -798,6 +888,25 @@ public final class MediaEditorVideoExport {
                 return false
             }
             
+            if let reverseFrameIndex = self.bounceReverseFrameIndex {
+                let frame = self.bounceFrames[reverseFrameIndex]
+                let timestamp = self.bounceTimestamp(for: frame.timestamp)
+                if !writer.appendPixelBuffer(frame.pixelBuffer, at: timestamp) {
+                    writer.markVideoAsFinished()
+                    return false
+                }
+                self.updateProgress(at: timestamp)
+                
+                if reverseFrameIndex == 0 {
+                    self.bounceReverseFrameIndex = nil
+                    writer.markVideoAsFinished()
+                    return false
+                } else {
+                    self.bounceReverseFrameIndex = reverseFrameIndex - 1
+                    continue
+                }
+            }
+            
             if let reader = self.reader, reader.status != .reading {
                 writer.markVideoAsFinished()
                 return false
@@ -829,7 +938,7 @@ public final class MediaEditorVideoExport {
                             self.mainVideoOffset
                         )
                                                 
-                        if let duration = self.durationValue {
+                        if !self.isBounceEnabled, let duration = self.durationValue {
                             let startTime = self.reader?.timeRange.start.seconds ?? 0.0
                             let progress = (timestamp.seconds - startTime) / duration.seconds
                             self.statusValue = .progress(Float(progress))
@@ -837,8 +946,12 @@ public final class MediaEditorVideoExport {
                         }
                     }
                 } else {
-                    writer.markVideoAsFinished()
-                    return false
+                    if self.startBounceReversePassIfNeeded() {
+                        continue
+                    } else {
+                        writer.markVideoAsFinished()
+                        return false
+                    }
                 }
             }
             
@@ -910,7 +1023,7 @@ public final class MediaEditorVideoExport {
                                             )
                                        )
                                        
-                                       if !updatedProgress, let duration = self.durationValue {
+                                       if !self.isBounceEnabled, !updatedProgress, let duration = self.durationValue {
                                            let startTime = self.reader?.timeRange.start.seconds ?? 0.0
                                            let progress = (timestamp.seconds - startTime) / duration.seconds
                                            self.statusValue = .progress(Float(progress))
@@ -957,9 +1070,14 @@ public final class MediaEditorVideoExport {
                     }
                 }
                 guard let timestamp else {
-                    writer.markVideoAsFinished()
-                    return false
+                    if self.startBounceReversePassIfNeeded() {
+                        continue
+                    } else {
+                        writer.markVideoAsFinished()
+                        return false
+                    }
                 }
+                let outputTimestamp = self.outputTimestamp(for: timestamp)
                 
                 if let stickerEntity = self.stickerEntity, let ciContext = composer.ciContext {
                     let imageArguments = self.imageArguments
@@ -969,7 +1087,12 @@ public final class MediaEditorVideoExport {
                         }
                         self.stickerSemaphore.signal()
                     })
-                    self.stickerSemaphore.wait()
+                    if self.stickerSemaphore.wait(timeout: .now() + MediaEditorVideoExport.frameProductionTimeout) == .timedOut {
+                        Logger.shared.log("VideoExport", "Timed out waiting for a sticker frame")
+                        self.frameProductionTimedOut = true
+                        writer.markVideoAsFinished()
+                        return false
+                    }
                     
                     if !updatedProgress, let imageArguments = self.imageArguments, let duration = self.durationValue {
                         let progress = imageArguments.position.seconds / duration.seconds
@@ -978,24 +1101,44 @@ public final class MediaEditorVideoExport {
                     }
                 }
                 
+                // Appending to an input that has been finished or cancelled raises, so a frame
+                // abandoned by the timeout below must not append afterwards. The check and the
+                // append share this lock, and the timeout takes it before finishing the input.
+                let frameAbandoned = Atomic<Bool>(value: false)
                 composer.process(
                     main: mainInput!,
                     additional: additionalInput,
                     timestamp: timestamp,
                     pool: writer.pixelBufferPool,
                     completion: { pixelBuffer in
-                        if let pixelBuffer {
-                            if !writer.appendPixelBuffer(pixelBuffer, at: timestamp) {
-                                writer.markVideoAsFinished()
+                        frameAbandoned.with { abandoned in
+                            guard !abandoned else {
+                                return
+                            }
+                            if let pixelBuffer {
+                                if !writer.appendPixelBuffer(pixelBuffer, at: outputTimestamp) {
+                                    writer.markVideoAsFinished()
+                                    appendFailed = true
+                                } else {
+                                    if self.isBounceEnabled {
+                                        self.bounceFrames.append(BounceFrame(pixelBuffer: pixelBuffer, timestamp: outputTimestamp))
+                                    }
+                                    self.updateProgress(at: outputTimestamp)
+                                }
+                            } else {
                                 appendFailed = true
                             }
-                        } else {
-                            appendFailed = true
                         }
                         self.composerSemaphore.signal()
                     }
                 )
-                self.composerSemaphore.wait()
+                if self.composerSemaphore.wait(timeout: .now() + MediaEditorVideoExport.frameProductionTimeout) == .timedOut {
+                    Logger.shared.log("VideoExport", "Timed out waiting for a composed frame")
+                    let _ = frameAbandoned.swap(true)
+                    self.frameProductionTimedOut = true
+                    writer.markVideoAsFinished()
+                    return false
+                }
                 
                 if let imageArguments = self.imageArguments, let duration = self.durationValue {
                     let position = imageArguments.position + CMTime(value: 1, timescale: Int32(imageArguments.frameRate))
@@ -1024,7 +1167,11 @@ public final class MediaEditorVideoExport {
             }
             self.pauseDispatchGroup.wait()
             if let buffer = output.copyNextSampleBuffer() {
-                if !writer.appendAudioBuffer(buffer) {
+                guard let outputBuffer = self.outputAudioBuffer(from: buffer) else {
+                    writer.markAudioAsFinished()
+                    return false
+                }
+                if !writer.appendAudioBuffer(outputBuffer) {
                     writer.markAudioAsFinished()
                     return false
                 }
@@ -1067,7 +1214,7 @@ public final class MediaEditorVideoExport {
         
         self.internalStatus = .exporting
         
-        writer.startSession(atSourceTime: self.reader?.timeRange.start ?? .zero)
+        writer.startSession(atSourceTime: self.isBounceEnabled ? .zero : (self.reader?.timeRange.start ?? .zero))
         
         var videoCompleted = false
         var audioCompleted = false
@@ -1132,6 +1279,15 @@ public final class MediaEditorVideoExport {
             return
         }
         
+        if self.frameProductionTimedOut {
+            Logger.shared.log("VideoExport", "Failed: timed out producing a frame")
+            try? FileManager.default.removeItem(at: outputUrl)
+            writer.cancelWriting()
+            self.internalStatus = .finished
+            self.statusValue = .failed(.writing(nil))
+            return
+        }
+        
         if writer.status == .failed {
             if let error = writer.error {
                 Logger.shared.log("VideoExport", "Failed with writer error \(error.localizedDescription)")
@@ -1165,7 +1321,6 @@ public final class MediaEditorVideoExport {
                         let _ = (self.duration.get()
                         |> take(1)).start(next: { duration in
                             let exportDuration = end - self.startTimestamp
-                            print("video processing took \(exportDuration)s")
                             if duration.seconds > 0 {
                                 Logger.shared.log("VideoExport", "Completed with path \(self.outputPath)")
                                 Logger.shared.log("VideoExport", "Video processing took \(exportDuration / duration.seconds)")

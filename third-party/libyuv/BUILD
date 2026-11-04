@@ -1,4 +1,6 @@
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 config_setting(
     name = "debug_build",
     values = {
@@ -25,7 +27,9 @@ arch_specific_cflags = select({
     "@build_bazel_rules_apple//apple:ios_arm64": common_flags + arm64_specific_flags,
     "//build-system:ios_sim_arm64": common_flags + arm64_specific_flags,
     "@build_bazel_rules_apple//apple:ios_x86_64": common_flags + x86_64_specific_flags,
-    "//conditions:default": common_flags,
+    "//build-system:linux_arm64": common_flags + arm64_specific_flags,
+    "//build-system:linux_x86_64": common_flags + x86_64_specific_flags,
+    "//conditions:default": common_flags + arm64_specific_flags,
 })
 
 cc_library(

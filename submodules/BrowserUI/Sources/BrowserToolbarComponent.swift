@@ -9,23 +9,34 @@ import ContextReferenceButtonComponent
 import GlassBackgroundComponent
 import EdgeEffect
 
+enum BrowserToolbarMode: Equatable {
+    case webPage
+    case instantPage
+    case document
+    case markdown
+}
+
 final class BrowserToolbarComponent: CombinedComponent {
     let theme: PresentationTheme
     let bottomInset: CGFloat
-    let sideInset: CGFloat
+    /// Per side: the toolbar's content is centered in the band between the insets (iPhone Duo's side strip).
+    let leftInset: CGFloat
+    let rightInset: CGFloat
     let item: AnyComponentWithIdentity<Empty>?
     let collapseFraction: CGFloat
     
     init(
         theme: PresentationTheme,
         bottomInset: CGFloat,
-        sideInset: CGFloat,
+        leftInset: CGFloat,
+        rightInset: CGFloat,
         item: AnyComponentWithIdentity<Empty>?,
         collapseFraction: CGFloat
     ) {
         self.theme = theme
         self.bottomInset = bottomInset
-        self.sideInset = sideInset
+        self.leftInset = leftInset
+        self.rightInset = rightInset
         self.item = item
         self.collapseFraction = collapseFraction
     }
@@ -37,7 +48,7 @@ final class BrowserToolbarComponent: CombinedComponent {
         if lhs.bottomInset != rhs.bottomInset {
             return false
         }
-        if lhs.sideInset != rhs.sideInset {
+        if lhs.leftInset != rhs.leftInset || lhs.rightInset != rhs.rightInset {
             return false
         }
         if lhs.item != rhs.item {
@@ -81,7 +92,7 @@ final class BrowserToolbarComponent: CombinedComponent {
             let item = context.component.item.flatMap { item in
                 return centerItems[item.id].update(
                     component: item.component,
-                    availableSize: CGSize(width: context.availableSize.width - context.component.sideInset * 2.0, height: backgroundHeight),
+                    availableSize: CGSize(width: context.availableSize.width - context.component.leftInset - context.component.rightInset, height: backgroundHeight),
                     transition: context.transition
                 )
             }
@@ -101,12 +112,12 @@ final class BrowserToolbarComponent: CombinedComponent {
                 transition: context.transition
             )
             context.add(background
-                .position(CGPoint(x: size.width / 2.0, y: backgroundSize.height / 2.0 + offset))
+                .position(CGPoint(x: context.component.leftInset + (size.width - context.component.leftInset - context.component.rightInset) / 2.0, y: backgroundSize.height / 2.0 + offset))
             )
             
             if let centerItem = item {
                 context.add(centerItem
-                    .position(CGPoint(x: context.availableSize.width / 2.0, y: backgroundSize.height / 2.0 + offset))
+                    .position(CGPoint(x: context.component.leftInset + (context.availableSize.width - context.component.leftInset - context.component.rightInset) / 2.0, y: backgroundSize.height / 2.0 + offset))
                     .appear(ComponentTransition.Appear({ _, view, transition in
                         transition.animateBlur(layer: view.layer, fromRadius: 10.0, toRadius: 0.0)
                         transition.animateAlpha(view: view, from: 0.0, to: 1.0)
@@ -131,7 +142,7 @@ final class NavigationToolbarContentComponent: CombinedComponent {
     let canGoForward: Bool
     let canOpenIn: Bool
     let canShare: Bool
-    let isDocument: Bool
+    let mode: BrowserToolbarMode
     let performAction: ActionSlot<BrowserScreen.Action>
     let performHoldAction: (UIView, ContextGesture?, BrowserScreen.Action) -> Void
     
@@ -141,7 +152,7 @@ final class NavigationToolbarContentComponent: CombinedComponent {
         canGoForward: Bool,
         canOpenIn: Bool,
         canShare: Bool,
-        isDocument: Bool,
+        mode: BrowserToolbarMode,
         performAction: ActionSlot<BrowserScreen.Action>,
         performHoldAction: @escaping (UIView, ContextGesture?, BrowserScreen.Action) -> Void
     ) {
@@ -150,7 +161,7 @@ final class NavigationToolbarContentComponent: CombinedComponent {
         self.canGoForward = canGoForward
         self.canOpenIn = canOpenIn
         self.canShare = canShare
-        self.isDocument = isDocument
+        self.mode = mode
         self.performAction = performAction
         self.performHoldAction = performHoldAction
     }
@@ -171,7 +182,7 @@ final class NavigationToolbarContentComponent: CombinedComponent {
         if lhs.canShare != rhs.canShare {
             return false
         }
-        if lhs.isDocument != rhs.isDocument {
+        if lhs.mode != rhs.mode {
             return false
         }
         return true
@@ -217,7 +228,8 @@ final class NavigationToolbarContentComponent: CombinedComponent {
                 transition: .easeInOut(duration: 0.2)
             )
             
-            if context.component.isDocument {
+            switch context.component.mode {
+            case .document:
                 var originX: CGFloat = sideInset
                                 
                 let search = search.update(
@@ -270,7 +282,40 @@ final class NavigationToolbarContentComponent: CombinedComponent {
                     .position(CGPoint(x: originX, y: availableSize.height / 2.0))
                 )
                 size.width = originX + sideInset
-            } else {
+            case .markdown:
+                var originX: CGFloat = sideInset
+
+                if !context.component.canShare {
+                    context.add(share
+                        .position(CGPoint(x: availableSize.width / 2.0, y: 10000.0))
+                    )
+                } else {
+                    context.add(share
+                        .position(CGPoint(x: originX, y: availableSize.height / 2.0))
+                    )
+                    originX += spacing
+                }
+
+                let quickLook = quickLook.update(
+                    component: Button(
+                        content: AnyComponent(
+                            BundleIconComponent(
+                                name: "Instant View/OpenDocument",
+                                tintColor: textColor
+                            )
+                        ),
+                        action: {
+                            performAction.invoke(.openIn)
+                        }
+                    ).minSize(buttonSize),
+                    availableSize: buttonSize,
+                    transition: .easeInOut(duration: 0.2)
+                )
+                context.add(quickLook
+                    .position(CGPoint(x: originX, y: availableSize.height / 2.0))
+                )
+                size.width = originX + sideInset
+            case .webPage, .instantPage:
                 var originX: CGFloat = sideInset
                 
                 let canGoBack = context.component.canGoBack

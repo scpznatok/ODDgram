@@ -2,18 +2,17 @@ import Foundation
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import SwiftSignalKit
 import TelegramCore
 import TelegramPresentationData
 import AccountContext
+import ShareController
 import AlertUI
 import PresentationDataUtils
 import SearchUI
 import TelegramPermissionsUI
 import AppBundle
 import DeviceAccess
-import ShareController
 
 public class ComposeControllerImpl: ViewController, ComposeController {
     private let context: AccountContext
@@ -21,8 +20,6 @@ public class ComposeControllerImpl: ViewController, ComposeController {
     private var contactsNode: ComposeControllerNode {
         return self.displayNode as! ComposeControllerNode
     }
-    
-    private let index: PeerNameIndex = .lastNameFirst
     
     private var _ready = Promise<Bool>()
     override public var ready: Promise<Bool> {
@@ -41,7 +38,7 @@ public class ComposeControllerImpl: ViewController, ComposeController {
         
         self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
         
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData, style: .glass))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData))
         
         self._hasGlassStyle = true
         self.navigationPresentation = .modal
@@ -92,7 +89,7 @@ public class ComposeControllerImpl: ViewController, ComposeController {
     
     private func updateThemeAndStrings() {
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
-        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationData: self.presentationData, style: .glass), transition: .immediate)
+        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(presentationData: self.presentationData), transition: .immediate)
         self.searchContentNode?.updateThemeAndPlaceholder(theme: self.presentationData.theme, placeholder: self.presentationData.strings.Common_Search)
         self.title = self.presentationData.strings.Compose_NewMessage
         self.navigationItem.backBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Back, style: .plain, target: nil, action: nil)
@@ -202,6 +199,8 @@ public class ComposeControllerImpl: ViewController, ComposeController {
                     let controller = strongSelf.context.sharedContext.makeNewContactScreen(
                         context: strongSelf.context,
                         peer: nil,
+                        firstName: nil,
+                        lastName: nil,
                         phoneNumber: nil,
                         shareViaException: false,
                         completion: { [weak self] peer, stableId, contactData in
@@ -224,7 +223,7 @@ public class ComposeControllerImpl: ViewController, ComposeController {
                     DeviceAccess.authorizeAccess(to: .contacts)
                 default:
                     let presentationData = strongSelf.presentationData
-                    strongSelf.present(textAlertController(context: strongSelf.context, title: presentationData.strings.AccessDenied_Title, text: presentationData.strings.Contacts_AccessDeniedError, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_NotNow, action: {}), TextAlertAction(type: .genericAction, title: presentationData.strings.AccessDenied_Settings, action: {
+                    strongSelf.present(textAlertController(context: strongSelf.context, title: presentationData.strings.AccessDenied_Title, text: presentationData.strings.Contacts_AccessDeniedError, actions: [TextAlertAction(type: .genericAction, title: presentationData.strings.Common_NotNow, action: {}), TextAlertAction(type: .defaultAction, title: presentationData.strings.AccessDenied_Settings, action: {
                         self?.context.sharedContext.applicationBindings.openSettings()
                     })]), in: .window(.root))
                 }
@@ -310,7 +309,7 @@ public class ComposeControllerImpl: ViewController, ComposeController {
         }
     }
     
-    private func openPeer(peerId: PeerId) {
+    private func openPeer(peerId: EnginePeer.Id) {
         (self.navigationController as? NavigationController)?.replaceTopController(ChatControllerImpl(context: self.context, chatLocation: .peer(id: peerId)), animated: true)
     }
     

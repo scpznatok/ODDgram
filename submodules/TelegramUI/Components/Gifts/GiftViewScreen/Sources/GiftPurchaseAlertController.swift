@@ -4,7 +4,6 @@ import AsyncDisplayKit
 import Display
 import ComponentFlow
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -107,7 +106,7 @@ public func giftPurchaseAlertController(
             )
         ))
                 
-        let giftTitle = "\(gift.title) #\(presentationStringsFormattedNumber(gift.number, presentationData.dateTimeFormat.groupingSeparator))"
+        let giftTitle = "\(gift.title) #\(formatCollectibleNumber(gift.number, dateTimeFormat: presentationData.dateTimeFormat))"
         var priceString = ""
         switch currency {
         case .stars:
@@ -116,7 +115,7 @@ public func giftPurchaseAlertController(
             }
         case .ton:
             if let resellAmount = gift.resellAmounts?.first(where: { $0.currency == .ton }) {
-                priceString = "**\(formatTonAmountText(resellAmount.amount.value, dateTimeFormat: presentationData.dateTimeFormat)) TON**"
+                priceString = "**\(formatTonAmountText(resellAmount.amount.value, dateTimeFormat: presentationData.dateTimeFormat, formatString: presentationData.strings.Currency_Grams))**"
             }
         }
     
@@ -156,27 +155,27 @@ public func giftPurchaseAlertController(
                     let id: String?
                     let title: String?
                     let value: NSAttributedString
-                    let percentage: Float?
+                    let rarity: StarGift.UniqueGift.Attribute.Rarity?
                     let tag: AnyObject?
                     
                     switch attribute {
-                    case let .model(name, _, rarity, _):
+                    case let .model(name, _, rarityValue, _):
                         id = "model"
                         title = strings.Gift_Unique_Model
                         value = NSAttributedString(string: name, font: tableFont, textColor: tableTextColor)
-                        percentage = Float(rarity.permilleValue) * 0.1
+                        rarity = rarityValue
                         tag = modelButtonTag
-                    case let .backdrop(name, _, _, _, _, _, rarity):
+                    case let .backdrop(name, _, _, _, _, _, rarityValue):
                         id = "backdrop"
                         title = strings.Gift_Unique_Backdrop
                         value = NSAttributedString(string: name, font: tableFont, textColor: tableTextColor)
-                        percentage = Float(rarity.permilleValue) * 0.1
+                        rarity = rarityValue
                         tag = backdropButtonTag
-                    case let .pattern(name, _, rarity):
+                    case let .pattern(name, _, rarityValue):
                         id = "pattern"
                         title = strings.Gift_Unique_Symbol
                         value = NSAttributedString(string: name, font: tableFont, textColor: tableTextColor)
-                        percentage = Float(rarity.permilleValue) * 0.1
+                        rarity = rarityValue
                         tag = symbolButtonTag
                     case .originalInfo:
                         continue
@@ -191,17 +190,20 @@ public func giftPurchaseAlertController(
                             )
                         )
                     )
-                    if let percentage, let tag {
+                    if let rarity, let tag {
+                        let badge = giftAttributeRarityBadge(rarity: rarity, strings: strings, accentColor: presentationData.theme.list.itemAccentColor)
                         items.append(AnyComponentWithIdentity(
                             id: AnyHashable(1),
                             component: AnyComponent(Button(
                                 content: AnyComponent(ButtonContentComponent(
                                     context: context,
-                                    text: formatPercentage(percentage),
-                                    color: presentationData.theme.list.itemAccentColor
+                                    text: badge.text,
+                                    color: badge.color
                                 )),
                                 action: {
-                                    showAttributeInfoImpl?(tag, strings.Gift_Unique_AttributeDescription(formatPercentage(percentage)).string)
+                                    if let description = badge.description {
+                                        showAttributeInfoImpl?(tag, description)
+                                    }
                                 }
                             ).tagged(tag))
                         ))
@@ -241,7 +243,7 @@ public func giftPurchaseAlertController(
             }
         case .ton:
             if let resellAmount = gift.resellAmounts?.first(where: { $0.currency == .ton }) {
-                buyString = strings.Gift_Buy_Confirm_BuyForTon(formatTonAmountText(resellAmount.amount.value, dateTimeFormat: presentationData.dateTimeFormat)).string
+                buyString = formatTonAmountText(resellAmount.amount.value, dateTimeFormat: presentationData.dateTimeFormat, formatString: strings.Gift_Buy_Confirm_BuyForGrams)
             }
         }
         actions.append(.init(id: "buy", title: buyString, type: .default, action: {
@@ -415,5 +417,26 @@ private final class AlertCurrencyComponent: Component {
 
     public func update(view: View, availableSize: CGSize, state: EmptyComponentState, environment: Environment<AlertComponentEnvironment>, transition: ComponentTransition) -> CGSize {
         return view.update(component: self, availableSize: availableSize, state: state, environment: environment, transition: transition)
+    }
+}
+
+func giftAttributeRarityBadge(rarity: StarGift.UniqueGift.Attribute.Rarity, strings: PresentationStrings, accentColor: UIColor) -> (text: String, color: UIColor, description: String?) {
+    switch rarity {
+    case let .permille(value):
+        let text: String
+        if value == 0 {
+            text = "<\(formatPercentage(0.1))"
+        } else {
+            text = formatPercentage(Float(value) * 0.1)
+        }
+        return (text, accentColor, strings.Gift_Unique_AttributeDescription(text).string)
+    case .epic:
+        return (strings.Gift_Attribute_Epic, UIColor(rgb: 0xaf52de), nil)
+    case .legendary:
+        return (strings.Gift_Attribute_Legendary, UIColor(rgb: 0xd57e32), nil)
+    case .rare:
+        return (strings.Gift_Attribute_Rare, UIColor(rgb: 0x25a3b9), nil)
+    case .uncommon:
+        return (strings.Gift_Attribute_Uncommon, UIColor(rgb: 0x22b447), nil)
     }
 }

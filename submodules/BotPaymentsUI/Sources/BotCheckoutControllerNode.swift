@@ -637,8 +637,13 @@ private final class ActionButtonPanelNode: ASDisplayNode {
                 self.addSubnode(recurrentConfirmationNode)
             }
             
-            let recurrentConfirmationHeight = recurrentConfirmationNode.update(presentationData: presentationData, botName: botName, isRecurrent: termsInfo.isRecurrent, width: layout.size.width, sideInset: layout.safeInsets.left + 33.0)
-            recurrentConfirmationNode.frame = CGRect(origin: CGPoint(), size: CGSize(width: layout.size.width, height: recurrentConfirmationHeight))
+            // Beside a side strip (iPhone Duo) the checkbox and its text center in the bottom row's band: it spans the strip
+            // and keeps clear only of a corner block at the bottom.
+            let bottomInsets = layout.bottomEdgeSideInsets()
+            let recurrentBandMinX: CGFloat = layout.safeInsets.left != layout.safeInsets.right ? bottomInsets.left : 0.0
+            let recurrentBandWidth: CGFloat = layout.safeInsets.left != layout.safeInsets.right ? layout.size.width - bottomInsets.left - bottomInsets.right : layout.size.width
+            let recurrentConfirmationHeight = recurrentConfirmationNode.update(presentationData: presentationData, botName: botName, isRecurrent: termsInfo.isRecurrent, width: recurrentBandWidth, sideInset: (layout.safeInsets.left != layout.safeInsets.right ? 0.0 : layout.safeInsets.left) + 33.0)
+            recurrentConfirmationNode.frame = CGRect(origin: CGPoint(x: recurrentBandMinX, y: 0.0), size: CGSize(width: recurrentBandWidth, height: recurrentConfirmationHeight))
             
             actionButtonOffset += recurrentConfirmationHeight
         } else if let recurrentConfirmationNode = self.recurrentConfirmationNode {
@@ -1077,13 +1082,13 @@ final class BotCheckoutControllerNode: ItemListControllerNode, PKPaymentAuthoriz
                 if methods.isEmpty {
                     openNewCard(nil, nil)
                 } else {
-                    strongSelf.present(BotCheckoutPaymentMethodSheetController(context: strongSelf.context, currentMethod: strongSelf.currentPaymentMethod, methods: methods, applyValue: { method in
+                    strongSelf.controller?.push(BotCheckoutPaymentMethodScreen(context: strongSelf.context, currentMethod: strongSelf.currentPaymentMethod, methods: methods, applyValue: { method in
                         applyPaymentMethod(method)
                     }, newCard: {
                         openNewCard(nil, nil)
                     }, otherMethod: { url, title in
                         openNewCard(url, title)
-                    }), ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
+                    }))
                 }
             }
         }
@@ -1091,14 +1096,14 @@ final class BotCheckoutControllerNode: ItemListControllerNode, PKPaymentAuthoriz
         openShippingMethodImpl = { [weak self] in
             if let strongSelf = self, let paymentFormValue = strongSelf.paymentFormValue, let shippingOptions = strongSelf.currentValidatedFormInfo?.shippingOptions, !shippingOptions.isEmpty {
                 strongSelf.controller?.view.endEditing(true)
-                strongSelf.present(BotCheckoutPaymentShippingOptionSheetController(context: strongSelf.context, currency: paymentFormValue.invoice.currency, options: shippingOptions, currentId: strongSelf.currentShippingOptionId, applyValue: { id in
+                strongSelf.controller?.push(BotCheckoutShippingOptionScreen(context: strongSelf.context, currency: paymentFormValue.invoice.currency, options: shippingOptions, currentId: strongSelf.currentShippingOptionId, applyValue: { id in
                     if let strongSelf = self, let paymentFormValue = strongSelf.paymentFormValue, let currentFormInfo = strongSelf.currentFormInfo {
                         strongSelf.currentShippingOptionId = id
                         strongSelf.paymentFormAndInfo.set(.single((paymentFormValue, currentFormInfo, strongSelf.currentValidatedFormInfo, strongSelf.currentShippingOptionId, strongSelf.currentPaymentMethod, strongSelf.currentTipAmount)))
                         
                         strongSelf.updateActionButton()
                     }
-                }), ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
+                }))
             }
         }
         
@@ -1257,13 +1262,16 @@ final class BotCheckoutControllerNode: ItemListControllerNode, PKPaymentAuthoriz
         transition.updateFrame(node: self.actionButtonPanelNode, frame: CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - bottomPanelHeight), size: CGSize(width: layout.size.width, height: bottomPanelHeight)))
         transition.updateFrame(node: self.actionButtonPanelSeparator, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: layout.size.width, height: UIScreenPixel)))
 
-        let actionButtonFrame = CGRect(origin: CGPoint(x: bottomPanelHorizontalInset, y: actionButtonOffset), size: CGSize(width: layout.size.width - bottomPanelHorizontalInset * 2.0, height: BotCheckoutActionButton.height))
+        // The bottom button spans iPhone Duo's side strip; it keeps clear only of a corner block at the bottom (folded
+        // landscape-left's status block, level with it). Equal insets keep the screen-wide button.
+        let actionButtonStripInsets: (left: CGFloat, right: CGFloat) = layout.safeInsets.left != layout.safeInsets.right ? layout.bottomEdgeSideInsets() : (0.0, 0.0)
+        let actionButtonFrame = CGRect(origin: CGPoint(x: bottomPanelHorizontalInset + actionButtonStripInsets.left, y: actionButtonOffset), size: CGSize(width: layout.size.width - bottomPanelHorizontalInset * 2.0 - actionButtonStripInsets.left - actionButtonStripInsets.right, height: BotCheckoutActionButton.height))
         transition.updateFrame(node: self.actionButton, frame: actionButtonFrame)
         self.actionButton.updateLayout(absoluteRect: actionButtonFrame.offsetBy(dx: self.actionButtonPanelNode.frame.minX, dy: self.actionButtonPanelNode.frame.minY), containerSize: layout.size, transition: transition)
 
         updatedInsets.bottom = bottomPanelHeight
 
-        super.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: updatedInsets, safeInsets: layout.safeInsets, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver), navigationBarHeight: navigationBarHeight, transition: transition, additionalInsets: additionalInsets)
+        super.containerLayoutUpdated(ContainerViewLayout(size: layout.size, metrics: layout.metrics, deviceMetrics: layout.deviceMetrics, intrinsicInsets: updatedInsets, safeInsets: layout.safeInsets, reservedCorners: layout.reservedCorners, division: layout.division, additionalInsets: layout.additionalInsets, statusBarHeight: layout.statusBarHeight, inputHeight: layout.inputHeight, inputHeightIsInteractivellyChanging: layout.inputHeightIsInteractivellyChanging, inVoiceOver: layout.inVoiceOver, presentedInFormSheet: layout.presentedInFormSheet), navigationBarHeight: navigationBarHeight, transition: transition, additionalInsets: additionalInsets)
         
         transition.updateFrame(node: self.inProgressDimNode, frame: self.listNode.frame)
     }

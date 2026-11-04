@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import AvatarNode
@@ -36,7 +36,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
     private let addButtonNode: ChatMessageAttachedContentButtonNode
     private let messageButtonNode: ChatMessageAttachedContentButtonNode
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.avatarNode = AvatarNode(font: avatarFont)
         self.dateAndStatusNode = ChatMessageDateAndStatusNode()
         self.titleNode = TextNode()
@@ -44,7 +44,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
         self.addButtonNode = ChatMessageAttachedContentButtonNode()
         self.messageButtonNode = ChatMessageAttachedContentButtonNode()
         
-        super.init()
+        super.init(lottieSettings: lottieSettings)
         
         self.addSubnode(self.avatarNode)
         self.addSubnode(self.titleNode)
@@ -98,7 +98,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
         let previousContact = self.contact
         let previousContactInfo = self.contactInfo
         
-        return { item, layoutConstants, _, _, constrainedSize, _ in
+        return { [weak self] item, layoutConstants, _, _, constrainedSize, _ in
             var selectedContact: TelegramMediaContact?
             for media in item.message.media {
                 if let media = media as? TelegramMediaContact {
@@ -112,9 +112,9 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
             }
             
             
-            var contactPeer: Peer?
+            var contactPeer: EnginePeer?
             if let peerId = selectedContact?.peerId, let peer = item.message.peers[peerId] {
-                contactPeer = peer
+                contactPeer = EnginePeer(peer)
             }
             
             let nameColors: PeerNameColors.Colors?
@@ -226,7 +226,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
             
             let contentProperties = ChatMessageBubbleContentProperties(hidesSimpleAuthorHeader: false, headerSpacing: 0.0, hidesBackground: .never, forceFullCorners: false, forceAlignment: .none)
             
-            return (contentProperties, nil, CGFloat.greatestFiniteMagnitude, { constrainedSize, position in
+            return (contentProperties, nil, CGFloat.greatestFiniteMagnitude, { [weak self] constrainedSize, position in
                 let avatarSize = CGSize(width: 40.0, height: 40.0)
                 
                 let sideInsets = layoutConstants.text.bubbleInsets.right * 2.0
@@ -260,7 +260,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
                     }
                 }
                 
-                let dateText = stringForMessageTimestampStatus(accountPeerId: item.context.account.peerId, message: item.message, dateTimeFormat: item.presentationData.dateTimeFormat, nameDisplayOrder: item.presentationData.nameDisplayOrder, strings: item.presentationData.strings, associatedData: item.associatedData)
+                let dateText = stringForMessageTimestampStatus(context: item.context, message: EngineMessage(item.message), dateTimeFormat: item.presentationData.dateTimeFormat, nameDisplayOrder: item.presentationData.nameDisplayOrder, strings: item.presentationData.strings, associatedData: item.associatedData)
                 
                 let statusType: ChatMessageDateAndStatusType?
                 if case .customChatContents = item.associatedData.subject {
@@ -301,7 +301,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
                         impressionCount: viewCount,
                         dateText: dateText,
                         type: statusType,
-                        layoutInput: .trailingContent(contentWidth: 1000.0, reactionSettings: shouldDisplayInlineDateReactions(message: item.message, isPremium: item.associatedData.isPremium, forceInline: item.associatedData.forceInlineReactions) ? ChatMessageDateAndStatusNode.TrailingReactionSettings(displayInline: true, preferAdditionalInset: false) : nil),
+                        layoutInput: .trailingContent(contentWidth: 1000.0, reactionSettings: shouldDisplayInlineDateReactions(message: EngineMessage(item.message), isPremium: item.associatedData.isPremium, forceInline: item.associatedData.forceInlineReactions) ? ChatMessageDateAndStatusNode.TrailingReactionSettings(displayInline: true, preferAdditionalInset: false) : nil),
                         constrainedSize: CGSize(width: constrainedSize.width - sideInsets, height: .greatestFiniteMagnitude),
                         availableReactions: item.associatedData.availableReactions,
                         savedMessageTags: item.associatedData.savedMessageTags,
@@ -315,7 +315,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
                         starsCount: starsCount,
                         isPinned: item.message.tags.contains(.pinned) && !item.associatedData.isInPinnedListMode && isReplyThread,
                         hasAutoremove: item.message.isSelfExpiring,
-                        canViewReactionList: canViewMessageReactionList(message: item.topMessage),
+                        canViewReactionList: canViewMessageReactionList(message: EngineMessage(item.topMessage)),
                         animationCache: item.controllerInteraction.presentationContext.animationCache,
                         animationRenderer: item.controllerInteraction.presentationContext.animationRenderer
                     ))
@@ -359,7 +359,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
                 
                 let contentWidth = maxContentWidth + layoutConstants.text.bubbleInsets.right * 2.0
                 
-                return (contentWidth, { boundingWidth in
+                return (contentWidth, { [weak self] boundingWidth in
                     let baseAvatarFrame = CGRect(origin: CGPoint(x: layoutConstants.text.bubbleInsets.right, y: layoutConstants.text.bubbleInsets.top), size: avatarSize)
                     
                     let lineWidth: CGFloat = 3.0
@@ -484,7 +484,7 @@ public class ChatMessageContactBubbleContentNode: ChatMessageBubbleContentNode {
                                 pattern = MessageInlineBlockBackgroundView.Pattern(
                                     context: item.context,
                                     fileId: backgroundEmojiId,
-                                    file: item.message.associatedMedia[MediaId(
+                                    file: item.message.associatedMedia[EngineMedia.Id(
                                         namespace: Namespaces.Media.CloudFile,
                                         id: backgroundEmojiId
                                     )] as? TelegramMediaFile

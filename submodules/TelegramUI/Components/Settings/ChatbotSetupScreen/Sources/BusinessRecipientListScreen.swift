@@ -146,10 +146,6 @@ final class BusinessRecipientListScreenComponent: Component {
             
             let navigationAlphaDistance: CGFloat = 16.0
             let navigationAlpha: CGFloat = max(0.0, min(1.0, (self.scrollView.contentOffset.y - navigationRevealOffsetY) / navigationAlphaDistance))
-            if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
-                transition.setAlpha(layer: navigationBar.backgroundNode.layer, alpha: navigationAlpha)
-                transition.setAlpha(layer: navigationBar.stripeNode.layer, alpha: navigationAlpha)
-            }
             
             var scrolledUp = false
             if navigationAlpha < 0.5 {
@@ -390,7 +386,7 @@ final class BusinessRecipientListScreenComponent: Component {
                 environment: {},
                 containerSize: CGSize(width: availableSize.width, height: 100.0)
             )
-            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - navigationTitleSize.width) / 2.0), y: environment.statusBarHeight + floor((environment.navigationHeight - environment.statusBarHeight - navigationTitleSize.height) / 2.0)), size: navigationTitleSize)
+            let navigationTitleFrame = CGRect(origin: CGPoint(x: floor(environment.safeInsets.left + (availableSize.width - environment.safeInsets.left - environment.safeInsets.right - navigationTitleSize.width) / 2.0), y: environment.statusBarHeight + floor((environment.navigationHeight - environment.statusBarHeight - navigationTitleSize.height) / 2.0)), size: navigationTitleSize)
             if let navigationTitleView = self.navigationTitle.view {
                 if navigationTitleView.superview == nil {
                     if let controller = self.environment?.controller(), let navigationBar = controller.navigationBar {
@@ -401,7 +397,10 @@ final class BusinessRecipientListScreenComponent: Component {
             }
             
             let bottomContentInset: CGFloat = 24.0
+            // iPhone Duo: one side's safe inset is the side strip; the right margin is its own and centered
+            // content is centered in the band between the insets. With equal insets these are the old values.
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
+            let rightSideInset: CGFloat = 16.0 + environment.safeInsets.right
             let sectionSpacing: CGFloat = 32.0
             
             var contentHeight: CGFloat = 0.0
@@ -547,7 +546,7 @@ final class BusinessRecipientListScreenComponent: Component {
                     items: excludedSectionItems
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let excludedSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: excludedSectionSize)
             if let excludedSectionView = self.excludedSection.view {
@@ -599,7 +598,7 @@ final class BusinessRecipientListScreenComponent: Component {
                     )))]
                 )),
                 environment: {},
-                containerSize: CGSize(width: availableSize.width - sideInset * 2.0, height: 10000.0)
+                containerSize: CGSize(width: availableSize.width - sideInset - rightSideInset, height: 10000.0)
             )
             let clearSectionFrame = CGRect(origin: CGPoint(x: sideInset, y: contentHeight), size: clearSectionSize)
             if let clearSectionView = self.clearSection.view {
@@ -655,7 +654,31 @@ final class BusinessRecipientListScreenComponent: Component {
     }
 }
 
-final class BusinessRecipientListScreen: ViewControllerComponentContainer {
+public final class BusinessRecipientListScreen: ViewControllerComponentContainer {
+    public struct ResolvedPeer {
+        public let peer: EnginePeer
+        public let isContact: Bool
+        
+        public init(peer: EnginePeer, isContact: Bool) {
+            self.peer = peer
+            self.isContact = isContact
+        }
+    }
+    
+    public struct PeerListState {
+        public let categories: TelegramBusinessRecipients.Categories
+        public let peers: [ResolvedPeer]
+        public let excludePeers: [ResolvedPeer]
+        public let excludeByDefault: Bool
+        
+        public init(categories: TelegramBusinessRecipients.Categories, peers: [ResolvedPeer], excludePeers: [ResolvedPeer], excludeByDefault: Bool) {
+            self.categories = categories
+            self.peers = peers
+            self.excludePeers = excludePeers
+            self.excludeByDefault = excludeByDefault
+        }
+    }
+    
     final class InitialData {
         fileprivate let peerList: BusinessRecipientListScreenComponent.PeerList
         
@@ -666,7 +689,7 @@ final class BusinessRecipientListScreen: ViewControllerComponentContainer {
         }
     }
     
-    enum Mode {
+    public enum Mode {
         case includeExceptions
         case excludeExceptions
         case excludeUsers
@@ -709,6 +732,121 @@ final class BusinessRecipientListScreen: ViewControllerComponentContainer {
     }
     
     deinit {
+    }
+    
+    public static func openSetupFlow(context: AccountContext, from controller: ViewController, state: PeerListState, isExclude: Bool, update: @escaping (PeerListState) -> Void) {
+        let mode: BusinessRecipientListScreen.Mode
+        if isExclude {
+            mode = .excludeUsers
+        } else if state.excludeByDefault {
+            mode = .excludeExceptions
+        } else {
+            mode = .includeExceptions
+        }
+        
+        let mappedPeerList = BusinessRecipientListScreenComponent.PeerList(
+            categories: isExclude ? Set() : self.mapCategories(state.categories),
+            peers: (isExclude ? state.excludePeers : state.peers).map { peer in
+                BusinessRecipientListScreenComponent.PeerList.Peer(
+                    peer: peer.peer,
+                    isContact: peer.isContact
+                )
+            }
+        )
+        
+        let applyUpdate: (BusinessRecipientListScreenComponent.PeerList) -> PeerListState = { updatedPeerList in
+            var updatedState = state
+            
+            switch mode {
+            case .excludeExceptions, .includeExceptions:
+                updatedState = PeerListState(
+                    categories: self.mapCategories(updatedPeerList.categories),
+                    peers: updatedPeerList.peers.map { peer in
+                        ResolvedPeer(peer: peer.peer, isContact: peer.isContact)
+                    },
+                    excludePeers: state.excludePeers.filter { excludePeer in
+                        !updatedPeerList.peers.contains(where: { $0.peer.id == excludePeer.peer.id })
+                    },
+                    excludeByDefault: state.excludeByDefault
+                )
+            case .excludeUsers:
+                let excludePeers = updatedPeerList.peers.map { peer in
+                    ResolvedPeer(peer: peer.peer, isContact: peer.isContact)
+                }
+                updatedState = PeerListState(
+                    categories: state.categories,
+                    peers: state.peers.filter { peer in
+                        !excludePeers.contains(where: { $0.peer.id == peer.peer.id })
+                    },
+                    excludePeers: excludePeers,
+                    excludeByDefault: state.excludeByDefault
+                )
+            }
+            
+            return updatedState
+        }
+        
+        if mappedPeerList.categories.isEmpty && mappedPeerList.peers.isEmpty {
+            let setupController = BusinessRecipientListScreenComponent.View.makePeerListSetupScreen(
+                context: context,
+                mode: mode,
+                initialPeerList: mappedPeerList,
+                completion: { peerList in
+                    controller.push(BusinessRecipientListScreen(
+                        context: context,
+                        peerList: peerList,
+                        mode: mode,
+                        update: { updatedPeerList in
+                            update(applyUpdate(updatedPeerList))
+                        }
+                    ))
+                }
+            )
+            controller.push(setupController)
+        } else {
+            controller.push(BusinessRecipientListScreen(
+                context: context,
+                peerList: mappedPeerList,
+                mode: mode,
+                update: { updatedPeerList in
+                    update(applyUpdate(updatedPeerList))
+                }
+            ))
+        }
+    }
+    
+    private static func mapCategories(_ categories: TelegramBusinessRecipients.Categories) -> Set<BusinessRecipientListScreenComponent.PeerList.Category> {
+        var mappedCategories = Set<BusinessRecipientListScreenComponent.PeerList.Category>()
+        if categories.contains(.existingChats) {
+            mappedCategories.insert(.existingChats)
+        }
+        if categories.contains(.newChats) {
+            mappedCategories.insert(.newChats)
+        }
+        if categories.contains(.contacts) {
+            mappedCategories.insert(.contacts)
+        }
+        if categories.contains(.nonContacts) {
+            mappedCategories.insert(.nonContacts)
+        }
+        return mappedCategories
+    }
+    
+    private static func mapCategories(_ categories: Set<BusinessRecipientListScreenComponent.PeerList.Category>) -> TelegramBusinessRecipients.Categories {
+        var mappedCategories: TelegramBusinessRecipients.Categories = []
+        if categories.contains(.existingChats) {
+            mappedCategories.insert(.existingChats)
+        }
+        if categories.contains(.newChats) {
+            mappedCategories.insert(.newChats)
+        }
+        if categories.contains(.contacts) {
+            mappedCategories.insert(.contacts)
+        }
+        if categories.contains(.nonContacts) {
+            mappedCategories.insert(.nonContacts)
+        }
+        return mappedCategories
     }
     
     @objc private func cancelPressed() {

@@ -1,6 +1,6 @@
 import Foundation
 import Postbox
-import TelegramApi
+internal import TelegramApi
 
 public final class CachedPeerBotInfo: PostboxCoding, Equatable {
     public let peerId: PeerId
@@ -39,6 +39,7 @@ public struct CachedGroupFlags: OptionSet {
     
     public static let canChangeUsername = CachedGroupFlags(rawValue: 1 << 0)
     public static let translationHidden = CachedGroupFlags(rawValue: 1 << 1)
+    public static let hasWelcomeMessages = CachedGroupFlags(rawValue: 1 << 2)
 }
 
 public enum PeerAllowedReactions: Equatable, Codable {
@@ -232,7 +233,7 @@ public final class CachedGroupData: CachedPeerData {
         self.exportedInvitation = decoder.decode(ExportedInvitation.self, forKey: "i")
         self.botInfos = decoder.decodeObjectArrayWithDecoderForKey("b") as [CachedPeerBotInfo]
         if let legacyValue = decoder.decodeOptionalInt32ForKey("pcs") {
-            self.peerStatusSettings = PeerStatusSettings(flags: PeerStatusSettings.Flags(rawValue: legacyValue), geoDistance: nil, managingBot: nil)
+            self.peerStatusSettings = PeerStatusSettings(flags: PeerStatusSettings.Flags(rawValue: legacyValue), managingBot: nil)
         } else if let peerStatusSettings = decoder.decodeObjectForKey("pss", decoder: { PeerStatusSettings(decoder: $0) }) as? PeerStatusSettings {
             self.peerStatusSettings = peerStatusSettings
         } else {

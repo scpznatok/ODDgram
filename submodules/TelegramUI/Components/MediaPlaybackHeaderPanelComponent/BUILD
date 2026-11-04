@@ -11,6 +11,7 @@ swift_library(
     ],
     deps = [
         "//submodules/Display",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/AsyncDisplayKit",
         "//submodules/TelegramPresentationData",
         "//submodules/AccountContext",
@@ -28,7 +29,6 @@ swift_library(
         "//submodules/TelegramUI/Components/GlobalControlPanelsContext",
         "//submodules/UndoUI",
         "//submodules/OverlayStatusController",
-        "//submodules/Postbox",
         "//submodules/PresentationDataUtils",
     ],
     visibility = [

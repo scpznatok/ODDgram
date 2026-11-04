@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -254,16 +255,19 @@ private final class QuickShareToastScreenComponent: Component {
             
             let contentSize = self.content.update(
                 transition: transition,
-                component: AnyComponent(MultilineTextComponent(text: .markdown(
-                    text: tooltipText,
-                    attributes: MarkdownAttributes(
-                        body: MarkdownAttributeSet(font: Font.regular(14.0), textColor: .white),
-                        bold: MarkdownAttributeSet(font: Font.semibold(14.0), textColor: environment.theme.list.itemAccentColor.withMultiplied(hue: 0.933, saturation: 0.61, brightness: 1.0)),
-                        link: MarkdownAttributeSet(font: Font.regular(14.0), textColor: .white),
-                        linkAttribute: { _ in return nil })
-                ))),
+                component: AnyComponent(MultilineTextComponent(
+                    text: .markdown(
+                        text: tooltipText,
+                        attributes: MarkdownAttributes(
+                            body: MarkdownAttributeSet(font: Font.regular(14.0), textColor: .white),
+                            bold: MarkdownAttributeSet(font: Font.semibold(14.0), textColor: environment.theme.list.itemAccentColor.withMultiplied(hue: 0.933, saturation: 0.61, brightness: 1.0)),
+                            link: MarkdownAttributeSet(font: Font.regular(14.0), textColor: .white),
+                            linkAttribute: { _ in return nil })
+                    ),
+                    maximumNumberOfLines: 2
+                )),
                 environment: {},
-                containerSize: CGSize(width: availableContentSize.width - contentInsets.left - contentInsets.right - spacing - iconSize.width - actionButtonSize.width - 16.0 - 4.0, height: availableContentSize.height)
+                containerSize: CGSize(width: availableContentSize.width - contentInsets.left - contentInsets.right - spacing - iconSize.width - actionButtonSize.width - 16.0 - 8.0, height: availableContentSize.height)
             )
             
             var contentHeight: CGFloat = 0.0
@@ -281,7 +285,8 @@ private final class QuickShareToastScreenComponent: Component {
                         name: animationName
                     ),
                     size: CGSize(width: 38.0, height: 38.0),
-                    loop: false
+                    loop: false,
+                    lottieSettings: component.context.lottieRenderingSettings
                 )),
                 environment: {},
                 containerSize: iconSize
@@ -313,7 +318,7 @@ private final class QuickShareToastScreenComponent: Component {
             
             self.backgroundView.updateColor(color: UIColor(white: 0.0, alpha: 0.7), transition: transition.containedViewLayoutTransition)
 
-            self.backgroundView.update(size: backgroundFrame.size, cornerRadius: 14.0, transition: transition.containedViewLayoutTransition)
+            self.backgroundView.update(size: backgroundFrame.size, cornerRadius: backgroundFrame.height * 0.5, transition: transition.containedViewLayoutTransition)
             transition.setFrame(view: self.backgroundView, frame: backgroundFrame)
             transition.setFrame(view: self.contentView, frame: CGRect(origin: .zero, size: backgroundFrame.size))
             

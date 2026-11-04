@@ -9,7 +9,6 @@ import ShimmerEffect
 import TelegramCore
 import SwiftSignalKit
 import AvatarNode
-import Postbox
 import TelegramVoip
 import ComponentDisplayAdapters
 
@@ -28,7 +27,7 @@ public final class MediaStreamVideoComponent: Component {
     let isFullscreen: Bool
     let onVideoSizeRetrieved: (CGSize) -> Void
     let videoLoading: Bool
-    let callPeer: Peer?
+    let callPeer: EnginePeer?
     let onVideoPlaybackLiveChange: (Bool) -> Void
     
     public init(
@@ -40,7 +39,7 @@ public final class MediaStreamVideoComponent: Component {
         addInset: Bool,
         isFullscreen: Bool,
         videoLoading: Bool,
-        callPeer: Peer?,
+        callPeer: EnginePeer?,
         enablePictureInPicture: Bool,
         activatePictureInPicture: ActionSlot<Action<Void>>,
         deactivatePictureInPicture: ActionSlot<Void>,
@@ -306,7 +305,7 @@ public final class MediaStreamVideoComponent: Component {
             if let peer = component.callPeer, !didBeginLoadingAvatar {
                 didBeginLoadingAvatar = true
                 
-                avatarDisposable = peerAvatarCompleteImage(account: component.call.account, peer: EnginePeer(peer), size: CGSize(width: 250.0, height: 250.0), round: false, font: Font.regular(16.0), drawLetters: false, fullSize: false, blurred: true).start(next: { [weak self] image in
+                avatarDisposable = peerAvatarCompleteImage(account: component.call.account, peer: peer, size: CGSize(width: 250.0, height: 250.0), round: false, font: Font.regular(16.0), drawLetters: false, fullSize: false, blurred: true).start(next: { [weak self] image in
                     DispatchQueue.main.async {
                         self?.placeholderView.contentMode = .scaleAspectFill
                         self?.placeholderView.image = image
@@ -732,8 +731,8 @@ public final class MediaStreamVideoComponent: Component {
                 videoBlurView?.alpha = 0
             }
             // TODO: assure player window
-            UIApplication.shared.windows.first?.layer.cornerRadius = 10.0
-            UIApplication.shared.windows.first?.layer.masksToBounds = true
+            UIApplication.shared.allWindowSceneWindows.first?.layer.cornerRadius = 10.0
+            UIApplication.shared.allWindowSceneWindows.first?.layer.masksToBounds = true
             
             self.pipTrackDisplayLink?.invalidate()
             self.pipTrackDisplayLink = CADisplayLink(target: self, selector: #selector(observePiPWindow))
@@ -741,7 +740,7 @@ public final class MediaStreamVideoComponent: Component {
         }
         
         @objc func observePiPWindow() {
-            let pipViewDidBecomeVisible = (UIApplication.shared.windows.first?.layer.animationKeys()?.count ?? 0) > 0
+            let pipViewDidBecomeVisible = (UIApplication.shared.allWindowSceneWindows.first?.layer.animationKeys()?.count ?? 0) > 0
             if pipViewDidBecomeVisible {
                 lastPresentation?.removeFromSuperview()
                 lastPresentation = nil

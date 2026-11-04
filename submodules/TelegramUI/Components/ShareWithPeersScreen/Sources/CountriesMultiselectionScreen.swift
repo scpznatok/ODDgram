@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import AsyncDisplayKit
@@ -9,7 +10,6 @@ import ComponentDisplayAdapters
 import TelegramPresentationData
 import AccountContext
 import TelegramCore
-import Postbox
 import MultilineTextComponent
 import PresentationDataUtils
 import ButtonComponent
@@ -19,6 +19,8 @@ import TelegramStringFormatting
 import LottieComponent
 import UndoUI
 import CountrySelectionUI
+import GlassBarButtonComponent
+import BundleIconComponent
 
 final class CountriesMultiselectionScreenComponent: Component {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
@@ -239,8 +241,8 @@ final class CountriesMultiselectionScreenComponent: Component {
             self.navigationContainerView.addSubview(self.navigationBackgroundView)
             self.navigationContainerView.layer.addSublayer(self.navigationSeparatorLayer)
             
-            self.containerView.addSubview(self.bottomBackgroundView)
-            self.containerView.layer.addSublayer(self.bottomSeparatorLayer)
+            //self.containerView.addSubview(self.bottomBackgroundView)
+            //self.containerView.layer.addSublayer(self.bottomSeparatorLayer)
             
             self.containerView.addSubnode(self.indexNode)
             
@@ -300,7 +302,12 @@ final class CountriesMultiselectionScreenComponent: Component {
             if !self.bounds.contains(point) {
                 return nil
             }
-            
+
+            // iPhone Duo: the close button in the side strip sits over the header's background.
+            if let navigationLeftButtonView = self.navigationLeftButton.view, navigationLeftButtonView.superview === self.containerView, let result = navigationLeftButtonView.hitTest(self.convert(point, to: navigationLeftButtonView), with: event) {
+                return result
+            }
+
             if let result = self.navigationContainerView.hitTest(self.convert(point, to: self.navigationContainerView), with: event) {
                 return result
             }
@@ -435,7 +442,8 @@ final class CountriesMultiselectionScreenComponent: Component {
                         component: AnyComponent(CountryListItemComponent(
                             context: component.context,
                             theme: environment.theme,
-                            title: "\(country.flag)     \(country.name)",
+                            countryId: country.id,
+                            title: country.name,
                             selectionState: .editing(isSelected: isSelected, isTinted: false),
                             hasNext: true,
                             action: { [weak self] in
@@ -463,8 +471,7 @@ final class CountriesMultiselectionScreenComponent: Component {
                                     update()
                                 }
                                 
-                                let limit = component.context.userLimits.maxGiveawayCountriesCount
-                                if self.selectedCountries.count >= limit, index == nil {
+                                if let limit = component.stateContext.maxCount, self.selectedCountries.count >= limit, index == nil {
                                     self.hapticFeedback.error()
                                     
                                     let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }
@@ -562,7 +569,8 @@ final class CountriesMultiselectionScreenComponent: Component {
                 let emptyResultsAnimationSize = self.emptyResultsAnimation.update(
                     transition: .immediate,
                     component: AnyComponent(LottieComponent(
-                        content: LottieComponent.AppBundleContent(name: "ChatListNoResults")
+                        content: LottieComponent.AppBundleContent(name: "ChatListNoResults"),
+                        lottieSettings: component.context.lottieRenderingSettings
                     )),
                     environment: {},
                     containerSize: CGSize(width: emptyAnimationHeight, height: emptyAnimationHeight)
@@ -638,7 +646,11 @@ final class CountriesMultiselectionScreenComponent: Component {
             let environment = environment[ViewControllerComponentContainer.Environment.self].value
             let themeUpdated = self.environment?.theme !== environment.theme
             
-            let resetScrolling = self.scrollView.bounds.width != availableSize.width
+            // iPhone Duo: the list and the header keep to the band beside the side strip (and clear of the status corner
+            // at its end); the backgrounds still span the screen. Equal insets keep the full width.
+            let bandInsets: (left: CGFloat, right: CGFloat) = environment.safeInsets.left != environment.safeInsets.right ? (environment.safeInsets.left, environment.safeInsets.right) : (0.0, 0.0)
+            
+            let resetScrolling = self.scrollView.bounds.width != availableSize.width - bandInsets.left - bandInsets.right
             
             let sideInset: CGFloat = 0.0
             
@@ -649,6 +661,8 @@ final class CountriesMultiselectionScreenComponent: Component {
                 containerWidth = availableSize.width
             }
             let containerSideInset = floorToScreenPixels((availableSize.width - containerWidth) / 2.0)
+            let contentSideInset = containerSideInset + bandInsets.left
+            let contentWidth = containerWidth - bandInsets.left - bandInsets.right
             
             if self.component == nil {
                 var applyState = false
@@ -692,7 +706,7 @@ final class CountriesMultiselectionScreenComponent: Component {
             }
             
 
-            let itemsContainerWidth = containerWidth
+            let itemsContainerWidth = contentWidth
             
             var tokens: [TokenListTextField.Token] = []
             for countryId in self.selectedCountries {
@@ -718,7 +732,7 @@ final class CountriesMultiselectionScreenComponent: Component {
                     id: AnyHashable(countryId),
                     title: tokenCountry.name,
                     fixedPosition: nil,
-                    content: .emoji(tokenCountry.flag)
+                    content: .countryFlag(tokenCountry.id)
                 ))
             }
             
@@ -744,14 +758,14 @@ final class CountriesMultiselectionScreenComponent: Component {
                     }
                 )),
                 environment: {},
-                containerSize: CGSize(width: containerWidth, height: 1000.0)
+                containerSize: CGSize(width: contentWidth, height: 1000.0)
             )
             
             if !self.navigationTextFieldState.text.isEmpty {
                 if let searchStateContext = self.searchStateContext, searchStateContext.subject == .countriesSearch(query: self.navigationTextFieldState.text) {
                 } else {
                     self.searchStateDisposable?.dispose()
-                    let searchStateContext = CountriesMultiselectionScreen.StateContext(context: component.context, subject: .countriesSearch(query: self.navigationTextFieldState.text))
+                    let searchStateContext = CountriesMultiselectionScreen.StateContext(context: component.context, subject: .countriesSearch(query: self.navigationTextFieldState.text), showFragment: component.stateContext.showFragment)
                     var applyState = false
                     self.searchStateDisposable = (searchStateContext.ready |> filter { $0 } |> take(1) |> deliverOnMainQueue).start(next: { [weak self] _ in
                         guard let self else {
@@ -777,6 +791,7 @@ final class CountriesMultiselectionScreenComponent: Component {
                 component: AnyComponent(CountryListItemComponent(
                     context: component.context,
                     theme: environment.theme,
+                    countryId: nil,
                     title: "Title",
                     selectionState: .editing(isSelected: false, isTinted: false),
                     hasNext: true,
@@ -788,7 +803,6 @@ final class CountriesMultiselectionScreenComponent: Component {
                         
             var sections: [ItemLayout.Section] = []
             if let stateValue = self.effectiveStateValue {
-                 
                 var id: Int = 0
                 for (_, countries) in stateValue.sections {
                     sections.append(ItemLayout.Section(
@@ -803,48 +817,75 @@ final class CountriesMultiselectionScreenComponent: Component {
             
             let containerInset: CGFloat = environment.statusBarHeight
             
-            var navigationHeight: CGFloat = 56.0
+            var navigationHeight: CGFloat = 76.0
             let navigationSideInset: CGFloat = 16.0
             var navigationButtonsWidth: CGFloat = 0.0
             
             let navigationLeftButtonSize = self.navigationLeftButton.update(
                 transition: transition,
-                component: AnyComponent(Button(
-                    content: AnyComponent(Text(text: environment.strings.Common_Cancel, font: Font.regular(17.0), color: environment.theme.rootController.navigationBar.accentTextColor)),
-                    action: { [weak self] in
+                component: AnyComponent(GlassBarButtonComponent(
+                    size: CGSize(width: 44.0, height: 44.0),
+                    backgroundColor: nil,
+                    isDark: environment.theme.overallDarkAppearance,
+                    state: .glass,
+                    component: AnyComponentWithIdentity(id: "close", component: AnyComponent(
+                        BundleIconComponent(
+                            name: "Navigation/Close",
+                            tintColor: environment.theme.chat.inputPanel.panelControlColor
+                        )
+                    )),
+                    action: { [weak self] _ in
                         guard let self, let environment = self.environment, let controller = environment.controller() as? CountriesMultiselectionScreen else {
                             return
                         }
                         controller.requestDismiss()
                     }
-                ).minSize(CGSize(width: navigationHeight, height: navigationHeight))),
+                )),
                 environment: {},
                 containerSize: CGSize(width: availableSize.width, height: navigationHeight)
             )
-            let navigationLeftButtonFrame = CGRect(origin: CGPoint(x: containerSideInset + navigationSideInset, y: floor((navigationHeight - navigationLeftButtonSize.height) * 0.5)), size: navigationLeftButtonSize)
-            if let navigationLeftButtonView = self.navigationLeftButton.view {
-                if navigationLeftButtonView.superview == nil {
-                    self.navigationContainerView.addSubview(navigationLeftButtonView)
-                }
-                transition.setFrame(view: navigationLeftButtonView, frame: navigationLeftButtonFrame)
+            // iPhone Duo: with a side strip the close button goes in the strip, as every screen's back / close does, out
+            // of the header.
+            let navigationLeftButtonFrame: CGRect
+            let navigationLeftButtonSuperview: UIView
+            if let sideColumnFrame = environment.sideColumnNavigationButtonFrame {
+                navigationLeftButtonFrame = CGRect(origin: CGPoint(x: sideColumnFrame.midX - navigationLeftButtonSize.width / 2.0, y: sideColumnFrame.midY - navigationLeftButtonSize.height / 2.0), size: navigationLeftButtonSize)
+                navigationLeftButtonSuperview = self.containerView
+            } else {
+                navigationLeftButtonFrame = CGRect(origin: CGPoint(x: contentSideInset + navigationSideInset, y: floor((navigationHeight - navigationLeftButtonSize.height) * 0.5)), size: navigationLeftButtonSize)
+                navigationLeftButtonSuperview = self.navigationContainerView
+                navigationButtonsWidth += navigationLeftButtonSize.width + navigationSideInset
             }
-            navigationButtonsWidth += navigationLeftButtonSize.width + navigationSideInset
+            if let navigationLeftButtonView = self.navigationLeftButton.view {
+                var navigationLeftButtonTransition = transition
+                if navigationLeftButtonView.superview !== navigationLeftButtonSuperview {
+                    if navigationLeftButtonView.superview != nil {
+                        navigationLeftButtonTransition = .immediate
+                    }
+                    navigationLeftButtonSuperview.addSubview(navigationLeftButtonView)
+                }
+                navigationLeftButtonTransition.setFrame(view: navigationLeftButtonView, frame: navigationLeftButtonFrame)
+            }
             
-            let actionButtonTitle = environment.strings.CountriesList_SaveCountries
-            let title = environment.strings.CountriesList_SelectCountries
-            let subtitle = environment.strings.CountriesList_SelectUpTo(component.context.userLimits.maxGiveawayCountriesCount)
+            let actionButtonTitle = environment.strings.CountriesList_SaveCountries            
+            var titleComponents: [AnyComponentWithIdentity<Empty>] = [
+                AnyComponentWithIdentity(
+                    id: "title",
+                    component: AnyComponent(Text(text: environment.strings.CountriesList_SelectCountries, font: Font.semibold(17.0), color: environment.theme.rootController.navigationBar.primaryTextColor))
+                )
+            ]
             
-            let titleComponent = AnyComponent<Empty>(
-                List([
-                    AnyComponentWithIdentity(
-                        id: "title",
-                        component: AnyComponent(Text(text: title, font: Font.semibold(17.0), color: environment.theme.rootController.navigationBar.primaryTextColor))
-                    ),
+            if let maxCount = component.stateContext.maxCount {
+                titleComponents.append(
                     AnyComponentWithIdentity(
                         id: "subtitle",
-                        component: AnyComponent(Text(text: subtitle, font: Font.regular(13.0), color: environment.theme.rootController.navigationBar.secondaryTextColor))
+                        component: AnyComponent(Text(text: environment.strings.CountriesList_SelectUpTo(maxCount), font: Font.regular(13.0), color: environment.theme.rootController.navigationBar.secondaryTextColor))
                     )
-                ],
+                )
+            }
+            
+            let titleComponent = AnyComponent<Empty>(
+                List(titleComponents,
                 centerAlignment: true)
             )
             
@@ -852,9 +893,9 @@ final class CountriesMultiselectionScreenComponent: Component {
                 transition: .immediate,
                 component: titleComponent,
                 environment: {},
-                containerSize: CGSize(width: containerWidth - navigationButtonsWidth, height: navigationHeight)
+                containerSize: CGSize(width: contentWidth - navigationButtonsWidth, height: navigationHeight)
             )
-            let navigationTitleFrame = CGRect(origin: CGPoint(x: containerSideInset + floor((containerWidth - navigationTitleSize.width) * 0.5), y: floor((navigationHeight - navigationTitleSize.height) * 0.5)), size: navigationTitleSize)
+            let navigationTitleFrame = CGRect(origin: CGPoint(x: contentSideInset + floor((contentWidth - navigationTitleSize.width) * 0.5), y: floor((navigationHeight - navigationTitleSize.height) * 0.5)), size: navigationTitleSize)
             if let navigationTitleView = self.navigationTitle.view {
                 if navigationTitleView.superview == nil {
                     self.navigationContainerView.addSubview(navigationTitleView)
@@ -863,14 +904,14 @@ final class CountriesMultiselectionScreenComponent: Component {
                 navigationTitleView.bounds = CGRect(origin: CGPoint(), size: navigationTitleFrame.size)
             }
             
-            let navigationTextFieldFrame = CGRect(origin: CGPoint(x: containerSideInset, y: navigationHeight), size: navigationTextFieldSize)
+            let navigationTextFieldFrame = CGRect(origin: CGPoint(x: contentSideInset, y: navigationHeight), size: navigationTextFieldSize)
             if let navigationTextFieldView = self.navigationTextField.view {
                 if navigationTextFieldView.superview == nil {
                     self.navigationContainerView.addSubview(navigationTextFieldView)
                     self.navigationContainerView.layer.addSublayer(self.textFieldSeparatorLayer)
                 }
                 transition.setFrame(view: navigationTextFieldView, frame: navigationTextFieldFrame)
-                transition.setFrame(layer: self.textFieldSeparatorLayer, frame: CGRect(origin: CGPoint(x: containerSideInset, y: navigationTextFieldFrame.maxY), size: CGSize(width: navigationTextFieldFrame.width, height: UIScreenPixel)))
+                transition.setFrame(layer: self.textFieldSeparatorLayer, frame: CGRect(origin: CGPoint(x: navigationTextFieldFrame.minX, y: navigationTextFieldFrame.maxY), size: CGSize(width: navigationTextFieldFrame.width, height: UIScreenPixel)))
             }
             navigationHeight += navigationTextFieldFrame.height
             
@@ -884,10 +925,16 @@ final class CountriesMultiselectionScreenComponent: Component {
 
             let badge = self.selectedCountries.count
             
+            let buttonInsets = ContainerViewLayout.concentricInsets(bottomInset: environment.safeInsets.bottom, innerDiameter: 52.0, sideInset: 30.0)
+            // The bottom button spans iPhone Duo's side strip; it keeps clear only of a corner block at the bottom.
+            let actionButtonBandInsets: (left: CGFloat, right: CGFloat) = environment.safeInsets.left != environment.safeInsets.right ? environment.bottomEdgeSideInsets() : (0.0, 0.0)
+            let actionButtonContentSideInset = containerSideInset + actionButtonBandInsets.left
+            let actionButtonContentWidth = containerWidth - actionButtonBandInsets.left - actionButtonBandInsets.right
             let actionButtonSize = self.actionButton.update(
                 transition: transition,
                 component: AnyComponent(ButtonComponent(
                     background: ButtonComponent.Background(
+                        style: .glass,
                         color: environment.theme.list.itemCheckColors.fillColor,
                         foreground: environment.theme.list.itemCheckColors.foregroundColor,
                         pressedColor: environment.theme.list.itemCheckColors.fillColor.withMultipliedAlpha(0.9)
@@ -917,15 +964,15 @@ final class CountriesMultiselectionScreenComponent: Component {
                     }
                 )),
                 environment: {},
-                containerSize: CGSize(width: containerWidth - navigationSideInset * 2.0, height: 50.0)
+                containerSize: CGSize(width: actionButtonContentWidth - buttonInsets.left - buttonInsets.right, height: 52.0)
             )
-            
             if environment.inputHeight != 0.0 {
                 bottomPanelHeight += environment.inputHeight + 8.0 + actionButtonSize.height
             } else {
-                bottomPanelHeight += 10.0 + environment.safeInsets.bottom + actionButtonSize.height
+                bottomPanelHeight += actionButtonSize.height
+                bottomPanelHeight += buttonInsets.bottom
             }
-            let actionButtonFrame = CGRect(origin: CGPoint(x: containerSideInset + navigationSideInset, y: availableSize.height - bottomPanelHeight), size: actionButtonSize)
+            let actionButtonFrame = CGRect(origin: CGPoint(x: actionButtonContentSideInset + buttonInsets.left, y: availableSize.height - bottomPanelHeight), size: actionButtonSize)
             if let actionButtonView = self.actionButton.view {
                 if actionButtonView.superview == nil {
                     self.containerView.addSubview(actionButtonView)
@@ -942,11 +989,11 @@ final class CountriesMultiselectionScreenComponent: Component {
             let itemLayout = ItemLayout(containerSize: itemContainerSize, containerInset: containerInset, bottomInset: 0.0, topInset: 0.0, sideInset: sideInset, navigationHeight: navigationHeight, sections: sections)
             self.itemLayout = itemLayout
             
-            contentTransition.setFrame(view: self.itemContainerView, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: containerWidth, height: itemLayout.contentHeight)))
+            contentTransition.setFrame(view: self.itemContainerView, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: contentWidth, height: itemLayout.contentHeight)))
             
             let scrollContentHeight = max(itemLayout.contentHeight + containerInset, availableSize.height - containerInset)
             
-            transition.setFrame(view: self.scrollContentView, frame: CGRect(origin: CGPoint(x: 0.0, y: containerInset), size: CGSize(width: containerWidth, height: itemLayout.contentHeight)))
+            transition.setFrame(view: self.scrollContentView, frame: CGRect(origin: CGPoint(x: 0.0, y: containerInset), size: CGSize(width: contentWidth, height: itemLayout.contentHeight)))
             
             transition.setPosition(view: self.backgroundView, position: CGPoint(x: availableSize.width / 2.0, y: availableSize.height / 2.0))
             transition.setBounds(view: self.backgroundView, bounds: CGRect(origin: CGPoint(x: containerSideInset, y: 0.0), size: CGSize(width: containerWidth, height: availableSize.height)))
@@ -959,8 +1006,8 @@ final class CountriesMultiselectionScreenComponent: Component {
             transition.setFrame(view: self.containerView, frame: CGRect(origin: .zero, size: availableSize))
             
             self.ignoreScrolling = true
-            transition.setFrame(view: self.scrollView, frame: CGRect(origin: CGPoint(x: containerSideInset, y: 0.0), size: CGSize(width: containerWidth, height: availableSize.height)))
-            let contentSize = CGSize(width: containerWidth, height: scrollContentHeight)
+            transition.setFrame(view: self.scrollView, frame: CGRect(origin: CGPoint(x: contentSideInset, y: 0.0), size: CGSize(width: contentWidth, height: availableSize.height)))
+            let contentSize = CGSize(width: contentWidth, height: scrollContentHeight)
             if contentSize != self.scrollView.contentSize {
                 self.scrollView.contentSize = contentSize
             }
@@ -973,7 +1020,7 @@ final class CountriesMultiselectionScreenComponent: Component {
                 self.scrollView.contentInset = contentInset
             }
             if resetScrolling {
-                self.scrollView.bounds = CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: containerWidth, height: availableSize.height))
+                self.scrollView.bounds = CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: contentWidth, height: availableSize.height))
             }
             self.ignoreScrolling = false
             self.updateScrolling(transition: contentTransition)
@@ -1081,7 +1128,6 @@ public class CountriesMultiselectionScreen: ViewControllerComponentContainer {
 public extension CountriesMultiselectionScreen {
     struct CountryItem {
         let id: String
-        let flag: String
         let name: String
     }
     
@@ -1104,7 +1150,9 @@ public extension CountriesMultiselectionScreen {
         var stateValue: State?
         
         public let subject: Subject
+        public let maxCount: Int32?
         public let initialSelectedCountries: [String]
+        public let showFragment: Bool
         
         private var stateDisposable: Disposable?
         private let stateSubject = Promise<State>()
@@ -1120,14 +1168,22 @@ public extension CountriesMultiselectionScreen {
         public init(
             context: AccountContext,
             subject: Subject = .countries,
-            initialSelectedCountries: [String] = []
+            maxCount: Int32? = nil,
+            initialSelectedCountries: [String] = [],
+            showFragment: Bool = false
         ) {
             self.subject = subject
+            self.maxCount = maxCount
             self.initialSelectedCountries = initialSelectedCountries
+            self.showFragment = showFragment
             
             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-            let countries = localizedCountryNamesAndCodes(strings: presentationData.strings).sorted { lhs, rhs in
+            let countryList = localizedCountryNamesAndCodes(strings: presentationData.strings)
+            var countries = countryList.sorted { lhs, rhs in
                 return lhs.0.1.lowercased() < rhs.0.1.lowercased()
+            }
+            if showFragment, let index = countries.firstIndex(where: { $0.1 == "FR" }) {
+                countries.insert((("Fragment", "Fragment"), "FT", [888]), at: index)
             }
             
             switch subject {
@@ -1137,8 +1193,8 @@ public extension CountriesMultiselectionScreen {
                 var currentSection: String?
                 var currentCountries: [CountryItem] = []
                 for country in countries {
-                    let section = String(country.0.1.prefix(1))
-                    if currentSection != section {
+                    let section = String(country.0.1.prefix(1)).uppercased()
+                    if currentSection != section && country.1 != "FT" {
                         if let currentSection {
                             sections.append((currentSection, currentCountries))
                         }
@@ -1148,7 +1204,6 @@ public extension CountriesMultiselectionScreen {
                     
                     currentCountries.append(CountryItem(
                         id: country.1,
-                        flag: flagEmoji(countryCode: country.1),
                         name: country.0.1
                     ))
                 }
@@ -1175,7 +1230,6 @@ public extension CountriesMultiselectionScreen {
                     }
                     resultCountries.append(CountryItem(
                         id: country.1,
-                        flag: flagEmoji(countryCode: country.1),
                         name: country.0.1
                     ))
                     existingIds.insert(country.1)

@@ -1,4 +1,4 @@
-import SGSimpleSettings
+import SGSimpleSettings // MARK: Swiftgram
 import Foundation
 import UIKit
 import AsyncDisplayKit
@@ -29,6 +29,8 @@ import MediaPlaybackHeaderPanelComponent
 import LiveLocationHeaderPanelComponent
 import ChatListHeaderNoticeComponent
 import ChatListFilterTabContainerNode
+import GlassControls
+import SideColumnLayout
 
 public enum ChatListContainerNodeFilter: Equatable {
     case all
@@ -172,6 +174,8 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
             previousItemNode.listNode.shouldStopScrolling = nil
             previousItemNode.listNode.activateChatPreview = nil
             previousItemNode.listNode.openStories = nil
+            previousItemNode.listNode.openCommunity = nil
+            previousItemNode.listNode.ungroupCommunity = nil
             previousItemNode.listNode.addedVisibleChatsWithPeerIds = nil
             previousItemNode.listNode.didBeginSelectingChats = nil
             previousItemNode.listNode.canExpandHiddenItems = nil
@@ -222,6 +226,12 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
         }
         itemNode.listNode.groupSelected = { [weak self] groupId in
             self?.groupSelected?(groupId)
+        }
+        itemNode.listNode.openCommunity = { [weak self] communityId in
+            self?.openCommunity?(communityId)
+        }
+        itemNode.listNode.ungroupCommunity = { [weak self] communityId in
+            self?.ungroupCommunity?(communityId)
         }
         itemNode.listNode.updatePeerGrouping = { [weak self] peerId, group in
             self?.updatePeerGrouping?(peerId, group)
@@ -426,6 +436,8 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
     public var peerSelected: ((EnginePeer, Int64?, Bool, Bool, ChatListNodeEntryPromoInfo?) -> Void)?
     public var disabledPeerSelected: ((EnginePeer, Int64?, ChatListDisabledPeerReason) -> Void)?
     var groupSelected: ((EngineChatList.Group) -> Void)?
+    var openCommunity: ((EnginePeer.Id) -> Void)?
+    var ungroupCommunity: ((EnginePeer.Id) -> Void)?
     var updatePeerGrouping: ((EnginePeer.Id, Bool) -> Void)?
     var contentOffset: ListViewVisibleContentOffset?
     public var contentOffsetChanged: ((ListViewVisibleContentOffset, ListView) -> Void)?
@@ -534,7 +546,7 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
         self.applyItemNodeAsCurrent(id: .all, itemNode: itemNode)
         
         let panRecognizer = InteractiveTransitionGestureRecognizer(target: self, action: #selector(self.panGesture(_:)), allowedDirections: { [weak self] _ in // MARK: Swiftgram
-            guard let self, self.availableFilters.count > 1 || (self.controller?.isStoryPostingAvailable == true && !(self.context.sharedContext.callManager?.hasActiveCall ?? false) && !SGSimpleSettings.shared.disableSwipeToRecordStory) else {
+            guard let self, self.availableFilters.count > 1 || (self.controller?.isStoryPostingAvailable == true && !(self.context.sharedContext.callManager?.hasActiveCall ?? false) && !SGSimpleSettings.shared.disableSwipeToRecordStory) else { // MARK: Swiftgram
                 return []
             }
             guard case .chatList(.root) = self.location else {
@@ -551,12 +563,19 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
             if !self.currentItemNode.isNavigationInAFinalState {
                 return []
             }
+            if self.currentItemNode.isDragging || self.currentItemNode.isDeceleratingAfterTracking {
+                if self.availableFilters.count <= 1 {
+                    return []
+                } else if self.availableFilters.first?.id == self.selectedId {
+                    return [.leftCenter]
+                }
+            }
             if self.availableFilters.count > 1 {
                 return [.leftCenter, .rightCenter]
             } else {
                 return [.rightEdge]
             }
-        }, edgeWidth: SGSimpleSettings.shared.disableChatSwipeOptions ? .widthMultiplier(factor: 1.0 / 6.0, min: 0.0, max: 0.0) : .widthMultiplier(factor: 1.0 / 6.0, min: 22.0, max: 80.0))
+        }, edgeWidth: SGSimpleSettings.shared.disableChatSwipeOptions ? .widthMultiplier(factor: 1.0 / 6.0, min: 0.0, max: 0.0) : .widthMultiplier(factor: 1.0 / 6.0, min: 22.0, max: 80.0)) // MARK: Swiftgram
         panRecognizer.delegate = self.wrappedGestureRecognizerDelegate
         panRecognizer.delaysTouchesBegan = false
         panRecognizer.cancelsTouchesInView = true
@@ -584,7 +603,7 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
         return false
     }
     
-    @objc private func panGesture(_ recognizer: UIPanGestureRecognizer) {
+    @objc private func panGesture(_ recognizer: InteractiveTransitionGestureRecognizer) {
         // MARK: Swiftgram
         var _availableFilters = self.availableFilters
         if SGSimpleSettings.shared.allChatsHidden {
@@ -592,6 +611,15 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
         }
         let filtersLimit = self.filtersLimit.flatMap({ $0 + 1 }) ?? Int32(_availableFilters.count)
         let maxFilterIndex = min(Int(filtersLimit), _availableFilters.count) - 1
+        //
+
+        let canOpenStoryCamera = self.validLayout?.0.metrics.widthClass == .compact
+            && self.availableFilters.first?.id == self.selectedId
+            && !recognizer.currentAllowedDirections.intersection(.right).isEmpty
+            && self.controller?.isStoryPostingAvailable == true
+            && !(self.context.sharedContext.callManager?.hasActiveCall ?? false)
+            && !SGSimpleSettings.shared.disableSwipeToRecordStory // MARK: Swiftgram
+        let hasLiveStream = canOpenStoryCamera && self.controller?.chatListHeaderView()?.storyPeerListView()?.isLiveStreaming == true
         
         switch recognizer.state {
         case .began:
@@ -599,6 +627,16 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
             
             self.transitionFractionOffset = 0.0
             if let (layout, navigationBarHeight, visualNavigationHeight, originalNavigationHeight, cleanNavigationBarHeight, insets, isReorderingFilters, isEditing, inlineNavigationLocation, inlineNavigationTransitionFraction, storiesInset) = self.validLayout, let itemNode = self.itemNodes[self.selectedId] {
+                if canOpenStoryCamera, !hasLiveStream, self.transitionFraction.isZero,
+                    (itemNode.layer.presentation()?.frame.minX ?? itemNode.frame.minX).isZero {
+                    let translation = recognizer.translation(in: self.view)
+                    if translation.x > 0.0 || (translation.x.isZero && recognizer.velocity(in: self.view).x > 0.0) {
+                        self.controller?.storyCameraPanGestureChanged(transitionFraction: translation.x / layout.size.width)
+                        if self.controller?.hasStoryCameraTransition == true {
+                            return
+                        }
+                    }
+                }
                 for (id, itemNode) in self.itemNodes {
                     if id != selectedId {
                         itemNode.emptyNode?.restartAnimation()
@@ -626,7 +664,7 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
                 }
             }
         case .changed:
-            if let (layout, navigationBarHeight, visualNavigationHeight, originalNavigationHeight: originalNavigationHeight, cleanNavigationBarHeight, insets, isReorderingFilters, isEditing, inlineNavigationLocation, inlineNavigationTransitionFraction, storiesInset) = self.validLayout, let selectedIndex = _availableFilters.firstIndex(where: { $0.id == self.selectedId }) {
+            if let (layout, navigationBarHeight, visualNavigationHeight, originalNavigationHeight: originalNavigationHeight, cleanNavigationBarHeight, insets, isReorderingFilters, isEditing, inlineNavigationLocation, inlineNavigationTransitionFraction, storiesInset) = self.validLayout, let selectedIndex = _availableFilters.firstIndex(where: { $0.id == self.selectedId }) { // MARK: Swiftgram
                 let translation = recognizer.translation(in: self.view)
                 var transitionFraction = translation.x / layout.size.width
                 
@@ -639,12 +677,7 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
                     return bandingStart + (1.0 - (1.0 / ((bandedOffset * coefficient / range) + 1.0))) * range
                 }
                 
-                var hasLiveStream = false
-                if let componentView = self.controller?.chatListHeaderView(), let storyPeerListView = componentView.storyPeerListView(), storyPeerListView.isLiveStreaming {
-                    hasLiveStream = true
-                }
-                     
-                if case .compact = layout.metrics.widthClass, self.controller?.isStoryPostingAvailable == true && !(self.context.sharedContext.callManager?.hasActiveCall ?? false) && !SGSimpleSettings.shared.disableSwipeToRecordStory {
+                if canOpenStoryCamera {
                     if hasLiveStream {
                         if translation.x >= 30.0 {
                             self.panRecognizer?.cancel()
@@ -657,12 +690,13 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
                     let cameraIsAlreadyOpened = self.controller?.hasStoryCameraTransition ?? false
                     if selectedIndex <= 0 && translation.x > 0.0 {
                         transitionFraction = 0.0
+                        self.transitionFractionOffset = 0.0
                         self.controller?.storyCameraPanGestureChanged(transitionFraction: translation.x / layout.size.width)
                     } else if translation.x <= 0.0 && cameraIsAlreadyOpened {
                         self.controller?.storyCameraPanGestureChanged(transitionFraction: 0.0)
                     }
                     
-                    if cameraIsAlreadyOpened {
+                    if cameraIsAlreadyOpened || (self.controller?.hasStoryCameraTransition == true && self.transitionFraction.isZero && self.transitionFractionOffset.isZero && !self.isSwitchingCurrentItemFilterByDragging) {
                         transitionFraction = 0.0
                         return
                     }
@@ -702,7 +736,7 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
                 self.pinnedHeaderDisplayFractionUpdated?(transition)
             }
         case .cancelled, .ended:
-            if let (layout, navigationBarHeight, visualNavigationHeight, originalNavigationHeight: originalNavigationHeight, cleanNavigationBarHeight, insets, isReorderingFilters, isEditing, inlineNavigationLocation, inlineNavigationTransitionFraction, storiesInset) = self.validLayout, let selectedIndex = _availableFilters.firstIndex(where: { $0.id == self.selectedId }) {
+            if let (layout, navigationBarHeight, visualNavigationHeight, originalNavigationHeight: originalNavigationHeight, cleanNavigationBarHeight, insets, isReorderingFilters, isEditing, inlineNavigationLocation, inlineNavigationTransitionFraction, storiesInset) = self.validLayout, let selectedIndex = _availableFilters.firstIndex(where: { $0.id == self.selectedId }) { // MARK: Swiftgram
                 let translation = recognizer.translation(in: self.view)
                 let velocity = recognizer.velocity(in: self.view)
                 var directionIsToRight: Bool?
@@ -728,7 +762,19 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
                 
                 let hasStoryCameraTransition = self.controller?.hasStoryCameraTransition ?? false
                 if hasStoryCameraTransition {
-                    self.controller?.storyCameraPanGestureEnded(transitionFraction: translation.x / layout.size.width, velocity: velocity.x)
+                    if !self.transitionFraction.isZero || !self.transitionFractionOffset.isZero {
+                        self.transitionFraction = 0.0
+                        self.transitionFractionOffset = 0.0
+                        self.update(layout: layout, navigationBarHeight: navigationBarHeight, visualNavigationHeight: visualNavigationHeight, originalNavigationHeight: originalNavigationHeight, cleanNavigationBarHeight: cleanNavigationBarHeight, insets: insets, isReorderingFilters: isReorderingFilters, isEditing: isEditing, inlineNavigationLocation: inlineNavigationLocation, inlineNavigationTransitionFraction: inlineNavigationTransitionFraction, storiesInset: storiesInset, transition: .immediate)
+                    }
+                    let cancelled = recognizer.state == .cancelled
+                    self.controller?.storyCameraPanGestureEnded(transitionFraction: cancelled ? 0.0 : translation.x / layout.size.width, velocity: cancelled ? 0.0 : velocity.x)
+                    if self.isSwitchingCurrentItemFilterByDragging {
+                        self.isSwitchingCurrentItemFilterByDragging = false
+                        self.currentItemFilterUpdated?(self.currentItemFilter, self.transitionFraction, .immediate, false)
+                        self.pinnedHeaderDisplayFractionUpdated?(.immediate)
+                    }
+                    return
                 }
                 var applyNodeAsCurrent: ChatListFilterTabEntryId?
                 
@@ -739,7 +785,7 @@ public final class ChatListContainerNode: ASDisplayNode, ASGestureRecognizerDele
                     } else {
                         updatedIndex = max(updatedIndex - 1, 0)
                     }
-                    let switchToId = _availableFilters[updatedIndex].id
+                    let switchToId = _availableFilters[updatedIndex].id // MARK: Swiftgram
                     if switchToId != self.selectedId, let itemNode = self.itemNodes[switchToId] {
                         let _ = itemNode
                         self.selectedId = switchToId
@@ -1138,11 +1184,11 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
     private var tapRecognizer: UITapGestureRecognizer?
     var navigationBar: NavigationBar?
     let navigationBarView = ComponentView<Empty>()
-    let sgFoldersView = ComponentView<Empty>()
+    let sgFoldersView = ComponentView<Empty>() // MARK: Swiftgram
     weak var controller: ChatListControllerImpl?
     
-    var toolbar: Toolbar?
-    private var toolbarNode: ToolbarNode?
+    private var toolbar: ComponentView<Empty>?
+    var toolbarData: Toolbar?
     var toolbarActionSelected: ((ToolbarActionOption) -> Void)?
     
     private var isSearchDisplayControllerActive: ChatListNavigationBar.ActiveSearch?
@@ -1180,7 +1226,7 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
     var cancelEditing: (() -> Void)?
     var dismissSearch: (() -> Void)?
     
-    let debugListView = ListView()
+    let debugListView = ListViewImpl()
     
     init(context: AccountContext, location: ChatListControllerLocation, previewing: Bool, controlsHistoryPreload: Bool, presentationData: PresentationData, animationCache: AnimationCache, animationRenderer: MultiAnimationRenderer, controller: ChatListControllerImpl) {
         self.context = context
@@ -1403,13 +1449,9 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         self.mainContainerNode.updatePresentationData(presentationData)
         self.inlineStackContainerNode?.updatePresentationData(presentationData)
         self.searchDisplayController?.updatePresentationData(presentationData)
-        
-        if let toolbarNode = self.toolbarNode {
-            toolbarNode.updateTheme(ToolbarTheme(rootControllerTheme: self.presentationData.theme))
-        }
     }
     
-    private func updateNavigationBar(layout: ContainerViewLayout, deferScrollApplication: Bool, transition: ComponentTransition) -> (tabs: AnyComponent<Empty>?, navigationHeight: CGFloat, storiesInset: CGFloat) {
+    private func updateNavigationBar(layout: ContainerViewLayout, deferScrollApplication: Bool, transition: ComponentTransition) -> (tabs: AnyComponent<Empty>?, navigationHeight: CGFloat, storiesInset: CGFloat) { // MARK: Swiftgram
         let headerContent = self.controller?.updateHeaderContent()
         
         var panels: [HeaderPanelContainerComponent.Panel] = []
@@ -1427,8 +1469,10 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                             return
                         }
                         switch notice {
+                        // MARK: Swiftgram
                         case let .sgUrl(id, _, _, url, needAuth, permanent):
                             self.effectiveContainerNode.currentItemNode.interaction?.openSGAnnouncement(id, url, needAuth, permanent)
+                        //
                         case .clearStorage:
                             self.effectiveContainerNode.currentItemNode.interaction?.openStorageManagement()
                         case .setupPassword:
@@ -1444,6 +1488,8 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                         case let .birthdayPremiumGift(peers, birthdays):
                             self.effectiveContainerNode.currentItemNode.interaction?.openPremiumGift(peers, birthdays)
                         case .reviewLogin:
+                            break
+                        case .reviewBotConnection:
                             break
                         case let .starsSubscriptionLowBalance(amount, _):
                             self.effectiveContainerNode.currentItemNode.interaction?.openStarsTopup(amount.value)
@@ -1468,6 +1514,8 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                         switch notice {
                         case let .reviewLogin(newSessionReview, _):
                             self.effectiveContainerNode.currentItemNode.interaction?.performActiveSessionAction(newSessionReview, isPositive)
+                        case let .reviewBotConnection(newBotConnectionReview, _, _):
+                            self.effectiveContainerNode.currentItemNode.interaction?.performBotConnectionReviewAction(newBotConnectionReview, isPositive)
                         default:
                             break
                         }
@@ -1476,19 +1524,23 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             )
         }
         if let mediaPlayback = self.controller?.globalControlPanelsContextState?.mediaPlayback {
-            panels.append(HeaderPanelContainerComponent.Panel(
-                key: "media",
-                orderIndex: 1,
-                component: AnyComponent(MediaPlaybackHeaderPanelComponent(
-                    context: self.context,
-                    theme: self.presentationData.theme,
-                    strings: self.presentationData.strings,
-                    data: mediaPlayback,
-                    controller: { [weak self] in
-                        return self?.controller
-                    }
-                )))
-            )
+            if let playlistLocation = mediaPlayback.playlistLocation as? PeerMessagesPlaylistLocation, case let .custom(_, _, _, _, hidePanel) = playlistLocation, hidePanel {
+                
+            } else {
+                panels.append(HeaderPanelContainerComponent.Panel(
+                    key: "media",
+                    orderIndex: 1,
+                    component: AnyComponent(MediaPlaybackHeaderPanelComponent(
+                        context: self.context,
+                        theme: self.presentationData.theme,
+                        strings: self.presentationData.strings,
+                        data: mediaPlayback,
+                        controller: { [weak self] in
+                            return self?.controller
+                        }
+                    )))
+                )
+            }
         }
         if let liveLocation = self.controller?.globalControlPanelsContextState?.liveLocation {
             panels.append(HeaderPanelContainerComponent.Panel(
@@ -1510,8 +1562,27 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         var tabs: AnyComponent<Empty>? // MARK: Swiftgram
         if self.controller?.tabContainerData != nil || !panels.isEmpty {
             if let tabContainerData = self.controller?.tabContainerData, tabContainerData.0.count > 1 {
+                let folderFilterIndex: (ChatListFilterTabEntryId, [ChatListFilterTabEntry]) -> Int? = { id, entries in
+                    var index = 0
+                    for entry in entries {
+                        switch entry {
+                        case .all:
+                            if entry.id == id {
+                                return nil
+                            }
+                        case .filter:
+                            if entry.id == id {
+                                return index
+                            }
+                            index += 1
+                        }
+                    }
+                    return nil
+                }
+
+                // The folder tabs describe the main list: a forum open inline has no folder of its own.
                 let selectedTab: HorizontalTabsComponent.Tab.Id
-                switch self.effectiveContainerNode.currentItemFilter {
+                switch self.mainContainerNode.currentItemFilter {
                 case .all:
                     selectedTab = AnyHashable(Int32.min)
                 case let .filter(id):
@@ -1531,7 +1602,7 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                         switch entry {
                         case .all:
                             id = Int32.min
-                            title = HorizontalTabsComponent.Tab.Title(text: sgUseShortAllChatsTitle(true) ? self.presentationData.strings.ChatList_Tabs_All : self.presentationData.strings.ChatList_Tabs_AllChats, entities: [], enableAnimations: false)
+                            title = HorizontalTabsComponent.Tab.Title(text: sgUseShortAllChatsTitle(true) ? self.presentationData.strings.ChatList_Tabs_All : self.presentationData.strings.ChatList_Tabs_AllChats /* MARK: Swiftgram */, entities: [], enableAnimations: false)
                             isMainTab = true
                         case let .filter(idValue, text, unread):
                             id = AnyHashable(idValue)
@@ -1559,10 +1630,9 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                                 
                                 var isDisabled = false
                                 if let filtersLimit = tabContainerData.2 {
-                                    guard let folderIndex = tabContainerData.0.firstIndex(where: { $0.id == mappedId }) else {
-                                        return
+                                    if let folderIndex = folderFilterIndex(mappedId, tabContainerData.0) {
+                                        isDisabled = !isPremium && folderIndex >= filtersLimit
                                     }
-                                    isDisabled = !isPremium && folderIndex >= filtersLimit
                                 }
                                 
                                 if isDisabled {
@@ -1605,13 +1675,12 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                                 
                                 var isDisabled = false
                                 if let filtersLimit = tabContainerData.2 {
-                                    guard let folderIndex = tabContainerData.0.firstIndex(where: { $0.id == entry.id }) else {
-                                        return
+                                    if let folderIndex = folderFilterIndex(entry.id, tabContainerData.0) {
+                                        isDisabled = !isPremium && folderIndex >= filtersLimit
                                     }
-                                    isDisabled = !isPremium && folderIndex >= filtersLimit
                                 }
                                 
-                                self.controller?.tabContextGesture(id: mappedId, sourceNode: nil, sourceView: sourceView, gesture: gesture, keepInPlace: false, isDisabled: isDisabled)
+                                self.controller?.tabContextGesture(id: mappedId, sourceNode: nil, sourceView: sourceView, gesture: gesture, /* MARK: Swiftgram */ sourceActionsPosition: tabContainerData.1 ? .top : .bottom, sourceKeepInPlace: !tabContainerData.1, /* MARK: Swiftgram */ keepInPlace: false, isDisabled: isDisabled)
                             },
                             deleteAction: (!isEditing || isMainTab) ? nil : { [weak self] in
                                 guard let self else {
@@ -1647,14 +1716,25 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             }
         }
         
+        // iPhone Duo: the header's back and icon buttons go into the side strip, above the vertical tab
+        // bar when this list is a tab (spec 2026-10-06). A preview's layout is not the screen's.
+        var sideColumn: SideColumnRegion?
+        if let controller = self.controller, !controller.previewing {
+            let reservedBelow = (controller.parent as? TabBarController)?.verticalTabBarFrame(for: layout)
+            sideColumn = sideColumnRegion(layout: layout, minY: (layout.statusBarHeight ?? 0.0) + 8.0, reservedBelow: reservedBelow)
+        }
+        
         let navigationBarSize = self.navigationBarView.update(
             transition: transition,
             component: AnyComponent(ChatListNavigationBar(
                 context: self.context,
                 theme: self.presentationData.theme,
                 strings: self.presentationData.strings,
-                statusBarHeight: layout.statusBarHeight ?? 0.0,
-                sideInset: layout.safeInsets.left,
+                // Beside iPhone Duo's status island the header stays near the top, its right buttons clear of it.
+                statusBarHeight: layout.navigationBarStatusBarHeight ?? 0.0,
+                leftInset: layout.safeInsets.left,
+                rightInset: layout.safeInsets.right,
+                trailingButtonsInset: layout.navigationBarTrailingButtonsInset,
                 search: ChatListNavigationBar.Search(isEnabled: true),
                 activeSearch: self.isSearchDisplayControllerActive,
                 primaryContent: headerContent?.primaryContent,
@@ -1698,6 +1778,13 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                         return
                     }
                     controller.allowAutomaticOrder()
+                },
+                sideColumn: sideColumn,
+                openSideColumnOverflow: { [weak self] sourceView, items in
+                    guard let self, let controller = self.controller else {
+                        return
+                    }
+                    controller.openSideColumnOverflowMenu(sourceView: sourceView, items: items)
                 }
             )),
             environment: {},
@@ -1713,9 +1800,9 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             }
             transition.setFrame(view: navigationBarComponentView, frame: CGRect(origin: CGPoint(), size: navigationBarSize))
             
-            return (tabs, navigationBarSize.height, 0.0)
+            return (tabs, navigationBarSize.height, 0.0) // MARK: Swiftgram
         } else {
-            return (tabs, 0.0, 0.0)
+            return (tabs, 0.0, 0.0) // MARK: Swiftgram
         }
     }
     
@@ -1837,65 +1924,121 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             environment: {},
             containerSize: layout.size
         )
+        //
         
         var insets = layout.insets(options: [.input])
         insets.top += navigationBarHeight
         insets.left += layout.safeInsets.left
         insets.right += layout.safeInsets.right
         
-        if let toolbar = self.toolbar {
-            var tabBarHeight: CGFloat
-            var options: ContainerViewLayoutInsetOptions = []
-            if layout.metrics.widthClass == .regular {
-                options.insert(.input)
+        if let toolbarData = self.toolbarData {
+            var panelsBottomInset: CGFloat = layout.insets(options: []).bottom
+            if layout.metrics.widthClass == .regular, let inputHeight = layout.inputHeight, inputHeight != 0.0 {
+                panelsBottomInset = inputHeight + 8.0
             }
-            
-            var heightInset: CGFloat = 0.0
-            if case .forum = self.location {
-                heightInset = 4.0
-            }
-            
-            let bottomInset: CGFloat = layout.insets(options: options).bottom
-            if !layout.safeInsets.left.isZero {
-                tabBarHeight = 34.0 + bottomInset
-                insets.bottom += 34.0
+            if panelsBottomInset == 0.0 {
+                panelsBottomInset = 8.0
             } else {
-                tabBarHeight = 49.0 - heightInset + bottomInset
-                insets.bottom += 49.0 - heightInset
+                panelsBottomInset = max(panelsBottomInset, 8.0)
             }
             
-            let toolbarFrame = CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - tabBarHeight), size: CGSize(width: layout.size.width, height: tabBarHeight))
+            let sideInset: CGFloat = 20.0
+            // The bottom toolbar spans iPhone Duo's side strip; it keeps clear only of a corner block at the bottom, as the
+            // root list's toolbar does (`tabBarSideToolbarFrame`). Equal insets keep the 20pt margins.
+            let toolbarInsetsDiffer = layout.safeInsets.left != layout.safeInsets.right
+            let toolbarBottomInsets = layout.bottomEdgeSideInsets()
+            let toolbarLeftInset = toolbarInsetsDiffer ? max(sideInset, toolbarBottomInsets.left) : sideInset
+            let toolbarRightInset = toolbarInsetsDiffer ? max(sideInset, toolbarBottomInsets.right) : sideInset
+            let toolbarHeight = 44.0
+            let toolbarFrame = CGRect(origin: CGPoint(x: toolbarLeftInset, y: layout.size.height - panelsBottomInset - toolbarHeight), size: CGSize(width: layout.size.width - toolbarLeftInset - toolbarRightInset, height: toolbarHeight))
             
-            if let toolbarNode = self.toolbarNode {
-                transition.updateFrame(node: toolbarNode, frame: toolbarFrame)
-                toolbarNode.updateLayout(size: toolbarFrame.size, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, additionalSideInsets: layout.additionalInsets, bottomInset: bottomInset, toolbar: toolbar, transition: transition)
+            let toolbar: ComponentView<Empty>
+            var toolbarTransition = ComponentTransition(transition)
+            if let current = self.toolbar {
+                toolbar = current
             } else {
-                let toolbarNode = ToolbarNode(theme: ToolbarTheme(rootControllerTheme: self.presentationData.theme), displaySeparator: true, left: { [weak self] in
-                    self?.toolbarActionSelected?(.left)
-                }, right: { [weak self] in
-                    self?.toolbarActionSelected?(.right)
-                }, middle: { [weak self] in
-                    self?.toolbarActionSelected?(.middle)
-                })
-                toolbarNode.frame = toolbarFrame
-                toolbarNode.updateLayout(size: toolbarFrame.size, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, additionalSideInsets: layout.additionalInsets, bottomInset: bottomInset, toolbar: toolbar, transition: .immediate)
-                self.addSubnode(toolbarNode)
-                self.toolbarNode = toolbarNode
-                if transition.isAnimated {
-                    toolbarNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2)
+                toolbar = ComponentView()
+                self.toolbar = toolbar
+                toolbarTransition = .immediate
+            }
+            
+            let _ = toolbar.update(
+                transition: toolbarTransition,
+                component: AnyComponent(GlassControlPanelComponent(
+                    theme: self.presentationData.theme,
+                    leftItem: toolbarData.leftAction.flatMap { value in
+                        return GlassControlPanelComponent.Item(
+                            items: [GlassControlGroupComponent.Item(
+                                id: "left_" + value.title,
+                                content: .text(value.title),
+                                action: value.isEnabled ? { [weak self] in
+                                    guard let self else {
+                                        return
+                                    }
+                                    self.toolbarActionSelected?(.left)
+                                } : nil
+                            )],
+                            background: .panel
+                        )
+                    },
+                    centralItem: toolbarData.middleAction.flatMap { value in
+                        return GlassControlPanelComponent.Item(
+                            items: [GlassControlGroupComponent.Item(
+                                id: "right_" + value.title,
+                                content: .text(value.title),
+                                action: value.isEnabled ? { [weak self] in
+                                    guard let self else {
+                                        return
+                                    }
+                                    self.toolbarActionSelected?(.middle)
+                                } : nil
+                            )],
+                            background: .panel
+                        )
+                    },
+                    rightItem: toolbarData.rightAction.flatMap { value in
+                        return GlassControlPanelComponent.Item(
+                            items: [GlassControlGroupComponent.Item(
+                                id: "right_" + value.title,
+                                content: .text(value.title),
+                                action: value.isEnabled ? { [weak self] in
+                                    guard let self else {
+                                        return
+                                    }
+                                    self.toolbarActionSelected?(.right)
+                                } : nil
+                            )],
+                            background: .panel
+                        )
+                    },
+                    centerAlignmentIfPossible: true
+                )),
+                environment: {},
+                containerSize: toolbarFrame.size
+            )
+            
+            if let toolbarView = toolbar.view {
+                if toolbarView.superview == nil {
+                    self.view.addSubview(toolbarView)
+                    toolbarView.alpha = 0.0
                 }
+                toolbarTransition.setFrame(view: toolbarView, frame: toolbarFrame)
+                ComponentTransition(transition).setAlpha(view: toolbarView, alpha: 1.0)
             }
-        } else if let toolbarNode = self.toolbarNode {
-            self.toolbarNode = nil
-            transition.updateAlpha(node: toolbarNode, alpha: 0.0, completion: { [weak toolbarNode] _ in
-                toolbarNode?.removeFromSupernode()
-            })
+        } else if let toolbar = self.toolbar {
+            self.toolbar = nil
+            if let toolbarView = toolbar.view {
+                ComponentTransition(transition).setAlpha(view: toolbarView, alpha: 0.0, completion: { [weak toolbarView] _ in
+                    toolbarView?.removeFromSuperview()
+                })
+            }
         }
 
         // MARK: Swiftgram
         if sgShouldDisplayBottomFolders && sgFoldersSize.height > 0.0 {
             insets.bottom += sgFoldersSize.height + 16.0 + 8.0
         }
+        //
         
         var childrenLayout = layout
         childrenLayout.intrinsicInsets = UIEdgeInsets(top: visualNavigationHeight, left: childrenLayout.intrinsicInsets.left, bottom: childrenLayout.intrinsicInsets.bottom, right: childrenLayout.intrinsicInsets.right)
@@ -1964,12 +2107,12 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         // MARK: Swiftgram
         if let sgFoldersView = self.sgFoldersView.view as? HeaderPanelContainerComponent.View {
             if sgShouldDisplayBottomFolders && sgFoldersSize.height > 0.0 {
+                sgFoldersView.layer.removeAnimation(forKey: "opacity")
+                sgFoldersView.alpha = 1.0
                 if sgFoldersView.superview == nil {
                     self.view.addSubview(sgFoldersView)
                     if transition.isAnimated {
                         sgFoldersView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.23)
-                    } else {
-                        sgFoldersView.alpha = 1.0
                     }
                 }
                 
@@ -1989,8 +2132,10 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                 // TODO(swiftgram):
                 sgComponentTransition.setFrame(view: sgFoldersView, frame: CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - bottomInset - sgFoldersSize.height - 16.0), size: sgFoldersSize))
             } else {
-                sgFoldersView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2, removeOnCompletion: false, completion: { [weak sgFoldersView] _ in
-                    sgFoldersView?.removeFromSuperview()
+                sgFoldersView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2, removeOnCompletion: false, completion: { [weak sgFoldersView] completed in
+                    if completed {
+                        sgFoldersView?.removeFromSuperview()
+                    }
                 })
             }
         }
@@ -2010,7 +2155,21 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             //filter.insert(.excludeRecent)
         }
         
-        let contentNode = ChatListSearchContainerNode(context: self.context, animationCache: self.animationCache, animationRenderer: self.animationRenderer, filter: filter, requestPeerType: nil, location: effectiveLocation, displaySearchFilters: displaySearchFilters, hasDownloads: hasDownloads, initialFilter: initialFilter, openPeer: { [weak self] peer, _, threadId, dismissSearch in
+        var folder: (Int32, String)?
+        if let folders = self.controller?.tabContainerData?.0 {
+            switch self.effectiveContainerNode.currentItemFilter {
+            case .all:
+                break
+            case let .filter(id):
+                if let value = folders.first(where: { $0.id == .filter(id) }) {
+                    if case let .filter(_, text, _) = value {
+                        folder = (id, text.text)
+                    }
+                }
+            }
+        }
+        
+        let contentNode = ChatListSearchContainerNode(context: self.context, animationCache: self.animationCache, animationRenderer: self.animationRenderer, filter: filter, requestPeerType: nil, location: effectiveLocation, folder: folder, displaySearchFilters: displaySearchFilters, hasDownloads: hasDownloads, initialFilter: initialFilter, openPeer: { [weak self] peer, _, threadId, dismissSearch in
             self?.requestOpenPeerFromSearch?(peer, threadId, dismissSearch)
         }, openDisabledPeer: { _, _, _ in
         }, openRecentPeerOptions: { [weak self] peer in
@@ -2032,6 +2191,9 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
         })
         contentNode.dismissSearch = { [weak self] in
             self?.dismissSearch?()
+        }
+        contentNode.dismissSearchImmediately = { [weak self] in
+            self?.controller?.deactivateSearch(animated: false)
         }
         contentNode.openAdInfo = { [weak self] node, adPeer in
             self?.controller?.openAdInfo(node: node, adPeer: adPeer)
@@ -2082,7 +2244,7 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
             self.mainContainerNode.accessibilityElementsHidden = false
             self.inlineStackContainerNode?.accessibilityElementsHidden = false
             
-            return { [weak self, weak placeholderNode] in
+            return { [weak self, weak placeholderNode, searchDisplayController] in
                 guard let self, let (layout, _, _, cleanNavigationBarHeight, _) = self.containerLayout else {
                     return
                 }
@@ -2321,6 +2483,8 @@ final class ChatListControllerNode: ASDisplayNode, ASGestureRecognizerDelegate {
                 inlineStackContainerNode.setPeerThreadHidden = self.mainContainerNode.setPeerThreadHidden
                 inlineStackContainerNode.peerSelected = self.mainContainerNode.peerSelected
                 inlineStackContainerNode.groupSelected = self.mainContainerNode.groupSelected
+                inlineStackContainerNode.openCommunity = self.mainContainerNode.openCommunity
+                inlineStackContainerNode.ungroupCommunity = self.mainContainerNode.ungroupCommunity
                 inlineStackContainerNode.updatePeerGrouping = self.mainContainerNode.updatePeerGrouping
                 
                 inlineStackContainerNode.contentOffsetChanged = { [weak self] offset, listView in

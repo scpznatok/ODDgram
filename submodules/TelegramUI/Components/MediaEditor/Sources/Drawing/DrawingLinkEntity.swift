@@ -3,7 +3,6 @@ import UIKit
 import Display
 import AccountContext
 import TextFormat
-import Postbox
 import TelegramCore
 
 public final class DrawingLinkEntity: DrawingEntity, Codable {
@@ -121,7 +120,7 @@ public final class DrawingLinkEntity: DrawingEntity, Codable {
         self.style = try container.decode(Style.self, forKey: .style)
         
         if let webpageData = try container.decodeIfPresent(Data.self, forKey: .webpage) {
-            self.webpage = PostboxDecoder(buffer: MemoryBuffer(data: webpageData)).decodeRootObject() as? TelegramMediaWebpage
+            self.webpage = EnginePostboxDecoder(buffer: EngineMemoryBuffer(data: webpageData)).decodeRootObject() as? TelegramMediaWebpage
         } else {
             self.webpage = nil
         }
@@ -157,7 +156,7 @@ public final class DrawingLinkEntity: DrawingEntity, Codable {
         try container.encodeIfPresent(self.largeMedia, forKey: .largeMedia)
         
         if let webpage = self.webpage {
-            let encoder = PostboxEncoder()
+            let encoder = EnginePostboxEncoder()
             encoder.encodeRootObject(webpage)
             let webpageData = encoder.makeData()
             try container.encode(webpageData, forKey: .webpage)
@@ -179,7 +178,7 @@ public final class DrawingLinkEntity: DrawingEntity, Codable {
             let imagePath = "\(self.uuid)_white.png"
             let fullImagePath = fullEntityMediaPath(imagePath)
             if let imageData = image.pngData() {
-                try? FileManager.default.createDirectory(atPath: entitiesPath(), withIntermediateDirectories: true)
+                ensureEntitiesDirectory()
                 try? imageData.write(to: URL(fileURLWithPath: fullImagePath))
                 try container.encodeIfPresent(imagePath, forKey: .whiteImage)
             }
@@ -189,7 +188,7 @@ public final class DrawingLinkEntity: DrawingEntity, Codable {
             let imagePath = "\(self.uuid)black.png"
             let fullImagePath = fullEntityMediaPath(imagePath)
             if let imageData = image.pngData() {
-                try? FileManager.default.createDirectory(atPath: entitiesPath(), withIntermediateDirectories: true)
+                ensureEntitiesDirectory()
                 try? imageData.write(to: URL(fileURLWithPath: fullImagePath))
                 try container.encodeIfPresent(imagePath, forKey: .blackImage)
             }

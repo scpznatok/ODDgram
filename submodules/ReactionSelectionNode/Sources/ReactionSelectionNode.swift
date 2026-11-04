@@ -1,8 +1,8 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import AppBundle
@@ -198,11 +198,11 @@ public final class ReactionNode: ASDisplayNode, ReactionItemNode {
         self.selectionView = UIView()
         self.selectionView?.backgroundColor = theme.chat.inputMediaPanel.panelContentControlVibrantOverlayColor.mixedWith(theme.contextMenu.backgroundColor.withMultipliedAlpha(0.4), alpha: 0.5)
         
-        self.staticAnimationNode = self.useDirectRendering ? DirectAnimatedStickerNode() : DefaultAnimatedStickerNodeImpl()
+        self.staticAnimationNode = self.useDirectRendering ? DirectAnimatedStickerNode(lottieSettings: self.context.lottieRenderingSettings) : DefaultAnimatedStickerNodeImpl(lottieSettings: self.context.lottieRenderingSettings)
     
         if hasAppearAnimation {
             self.staticAnimationNode.isHidden = true
-            self.animateInAnimationNode = self.useDirectRendering ? DirectAnimatedStickerNode() : DefaultAnimatedStickerNodeImpl()
+            self.animateInAnimationNode = self.useDirectRendering ? DirectAnimatedStickerNode(lottieSettings: self.context.lottieRenderingSettings) : DefaultAnimatedStickerNodeImpl(lottieSettings: self.context.lottieRenderingSettings)
         }
         
         super.init()
@@ -239,11 +239,11 @@ public final class ReactionNode: ASDisplayNode, ReactionItemNode {
             strongSelf.animateInAnimationNode = nil
         }
         
-        self.fetchStickerDisposable = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .sticker, reference: .standalone(resource: item.appearAnimation._parse().resource)).start()
-        self.fetchStickerDisposable = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .sticker, reference: .standalone(resource: item.stillAnimation._parse().resource)).start()
-        self.fetchStickerDisposable = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .sticker, reference: .standalone(resource: item.listAnimation._parse().resource)).start()
+        self.fetchStickerDisposable = context.engine.resources.fetch(reference: .standalone(resource: item.appearAnimation._parse().resource), userLocation: .other, userContentType: .sticker).start()
+        self.fetchStickerDisposable = context.engine.resources.fetch(reference: .standalone(resource: item.stillAnimation._parse().resource), userLocation: .other, userContentType: .sticker).start()
+        self.fetchStickerDisposable = context.engine.resources.fetch(reference: .standalone(resource: item.listAnimation._parse().resource), userLocation: .other, userContentType: .sticker).start()
         if let applicationAnimation = item.applicationAnimation {
-            self.fetchFullAnimationDisposable = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .sticker, reference: .standalone(resource: applicationAnimation._parse().resource)).start()
+            self.fetchFullAnimationDisposable = context.engine.resources.fetch(reference: .standalone(resource: applicationAnimation._parse().resource), userLocation: .other, userContentType: .sticker).start()
         }
         
         if self.isLocked {
@@ -344,7 +344,7 @@ public final class ReactionNode: ASDisplayNode, ReactionItemNode {
         if isExpanded && !self.hasAppearAnimation {
             self.staticAnimationNode.play(firstFrame: false, fromIndex: 0)
         } else if isExpanded, self.animationNode == nil {
-            let animationNode: AnimatedStickerNode = self.useDirectRendering ? DirectAnimatedStickerNode() : DefaultAnimatedStickerNodeImpl()
+            let animationNode: AnimatedStickerNode = self.useDirectRendering ? DirectAnimatedStickerNode(lottieSettings: self.context.lottieRenderingSettings) : DefaultAnimatedStickerNodeImpl(lottieSettings: self.context.lottieRenderingSettings)
             animationNode.automaticallyLoadFirstFrame = true
             self.animationNode = animationNode
             self.addSubnode(animationNode)
@@ -360,10 +360,10 @@ public final class ReactionNode: ASDisplayNode, ReactionItemNode {
             if largeExpanded {
                 let source = AnimatedStickerResourceSource(account: self.context.account, resource: self.item.largeListAnimation._parse().resource, isVideo: self.item.largeListAnimation.isVideoSticker || self.item.largeListAnimation.isVideoEmoji || self.item.largeListAnimation.isStaticSticker || self.item.largeListAnimation.isStaticEmoji)
                 
-                animationNode.setup(source: source, width: Int(expandedAnimationFrame.width * 2.0), height: Int(expandedAnimationFrame.height * 2.0), playbackMode: .once, mode: .direct(cachePathPrefix: self.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(self.item.largeListAnimation._parse().resource.id)))
+                animationNode.setup(source: source, width: Int(expandedAnimationFrame.width * 2.0), height: Int(expandedAnimationFrame.height * 2.0), playbackMode: .once, mode: .direct(cachePathPrefix: self.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(self.item.largeListAnimation._parse().resource.id))))
             } else {
                 let source = AnimatedStickerResourceSource(account: self.context.account, resource: self.item.listAnimation._parse().resource, isVideo: self.item.listAnimation.isVideoSticker || self.item.listAnimation.isVideoEmoji || self.item.listAnimation.isVideoSticker || self.item.listAnimation.isStaticSticker || self.item.listAnimation.isStaticEmoji)
-                animationNode.setup(source: source, width: Int(expandedAnimationFrame.width * 2.0), height: Int(expandedAnimationFrame.height * 2.0), playbackMode: .once, mode: .direct(cachePathPrefix: self.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(self.item.listAnimation._parse().resource.id)))
+                animationNode.setup(source: source, width: Int(expandedAnimationFrame.width * 2.0), height: Int(expandedAnimationFrame.height * 2.0), playbackMode: .once, mode: .direct(cachePathPrefix: self.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(self.item.listAnimation._parse().resource.id))))
             }
             animationNode.frame = expandedAnimationFrame
             animationNode.updateLayout(size: expandedAnimationFrame.size)
@@ -443,11 +443,11 @@ public final class ReactionNode: ASDisplayNode, ReactionItemNode {
         if self.animationNode == nil {
             if isPreviewing {
                 if self.stillAnimationNode == nil {
-                    let stillAnimationNode: AnimatedStickerNode = self.useDirectRendering ? DirectAnimatedStickerNode() : DefaultAnimatedStickerNodeImpl()
+                    let stillAnimationNode: AnimatedStickerNode = self.useDirectRendering ? DirectAnimatedStickerNode(lottieSettings: self.context.lottieRenderingSettings) : DefaultAnimatedStickerNodeImpl(lottieSettings: self.context.lottieRenderingSettings)
                     self.stillAnimationNode = stillAnimationNode
                     self.addSubnode(stillAnimationNode)
                     
-                    stillAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.stillAnimation._parse().resource, isVideo: self.item.stillAnimation.isVideoEmoji || self.item.stillAnimation.isVideoSticker || self.item.stillAnimation.isStaticSticker || self.item.stillAnimation.isStaticEmoji), width: Int(animationDisplaySize.width * 2.0), height: Int(animationDisplaySize.height * 2.0), playbackMode: self.loopIdle ? .loop : .still(.start), mode: .direct(cachePathPrefix: self.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(self.item.stillAnimation._parse().resource.id)))
+                    stillAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.stillAnimation._parse().resource, isVideo: self.item.stillAnimation.isVideoEmoji || self.item.stillAnimation.isVideoSticker || self.item.stillAnimation.isStaticSticker || self.item.stillAnimation.isStaticEmoji), width: Int(animationDisplaySize.width * 2.0), height: Int(animationDisplaySize.height * 2.0), playbackMode: self.loopIdle ? .loop : .still(.start), mode: .direct(cachePathPrefix: self.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(self.item.stillAnimation._parse().resource.id))))
                     stillAnimationNode.position = animationFrame.center
                     stillAnimationNode.bounds = CGRect(origin: CGPoint(), size: animationFrame.size)
                     stillAnimationNode.updateLayout(size: animationFrame.size)
@@ -532,9 +532,9 @@ public final class ReactionNode: ASDisplayNode, ReactionItemNode {
                 
                 self.staticAnimationNode.automaticallyLoadFirstFrame = true
                 if !self.hasAppearAnimation {
-                    self.staticAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.largeListAnimation._parse().resource, isVideo: self.item.largeListAnimation.isVideoEmoji || self.item.largeListAnimation.isVideoSticker || self.item.largeListAnimation.isStaticSticker || self.item.largeListAnimation.isStaticEmoji), width: Int(expandedAnimationFrame.width * 2.0), height: Int(expandedAnimationFrame.height * 2.0), playbackMode: .still(.start), mode: .direct(cachePathPrefix: self.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(self.item.largeListAnimation._parse().resource.id)))
+                    self.staticAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.largeListAnimation._parse().resource, isVideo: self.item.largeListAnimation.isVideoEmoji || self.item.largeListAnimation.isVideoSticker || self.item.largeListAnimation.isStaticSticker || self.item.largeListAnimation.isStaticEmoji), width: Int(expandedAnimationFrame.width * 2.0), height: Int(expandedAnimationFrame.height * 2.0), playbackMode: .still(.start), mode: .direct(cachePathPrefix: self.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(self.item.largeListAnimation._parse().resource.id))))
                 } else {
-                    self.staticAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.stillAnimation._parse().resource, isVideo: self.item.stillAnimation.isVideoEmoji || self.item.stillAnimation.isVideoSticker || self.item.stillAnimation.isStaticSticker || self.item.stillAnimation.isStaticEmoji), width: Int(animationDisplaySize.width * 2.0), height: Int(animationDisplaySize.height * 2.0), playbackMode: .still(.start), mode: .direct(cachePathPrefix: self.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(self.item.stillAnimation._parse().resource.id)))
+                    self.staticAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.stillAnimation._parse().resource, isVideo: self.item.stillAnimation.isVideoEmoji || self.item.stillAnimation.isVideoSticker || self.item.stillAnimation.isStaticSticker || self.item.stillAnimation.isStaticEmoji), width: Int(animationDisplaySize.width * 2.0), height: Int(animationDisplaySize.height * 2.0), playbackMode: .still(.start), mode: .direct(cachePathPrefix: self.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(self.item.stillAnimation._parse().resource.id))))
                 }
                 self.staticAnimationNode.position = animationFrame.center
                 self.staticAnimationNode.bounds = CGRect(origin: CGPoint(), size: animationFrame.size)
@@ -547,7 +547,7 @@ public final class ReactionNode: ASDisplayNode, ReactionItemNode {
                 }
                 
                 if let animateInAnimationNode = self.animateInAnimationNode {
-                    animateInAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.appearAnimation._parse().resource, isVideo: self.item.appearAnimation.isVideoEmoji || self.item.appearAnimation.isVideoSticker || self.item.appearAnimation.isStaticSticker || self.item.appearAnimation.isStaticEmoji), width: Int(animationDisplaySize.width * 2.0), height: Int(animationDisplaySize.height * 2.0), playbackMode: .once, mode: .direct(cachePathPrefix: self.context.account.postbox.mediaBox.shortLivedResourceCachePathPrefix(self.item.appearAnimation._parse().resource.id)))
+                    animateInAnimationNode.setup(source: AnimatedStickerResourceSource(account: self.context.account, resource: self.item.appearAnimation._parse().resource, isVideo: self.item.appearAnimation.isVideoEmoji || self.item.appearAnimation.isVideoSticker || self.item.appearAnimation.isStaticSticker || self.item.appearAnimation.isStaticEmoji), width: Int(animationDisplaySize.width * 2.0), height: Int(animationDisplaySize.height * 2.0), playbackMode: .once, mode: .direct(cachePathPrefix: self.context.engine.resources.shortLivedResourceCachePathPrefix(id: EngineMediaResource.Id(self.item.appearAnimation._parse().resource.id))))
                     animateInAnimationNode.position = animationFrame.center
                     animateInAnimationNode.bounds = CGRect(origin: CGPoint(), size: animationFrame.size)
                     animateInAnimationNode.updateLayout(size: animationFrame.size)

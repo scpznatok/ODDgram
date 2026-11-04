@@ -13,7 +13,6 @@ swift_library(
         "//submodules/SSignalKit/SwiftSignalKit",
         "//submodules/Display",
         "//submodules/TelegramCore",
-        "//submodules/Postbox",
         "//submodules/TelegramPresentationData",
         "//submodules/AccountContext",
         "//submodules/ComponentFlow",
@@ -24,6 +23,9 @@ swift_library(
         "//submodules/TelegramUI/Components/EmojiTextAttachmentView",
         "//submodules/Utils/LokiRng",
         "//submodules/TextFormat",
+        "//submodules/AvatarNode",
+        "//submodules/Components/BundleIconComponent",
+        "//submodules/TelegramUI/Components/PeerInfo/PeerInfoPaneNode",
     ],
     visibility = [
         "//visibility:public",

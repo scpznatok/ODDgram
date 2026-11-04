@@ -147,8 +147,11 @@ const NSTimeInterval TGVideoEditMaximumTelescopeDuration = 60;
     return adjustments;
 }
 
-
 + (instancetype)editAdjustmentsWithPhotoEditorValues:(PGPhotoEditorValues *)values preset:(TGMediaVideoConversionPreset)preset {
+    return [self editAdjustmentsWithPhotoEditorValues:values preset:preset bounce:false sendAsGif:true];
+}
+
++ (instancetype)editAdjustmentsWithPhotoEditorValues:(PGPhotoEditorValues *)values preset:(TGMediaVideoConversionPreset)preset bounce:(bool)bounce sendAsGif:(bool)sendAsGif {
     TGVideoEditAdjustments *adjustments = [[[self class] alloc] init];
     adjustments->_originalSize = values.originalSize;
     CGRect cropRect = values.cropRect;
@@ -161,9 +164,11 @@ const NSTimeInterval TGVideoEditMaximumTelescopeDuration = 60;
     adjustments->_cropLockedAspectRatio = values.cropLockedAspectRatio;
     adjustments->_cropMirrored = values.cropMirrored;
     adjustments->_paintingData = [values.paintingData dataForAnimation];
-    adjustments->_sendAsGif = true;
+    adjustments->_sendAsGif = sendAsGif;
     adjustments->_sendAsTelescope = values.sendAsTelescope;
     adjustments->_preset = preset;
+    adjustments->_bounce = bounce;
+    adjustments->_toolValues = [values toolValues];
     
     return adjustments;
 }
@@ -445,7 +450,7 @@ const NSTimeInterval TGVideoEditMaximumTelescopeDuration = 60;
 
 - (bool)isDefaultValuesForGif
 {
-    return ![self cropAppliedForAvatar:false] && ![self toolsApplied] && ![self hasPainting];
+    return ![self cropAppliedForAvatar:false] && ![self toolsApplied] && ![self hasPainting] && !_sendAsTelescope;
 }
 
 - (bool)isCropEqualWith:(id<TGMediaEditAdjustments>)adjusments

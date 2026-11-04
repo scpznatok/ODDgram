@@ -11,8 +11,8 @@ swift_library(
     ],
     deps = [
         "//submodules/AsyncDisplayKit",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/Display",
-        "//submodules/Postbox",
         "//submodules/TelegramCore",
         "//submodules/SSignalKit/SwiftSignalKit",
         "//submodules/TelegramPresentationData",
@@ -32,6 +32,9 @@ swift_library(
         "//submodules/LegacyMediaPickerUI",
         "//submodules/TelegramUI/Components/Settings/SettingsThemeWallpaperNode",
         "//submodules/TelegramUI/Components/PremiumLockButtonSubtitleComponent",
+        "//submodules/TelegramUI/Components/ButtonComponent",
+        "//submodules/TelegramUI/Components/GlassBackgroundComponent",
+        "//submodules/TelegramUI/Components/GlassControls",
     ],
     visibility = [
         "//visibility:public",

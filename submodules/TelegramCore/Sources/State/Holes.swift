@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 struct AccumulatedPeers {
@@ -92,27 +92,29 @@ struct AccumulatedPeers {
 
 func messageFilterForTagMask(_ tagMask: MessageTags) -> Api.MessagesFilter? {
     if tagMask == .photoOrVideo {
-        return Api.MessagesFilter.inputMessagesFilterPhotoVideo
+        return .inputMessagesFilterPhotoVideo
     } else if tagMask == .photo {
-        return Api.MessagesFilter.inputMessagesFilterPhotos
+        return .inputMessagesFilterPhotos
     } else if tagMask == .video {
-        return Api.MessagesFilter.inputMessagesFilterVideo
+        return .inputMessagesFilterVideo
     } else if tagMask == .file {
-        return Api.MessagesFilter.inputMessagesFilterDocument
+        return .inputMessagesFilterDocument
     } else if tagMask == .music {
-        return Api.MessagesFilter.inputMessagesFilterMusic
+        return .inputMessagesFilterMusic
     } else if tagMask == .webPage {
-        return Api.MessagesFilter.inputMessagesFilterUrl
+        return .inputMessagesFilterUrl
     } else if tagMask == .voiceOrInstantVideo {
-        return Api.MessagesFilter.inputMessagesFilterRoundVoice
+        return .inputMessagesFilterRoundVoice
     } else if tagMask == .gif {
-        return Api.MessagesFilter.inputMessagesFilterGif
+        return .inputMessagesFilterGif
     } else if tagMask == .pinned {
-        return Api.MessagesFilter.inputMessagesFilterPinned
+        return .inputMessagesFilterPinned
     } else if tagMask == .voice {
-        return Api.MessagesFilter.inputMessagesFilterVoice
+        return .inputMessagesFilterVoice
     } else if tagMask == .roundVideo {
-        return Api.MessagesFilter.inputMessagesFilterRoundVideo
+        return .inputMessagesFilterRoundVideo
+    } else if tagMask == .polls {
+        return .inputMessagesFilterPoll
     } else {
         return nil
     }
@@ -202,7 +204,9 @@ func withResolvedAssociatedMessages<T>(postbox: Postbox, source: FetchMessageHis
             storedIds.insert(id)
             for attribute in message.attributes {
                 if let attribute = attribute as? ReplyMessageAttribute {
-                    referencedReplyIds.add(sourceId: id, targetId: attribute.messageId)
+                    if id.namespace != Namespaces.Message.EphemeralLocal && attribute.messageId.namespace != Namespaces.Message.EphemeralLocal {
+                        referencedReplyIds.add(sourceId: id, targetId: attribute.messageId)
+                    }
                 } else {
                     referencedGeneralIds.formUnion(attribute.associatedMessageIds)
                 }
@@ -734,6 +738,70 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                     }
                     
                     request = source.request(Api.functions.messages.getUnreadReactions(flags: flags, peer: inputPeer, topMsgId: topMsgId, savedPeerId: savedPeerId, offsetId: offsetId, addOffset: addOffset, limit: Int32(selectedLimit), maxId: maxId, minId: minId))
+                } else if tag == .unseenPollVote {
+                    let offsetId: Int32
+                    let addOffset: Int32
+                    let selectedLimit = count
+                    let maxId: Int32
+                    let minId: Int32
+                    
+                    switch direction {
+                    case let .range(start, end):
+                        if start.id <= end.id {
+                            offsetId = start.id <= 1 ? 1 : (start.id - 1)
+                            addOffset = Int32(-selectedLimit)
+                            maxId = end.id
+                            minId = start.id - 1
+                            
+                            let rangeStartId = start.id
+                            let rangeEndId = min(end.id, Int32.max - 1)
+                            if rangeStartId <= rangeEndId {
+                                minMaxRange = rangeStartId ... rangeEndId
+                            } else {
+                                minMaxRange = rangeStartId ... rangeStartId
+                                assertionFailure()
+                            }
+                        } else {
+                            offsetId = start.id == Int32.max ? start.id : (start.id + 1)
+                            addOffset = 0
+                            maxId = start.id == Int32.max ? start.id : (start.id + 1)
+                            minId = end.id
+                            
+                            let rangeStartId = end.id
+                            let rangeEndId = min(start.id, Int32.max - 1)
+                            if rangeStartId <= rangeEndId {
+                                minMaxRange = rangeStartId ... rangeEndId
+                            } else {
+                                minMaxRange = rangeStartId ... rangeStartId
+                                assertionFailure()
+                            }
+                        }
+                    case let .aroundId(id):
+                        offsetId = id.id
+                        addOffset = Int32(-selectedLimit / 2)
+                        maxId = Int32.max
+                        minId = 1
+                        
+                        minMaxRange = 1 ... Int32.max - 1
+                    }
+                    
+                    var flags: Int32 = 0
+                    var topMsgId: Int32?
+                    if let threadId = peerInput.requestThreadId(accountPeerId: accountPeerId, peer: peer) {
+                        flags |= (1 << 0)
+                        topMsgId = Int32(clamping: threadId)
+                    }
+                    var savedPeerId: Api.InputPeer?
+                    if let subPeerId = peerInput.requestSubPeerId(accountPeerId: accountPeerId, peer: peer), let subPeer = subPeer, subPeer.id == subPeerId {
+                        flags |= (1 << 1)
+                        if let inputPeer = apiInputPeer(subPeer) {
+                            flags |= 1 << 2
+                            savedPeerId = inputPeer
+                        }
+                    }
+                    let _ = savedPeerId
+                    
+                    request = source.request(Api.functions.messages.getUnreadPollVotes(flags: flags, peer: inputPeer, topMsgId: topMsgId, offsetId: offsetId, addOffset: addOffset, limit: Int32(selectedLimit), maxId: maxId, minId: minId))
                 } else if tag == .liveLocation {
                     let selectedLimit = count
                     
@@ -924,17 +992,24 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                     let chats: [Api.Chat]
                     let users: [Api.User]
                     var channelPts: Int32?
+                    var serverCount: Int32?
+                    var serverOffsetIdOffset: Int32?
+                    var serverInexact = false
                     switch result {
                         case let .messages(messagesData):
                             let (apiMessages, _, apiChats, apiUsers) = (messagesData.messages, messagesData.topics, messagesData.chats, messagesData.users)
                             messages = apiMessages
                             chats = apiChats
                             users = apiUsers
+                            serverCount = Int32(clamping: apiMessages.count)
                         case let .messagesSlice(messagesSliceData):
                             let (apiMessages, apiChats, apiUsers) = (messagesSliceData.messages, messagesSliceData.chats, messagesSliceData.users)
                             messages = apiMessages
                             chats = apiChats
                             users = apiUsers
+                            serverCount = messagesSliceData.count
+                            serverOffsetIdOffset = messagesSliceData.offsetIdOffset
+                            serverInexact = (messagesSliceData.flags & (1 << 1)) != 0
                         case let .channelMessages(channelMessagesData):
                             let (pts, apiMessages, apiTopics, apiChats, apiUsers) = (channelMessagesData.pts, channelMessagesData.messages, channelMessagesData.topics, channelMessagesData.chats, channelMessagesData.users)
                             messages = apiMessages
@@ -942,6 +1017,9 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                             chats = apiChats
                             users = apiUsers
                             channelPts = pts
+                            serverCount = channelMessagesData.count
+                            serverOffsetIdOffset = channelMessagesData.offsetIdOffset
+                            serverInexact = (channelMessagesData.flags & (1 << 1)) != 0
                         case .messagesNotModified:
                             messages = []
                             chats = []
@@ -964,9 +1042,35 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                         }
                     }
                     
-                    return withResolvedAssociatedMessages(postbox: postbox, source: source, accountPeerId: accountPeerId, parsedPeers: parsedPeers, storeMessages: storeMessages, resolveThreads: true, { transaction, additionalParsedPeers, additionalMessages -> FetchMessageHistoryHoleResult? in
+                    /// The version each fetched message had once the first transaction stored it; the
+                    /// follow-up re-adds a message only while it is still that version.
+                    final class StoredVersions {
+                        var byId: [MessageId: UInt32] = [:]
+                    }
+                    let storedVersions = StoredVersions()
+                    
+                    /// Stores the fetched messages, closes the hole and reports what was filled.
+                    let storeAndCloseHole: (Transaction) -> FetchMessageHistoryHoleResult? = { transaction in
                         let _ = transaction.addMessages(storeMessages, location: .Random)
-                        let _ = transaction.addMessages(additionalMessages, location: .Random)
+                        var storedIds = Set<MessageId>()
+                        for message in storeMessages {
+                            if case let .Id(id) = message.id {
+                                storedIds.insert(id)
+                            }
+                        }
+                        // Only a message that references something outside this fetch can be re-added
+                        // later; `getMessage` is a full render, so it runs for those alone.
+                        for message in storeMessages {
+                            guard case let .Id(id) = message.id else {
+                                continue
+                            }
+                            let referencesOutside = message.attributes.contains(where: { attribute in
+                                attribute.associatedMessageIds.contains(where: { !storedIds.contains($0) })
+                            })
+                            if referencesOutside, let stored = transaction.getMessage(id) {
+                                storedVersions.byId[id] = stored.stableVersion
+                            }
+                        }
                         var filledRange: ClosedRange<MessageId.Id>
                         var strictFilledIndices: IndexSet
                         let ids = storeMessages.compactMap { message -> MessageId.Id? in
@@ -1033,7 +1137,14 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                             let messageRange = ids.min()! ... ids.max()!
                             switch direction {
                             case let .aroundId(aroundId):
-                                filledRange = min(aroundId.id, messageRange.lowerBound) ... max(aroundId.id, messageRange.upperBound)
+                                // The server's position facts behind aroundHoleFillRange were measured for
+                                // messages.getHistory on a channel (no thread, the everywhere space, the Cloud
+                                // namespace); every other request shape keeps the fetched span until traced.
+                                var inferredRange: ClosedRange<MessageId.Id>?
+                                if case let .direct(_, directThreadId) = peerInput, directThreadId == nil, case .everywhere = space, namespace == Namespaces.Message.Cloud {
+                                    inferredRange = aroundHoleFillRange(anchorId: aroundId.id, ids: ids, totalCount: serverCount, offsetIdOffset: serverOffsetIdOffset, inexact: serverInexact)
+                                }
+                                filledRange = inferredRange ?? (min(aroundId.id, messageRange.lowerBound) ... max(aroundId.id, messageRange.upperBound))
                                 strictFilledIndices = IndexSet(integersIn: Int(min(aroundId.id, messageRange.lowerBound)) ... Int(max(aroundId.id, messageRange.upperBound)))
                                 var shouldFillAround = false
                                 if peerInput.requestThreadId(accountPeerId: accountPeerId, peer: peer) != nil || peerInput.requestSubPeerId(accountPeerId: accountPeerId, peer: peer) != nil {
@@ -1069,7 +1180,6 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                             }
                         }
                         
-                        
                         switch peerInput {
                         case let .direct(peerId, threadId):
                             transaction.removeHole(peerId: peerId, threadId: threadId, namespace: namespace, space: space, range: filledRange)
@@ -1077,17 +1187,86 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                             break
                         }
                         
-                        updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers.union(with: additionalParsedPeers))
+                        // A fill that reached the top of a channel's history knows that history is
+                        // contiguous up to its newest id: the poll's next too-long answer seeds its gap
+                        // hole from this value, and a stale one re-covered a range the fill had closed
+                        // (measured 2026-10-13). Only an existing state is advanced; a state is never
+                        // made up here, because its pts is the poll's to set.
+                        if case let .direct(peerId, threadId) = peerInput, threadId == nil, case .everywhere = space, namespace == Namespaces.Message.Cloud, peerId.namespace == Namespaces.Peer.CloudChannel, filledRange.upperBound == Int32.max - 1, let maxId = ids.max() {
+                            if let current = transaction.getPeerChatState(peerId) as? ChannelState, (current.synchronizedUntilMessageId ?? 0) < maxId {
+                                transaction.setPeerChatState(peerId, state: current.withUpdatedSynchronizedUntilMessageId(maxId))
+                            }
+                        }
                         
-                        let result = FetchMessageHistoryHoleResult(
+                        updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
+                        
+                        return FetchMessageHistoryHoleResult(
                             removedIndices: IndexSet(integersIn: Int(filledRange.lowerBound) ... Int(filledRange.upperBound)),
                             strictRemovedIndices: strictFilledIndices,
                             actualPeerId: storeMessages.first?.id.peerId,
                             actualThreadId: storeMessages.first?.threadId,
                             ids: fullIds
                         )
-                        return result
-                    })
+                    }
+                    
+                    /// Stores what the fetched messages reference (reply targets, custom emoji files,
+                    /// stories) and re-adds the messages whose reply targets just arrived, so a view
+                    /// re-renders them with the target attached (a view watches its own chat only).
+                    let storeReferencedData: (Transaction, AccumulatedPeers, [StoreMessage]) -> Void = { transaction, additionalParsedPeers, additionalMessages in
+                        let _ = transaction.addMessages(additionalMessages, location: .Random)
+                        updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: additionalParsedPeers)
+                        
+                        var additionalIds = Set<MessageId>()
+                        for message in additionalMessages {
+                            if case let .Id(id) = message.id {
+                                additionalIds.insert(id)
+                            }
+                        }
+                        if additionalIds.isEmpty {
+                            return
+                        }
+                        let referencingMessages = storeMessages.filter { message in
+                            guard case let .Id(id) = message.id, let version = storedVersions.byId[id] else {
+                                return false
+                            }
+                            let referencesAdditional = message.attributes.contains(where: { attribute in
+                                attribute.associatedMessageIds.contains(where: { additionalIds.contains($0) })
+                            })
+                            if !referencesAdditional {
+                                return false
+                            }
+                            guard let current = transaction.getMessage(id), current.stableVersion == version else {
+                                return false
+                            }
+                            return true
+                        }
+                        if !referencingMessages.isEmpty {
+                            let _ = transaction.addMessages(referencingMessages, location: .Random)
+                        }
+                    }
+                    
+                    if peer.isForumOrMonoForum {
+                        // Topic headers read thread infos at render time: a forum resolves before it stores.
+                        return withResolvedAssociatedMessages(postbox: postbox, source: source, accountPeerId: accountPeerId, parsedPeers: parsedPeers, storeMessages: storeMessages, resolveThreads: true, { transaction, additionalParsedPeers, additionalMessages -> FetchMessageHistoryHoleResult? in
+                            let result = storeAndCloseHole(transaction)
+                            storeReferencedData(transaction, additionalParsedPeers, additionalMessages)
+                            return result
+                        })
+                    } else {
+                        // The view loads after one round trip; what the messages reference follows.
+                        return postbox.transaction { transaction -> FetchMessageHistoryHoleResult? in
+                            return storeAndCloseHole(transaction)
+                        }
+                        |> mapToSignal { result -> Signal<FetchMessageHistoryHoleResult?, NoError> in
+                            // Detached on purpose: ReplyThreadHistory disposes a fill as soon as the
+                            // thread's hole changes, which the first transaction just did, and what
+                            // the messages reference must still arrive.
+                            let _ = withResolvedAssociatedMessages(postbox: postbox, source: source, accountPeerId: accountPeerId, parsedPeers: parsedPeers, storeMessages: storeMessages, resolveThreads: false, { transaction, additionalParsedPeers, additionalMessages -> Void in
+                                storeReferencedData(transaction, additionalParsedPeers, additionalMessages)
+                            }).startStandalone()
+                            return .single(result)
+                        }
+                    }
                 }
                 |> switchToLatest
             }
@@ -1126,13 +1305,15 @@ func fetchChatListHole(postbox: Postbox, network: Network, accountPeerId: PeerId
         }
         return withResolvedAssociatedMessages(postbox: postbox, source: .network(network), accountPeerId: accountPeerId, parsedPeers: fetchedChats.peers, storeMessages: fetchedChats.storeMessages, resolveThreads: false, { transaction, additionalPeers, additionalMessages -> Void in
             updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: fetchedChats.peers.union(with: additionalPeers))
-            
+            _internal_applyFetchedChatInputStates(transaction: transaction, accountPeerId: accountPeerId, inputStates: fetchedChats.inputStates)
+
             for (threadMessageId, data) in fetchedChats.threadInfos {
                 if let entry = StoredMessageHistoryThreadInfo(data.data) {
                     transaction.setMessageHistoryThreadInfo(peerId: threadMessageId.peerId, threadId: threadMessageId.threadId, info: entry)
                 }
                 transaction.replaceMessageTagSummary(peerId: threadMessageId.peerId, threadId: threadMessageId.threadId, tagMask: .unseenPersonalMessage, namespace: Namespaces.Message.Cloud, customTag: nil, count: data.unreadMentionCount, maxId: data.topMessageId)
                 transaction.replaceMessageTagSummary(peerId: threadMessageId.peerId, threadId: threadMessageId.threadId, tagMask: .unseenReaction, namespace: Namespaces.Message.Cloud, customTag: nil, count: data.unreadReactionCount, maxId: data.topMessageId)
+                transaction.replaceMessageTagSummary(peerId: threadMessageId.peerId, threadId: threadMessageId.threadId, tagMask: .unseenPollVote, namespace: Namespaces.Message.Cloud, customTag: nil, count: data.unreadPollVoteCount, maxId: data.topMessageId)
             }
             
             transaction.updateCurrentPeerNotificationSettings(fetchedChats.notificationSettings)
@@ -1204,6 +1385,9 @@ func fetchChatListHole(postbox: Postbox, network: Network, accountPeerId: PeerId
             }
             for (peerId, summary) in fetchedChats.reactionTagSummaries {
                 transaction.replaceMessageTagSummary(peerId: peerId, threadId: nil, tagMask: .unseenReaction, namespace: Namespaces.Message.Cloud, customTag: nil, count: summary.count, maxId: summary.range.maxId)
+            }
+            for (peerId, summary) in fetchedChats.pollVoteTagSummaries {
+                transaction.replaceMessageTagSummary(peerId: peerId, threadId: nil, tagMask: .unseenPollVote, namespace: Namespaces.Message.Cloud, customTag: nil, count: summary.count, maxId: summary.range.maxId)
             }
             
             for (groupId, summary) in fetchedChats.folderSummaries {

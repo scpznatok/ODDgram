@@ -517,7 +517,7 @@
             strongSelf->_sendAsTelescope = baseAdjustments.sendAsTelescope;
             [strongSelf _mutePlayer:baseAdjustments.sendAsGif];
             
-            if (baseAdjustments.sendAsGif || ([strongSelf itemIsLivePhoto]))
+            if (baseAdjustments.sendAsGif)
                 [strongSelf setPlayButtonHidden:true animated:false];
             
             [strongSelf->_entitiesView setupWithEntitiesData:adjustments.paintingData.entitiesData];
@@ -1579,7 +1579,7 @@
                 [parentView addSubview:_tooltipContainerView];
                 
                 NSMutableArray *actions = [[NSMutableArray alloc] init];
-                NSString *text = [self itemIsLivePhoto] ? TGLocalized(@"MediaPicker.LivePhotoDescription") : TGLocalized(@"MediaPicker.VideoMuteDescription");
+                NSString *text = TGLocalized(@"MediaPicker.VideoMuteDescription");
                 [actions addObject:@{@"title":text}];
                 _tooltipContainerView.menuView.forceArrowOnTop = false;
                 _tooltipContainerView.menuView.multiline = true;

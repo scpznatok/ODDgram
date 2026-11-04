@@ -4,18 +4,17 @@ import AccountContext
 import Display
 import SwiftSignalKit
 import TelegramCore
-import Postbox
 import UIKit
 import OverlayStatusController
 import PresentationDataUtils
 
 extension ChatControllerImpl {    
-    func scrollToEndOfHistory() {
+    public func scrollToEndOfHistory() {
         let locationInput = ChatHistoryLocationInput(content: .Scroll(subject: MessageHistoryScrollToSubject(index: .upperBound, quote: nil), anchorIndex: .upperBound, sourceIndex: .lowerBound, scrollPosition: .top(0.0), animated: true, highlight: false, setupReply: false), id: 0)
         
         let historyView = preloadedChatHistoryViewForLocation(locationInput, context: self.context, chatLocation: self.chatLocation, subject: self.subject, chatLocationContextHolder: self.chatLocationContextHolder, fixedCombinedReadStates: nil, tag: nil, additionalData: [])
         let signal = historyView
-        |> mapToSignal { historyView -> Signal<(MessageIndex?, Bool), NoError> in
+        |> mapToSignal { historyView -> Signal<(EngineMessage.Index?, Bool), NoError> in
             switch historyView {
             case .Loading:
                 return .single((nil, true))
@@ -79,7 +78,7 @@ extension ChatControllerImpl {
         
         let historyView = preloadedChatHistoryViewForLocation(locationInput, context: self.context, chatLocation: self.chatLocation, subject: self.subject, chatLocationContextHolder: self.chatLocationContextHolder, fixedCombinedReadStates: nil, tag: nil, additionalData: [])
         let signal = historyView
-        |> mapToSignal { historyView -> Signal<(MessageIndex?, Bool), NoError> in
+        |> mapToSignal { historyView -> Signal<(EngineMessage.Index?, Bool), NoError> in
             switch historyView {
             case .Loading:
                 return .single((nil, true))
@@ -146,9 +145,9 @@ extension ChatControllerImpl {
         }
         
         var kind: PeerInfoControllerMode.PeerInfoMediaKind?
-        if message.tags.contains(MessageTags.photoOrVideo) {
+        if message.tags.contains(EngineMessage.Tags.photoOrVideo) {
             kind = .photoVideo
-        } else if message.tags.contains(MessageTags.file) {
+        } else if message.tags.contains(EngineMessage.Tags.file) {
             kind = .file
         }
         
@@ -159,7 +158,7 @@ extension ChatControllerImpl {
         let peerInfoController = self.context.sharedContext.makePeerInfoController(
             context: self.context,
             updatedPresentationData: self.updatedPresentationData,
-            peer: peer._asPeer(),
+            peer: peer,
             mode: .media(kind: kind, messageIndex: message.index),
             avatarInitiallyExpanded: false,
             fromChat: true,

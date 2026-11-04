@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import SwiftSignalKit
 import TelegramPresentationData
@@ -149,7 +148,7 @@ private final class ChatButtonKeyboardInputButtonNode: HighlightTrackingButtonNo
             maxTextWidth -= iconSize.width + iconSpacing
             
             var animationContent: EmojiStatusComponent.AnimationContent = .customEmoji(fileId: iconFileId)
-            if let file = message.associatedMedia[MediaId(namespace: Namespaces.Media.CloudFile, id: iconFileId)] as? TelegramMediaFile {
+            if let file = message.associatedMedia[EngineMedia.Id(namespace: Namespaces.Media.CloudFile, id: iconFileId)] as? TelegramMediaFile {
                 animationContent = .file(file: file)
             }
             
@@ -178,13 +177,22 @@ private final class ChatButtonKeyboardInputButtonNode: HighlightTrackingButtonNo
         }
         
         let textSize = self.textNode.updateLayout(CGSize(width: maxTextWidth, height: self.bounds.height))
+        let textHasRTL = self.textNode.cachedLayout?.hasRTL ?? false
         
         var textFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((self.bounds.width - textSize.width) / 2.0), y: floorToScreenPixels((self.bounds.height - textSize.height) / 2.0)), size: textSize)
         if let iconView = self.icon?.view {
             let contentX = floor((size.width - textSize.width - iconSize.width - iconSpacing) * 0.5)
-            textFrame.origin.x = contentX + iconSize.width + iconSpacing
+            // The icon leads the title in reading order, so it follows the title visually in RTL.
+            let iconX: CGFloat
+            if textHasRTL {
+                textFrame.origin.x = contentX
+                iconX = contentX + textSize.width + iconSpacing
+            } else {
+                textFrame.origin.x = contentX + iconSize.width + iconSpacing
+                iconX = contentX
+            }
             
-            let iconFrame = CGRect(origin: CGPoint(x: contentX, y: floor((size.height - iconSize.height) * 0.5)), size: iconSize)
+            let iconFrame = CGRect(origin: CGPoint(x: iconX, y: floor((size.height - iconSize.height) * 0.5)), size: iconSize)
             if iconView.superview == nil {
                 iconView.isUserInteractionEnabled = false
                 self.view.addSubview(iconView)
@@ -208,7 +216,7 @@ public final class ChatButtonKeyboardInputNode: ChatInputNode, UIScrollViewDeleg
     private let scrollNode: ASScrollNode
     
     private var buttonNodes: [ChatButtonKeyboardInputButtonNode] = []
-    private var message: Message?
+    private var message: EngineMessage?
     
     private var theme: PresentationTheme?
     
@@ -248,6 +256,7 @@ public final class ChatButtonKeyboardInputNode: ChatInputNode, UIScrollViewDeleg
         self.scrollNode.view.clipsToBounds = true
         self.scrollNode.cornerRadius = 30.0
         self.scrollNode.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        self.scrollNode.view.scrollsToTop = false
         
         self.backgroundTintMaskView.clipsToBounds = true
         self.backgroundTintMaskView.layer.cornerRadius = 30.0
@@ -286,7 +295,7 @@ public final class ChatButtonKeyboardInputNode: ChatInputNode, UIScrollViewDeleg
             }
         }
         
-        self.message = interfaceState.keyboardButtonsMessage
+        self.message = interfaceState.keyboardButtonsMessage.flatMap(EngineMessage.init)
         
         if let markup = validatedMarkup, let message = self.message {
             let verticalInset: CGFloat = 18.0
@@ -325,7 +334,7 @@ public final class ChatButtonKeyboardInputNode: ChatInputNode, UIScrollViewDeleg
                     let buttonFrame = CGRect(origin: CGPoint(x: sideInset + CGFloat(columnIndex) * (buttonWidth + columnSpacing), y: verticalOffset), size: CGSize(width: buttonWidth, height: buttonHeight))
                     buttonNode.frame = buttonFrame
                     buttonNode.tintMaskView.frame = buttonFrame
-                    buttonNode.update(context: self.context, size: buttonFrame.size, theme: interfaceState.theme, wallpaperBackgroundNode: self.controllerInteraction.presentationContext.backgroundNode, button: button, message: EngineMessage(message))
+                    buttonNode.update(context: self.context, size: buttonFrame.size, theme: interfaceState.theme, wallpaperBackgroundNode: self.controllerInteraction.presentationContext.backgroundNode, button: button, message: message)
                     columnIndex += 1
                 }
                 verticalOffset += buttonHeight + rowSpacing
@@ -381,55 +390,55 @@ public final class ChatButtonKeyboardInputNode: ChatInputNode, UIScrollViewDeleg
             var dismissIfOnce = false
             switch markupButton.action {
                 case .text:
-                    self.controllerInteraction.sendMessage(markupButton.title)
+                    self.controllerInteraction.sendMessage(markupButton.title, nil)
                     dismissIfOnce = true
                 case let .url(url):
                     self.controllerInteraction.openUrl(ChatControllerInteraction.OpenUrl(url: url, concealed: true, progress: Promise()))
                 case .requestMap:
-                    self.controllerInteraction.shareCurrentLocation()
+                    self.controllerInteraction.shareCurrentLocation(self.message?.id)
                 case .requestPhone:
-                    self.controllerInteraction.shareAccountContact()
+                    self.controllerInteraction.shareAccountContact(self.message?.id)
                 case .openWebApp:
                     if let message = self.message {
-                        self.controllerInteraction.requestMessageActionCallback(message, nil, true, false, nil)
+                        self.controllerInteraction.requestMessageActionCallback(message._asMessage(), nil, true, false, nil)
                     }
                 case let .callback(requiresPassword, data):
                     if let message = self.message {
-                        self.controllerInteraction.requestMessageActionCallback(message, data, false, requiresPassword, nil)
+                        self.controllerInteraction.requestMessageActionCallback(message._asMessage(), data, false, requiresPassword, nil)
                     }
                 case let .switchInline(samePeer, query, _):
                     if let message = message {
-                        var botPeer: Peer?
-                        
+                        var botPeer: EnginePeer?
+
                         var found = false
                         for attribute in message.attributes {
                             if let attribute = attribute as? InlineBotMessageAttribute, let peerId = attribute.peerId {
-                                botPeer = message.peers[peerId]
+                                botPeer = message.enginePeers[peerId]
                                 found = true
                             }
                         }
                         if !found {
                             botPeer = message.author
                         }
-                        
-                        var peer: Peer?
+
+                        var peer: EnginePeer?
                         if samePeer {
-                            peer = message.peers[message.id.peerId]
+                            peer = message.enginePeers[message.id.peerId]
                         } else {
                             peer = botPeer
                         }
                         if let peer = peer, let botPeer = botPeer, let addressName = botPeer.addressName {
-                            self.controllerInteraction.openPeer(EnginePeer(peer), .chat(textInputState: ChatTextInputState(inputText: NSAttributedString(string: "@\(addressName) \(query)")), subject: nil, peekData: nil), nil, .default)
+                            self.controllerInteraction.openPeer(peer, .chat(textInputState: ChatTextInputState(inputText: NSAttributedString(string: "@\(addressName) \(query)")), subject: nil, peekData: nil), nil, .default)
                         }
                     }
                 case .payment:
                     break
                 case let .urlAuth(url, buttonId):
                     if let message = self.message {
-                        self.controllerInteraction.requestMessageActionUrlAuth(url, .message(id: message.id, buttonId: buttonId))
+                        self.controllerInteraction.requestMessageActionUrlAuth(url, .message(id: message._asMessage().callbackTargetMessageId, buttonId: buttonId))
                     }
                 case let .setupPoll(isQuiz):
-                    self.controllerInteraction.openPollCreation(isQuiz)
+                    self.controllerInteraction.openPollCreation(nil, isQuiz)
                 case let .openUserProfile(peerId):
                     let _ = (self.context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
                     |> deliverOnMainQueue).startStandalone(next: { [weak self] peer in
@@ -439,20 +448,26 @@ public final class ChatButtonKeyboardInputNode: ChatInputNode, UIScrollViewDeleg
                         self.controllerInteraction.openPeer(peer, .info(nil), nil, .default)
                     })
                 case let .openWebView(url, simple):
-                    self.controllerInteraction.openWebView(markupButton.title, url, simple, .generic)
+                    // nil: a reply-keyboard button has no inline loading state, so the
+                    // `.requestInProgress` title panel stays its progress indicator.
+                    self.controllerInteraction.openWebView(markupButton.title, url, simple, .generic, nil)
                 case let .requestPeer(peerType, buttonId, maxQuantity):
                     if let message = self.message {
                         self.controllerInteraction.openRequestedPeerSelection(message.id, peerType, buttonId, maxQuantity)
                     }
                 case let .copyText(payload):
                     self.controllerInteraction.copyText(payload)
+                case .disabled:
+                    // A forward stripped this button's behaviour; tapping does nothing, and it
+                    // must not dismiss a once-keyboard either (dismissIfOnce stays false).
+                    break
             }
             if dismissIfOnce {
                 if let message = self.message {
                     for attribute in message.attributes {
                         if let attribute = attribute as? ReplyMarkupMessageAttribute {
                             if attribute.flags.contains(.once) {
-                                self.controllerInteraction.dismissReplyMarkupMessage(message)
+                                self.controllerInteraction.dismissReplyMarkupMessage(message._asMessage())
                             }
                             break
                         }

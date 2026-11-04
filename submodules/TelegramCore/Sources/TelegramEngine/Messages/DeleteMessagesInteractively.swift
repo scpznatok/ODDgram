@@ -1,13 +1,69 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
+private enum EphemeralDeleteMessageRequest {
+    case message(peer: Api.InputPeer, receiverId: Api.InputUser, id: Int32)
+    case welcomeMessage(peer: Api.InputPeer, id: Int32)
+}
 
 func _internal_deleteMessagesInteractively(account: Account, messageIds: [MessageId], type: InteractiveMessagesDeletionType, deleteAllInGroup: Bool = false) -> Signal<Void, NoError> {
-    return account.postbox.transaction { transaction -> Void in
+    return account.postbox.transaction { transaction -> [EphemeralDeleteMessageRequest] in
+        var ephemeralRequests: [EphemeralDeleteMessageRequest] = []
+        for messageId in messageIds where messageId.namespace == Namespaces.Message.EphemeralLocal || messageId.namespace == Namespaces.Message.WelcomeMessageCloud {
+            guard let message = transaction.getMessage(messageId), let peer = transaction.getPeer(messageId.peerId), let inputPeer = apiInputPeer(peer), let attribute = message.attributes.first(where: { $0 is EphemeralMessageAttribute }) as? EphemeralMessageAttribute else {
+                continue
+            }
+
+            if messageId.namespace == Namespaces.Message.WelcomeMessageCloud || attribute.isWelcomeTemplate {
+                ephemeralRequests.append(.welcomeMessage(peer: inputPeer, id: messageId.id))
+                continue
+            }
+
+            let receiverPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(attribute.receiverId))
+            let inputUser: Api.InputUser?
+            if receiverPeerId == account.peerId {
+                inputUser = .inputUserSelf
+            } else if let receiverPeer = transaction.getPeer(receiverPeerId) {
+                inputUser = apiInputUser(receiverPeer)
+            } else {
+                inputUser = nil
+            }
+
+            if let inputUser {
+                ephemeralRequests.append(.message(peer: inputPeer, receiverId: inputUser, id: messageId.id))
+            }
+        }
+
         deleteMessagesInteractively(transaction: transaction, stateManager: account.stateManager, postbox: account.postbox, messageIds: messageIds, type: type, removeIfPossiblyDelivered: true)
+        return ephemeralRequests
+    }
+    |> mapToSignal { ephemeralRequests -> Signal<Void, NoError> in
+        if ephemeralRequests.isEmpty {
+            return .complete()
+        }
+
+        let signals = ephemeralRequests.map { request -> Signal<Void, NoError> in
+            let signal: Signal<Api.Bool, MTRpcError>
+            switch request {
+            case let .message(peer, receiverId, id):
+                signal = account.network.request(Api.functions.ephemeral.deleteMessage(flags: 1 << 0, peer: peer, receiverId: receiverId, id: id))
+            case let .welcomeMessage(peer, id):
+                signal = account.network.request(Api.functions.ephemeral.deleteWelcomeMessage(peer: peer, id: id))
+            }
+            return signal
+            |> `catch` { _ -> Signal<Api.Bool, NoError> in
+                return .single(.boolFalse)
+            }
+            |> map { _ -> Void in
+            }
+        }
+
+        return combineLatest(signals)
+        |> map { _ -> Void in
+        }
     }
 }
     
@@ -58,6 +114,9 @@ func deleteMessagesInteractively(transaction: Transaction, stateManager: Account
         let peerId = peerAndThreadId.peerId
         let threadId = peerAndThreadId.threadId
         for id in peerMessageIds {
+            if id.namespace == Namespaces.Message.EphemeralLocal || Namespaces.Message.allWelcomeMessages.contains(id.namespace) {
+                continue
+            }
             if let message = transaction.getMessage(id) {
                 for attribute in message.attributes {
                     if let attribute = attribute as? OutgoingMessageInfoAttribute {
@@ -69,7 +128,7 @@ func deleteMessagesInteractively(transaction: Transaction, stateManager: Account
         
         if peerId.namespace == Namespaces.Peer.CloudChannel || peerId.namespace == Namespaces.Peer.CloudGroup || peerId.namespace == Namespaces.Peer.CloudUser {
             let remoteMessageIds = peerMessageIds.filter { id in
-                if id.namespace == Namespaces.Message.Local || id.namespace == Namespaces.Message.ScheduledLocal || id.namespace == Namespaces.Message.QuickReplyLocal {
+                if id.namespace == Namespaces.Message.Local || id.namespace == Namespaces.Message.ScheduledLocal || id.namespace == Namespaces.Message.QuickReplyLocal || id.namespace == Namespaces.Message.EphemeralLocal || Namespaces.Message.allWelcomeMessages.contains(id.namespace) {
                     return false
                 }
                 return true
@@ -248,4 +307,3 @@ func _internal_clearAuthorHistory(account: Account, peerId: PeerId, memberId: Pe
         }
     } |> switchToLatest
 }
-

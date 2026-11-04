@@ -10,7 +10,6 @@ import MultilineTextComponent
 import PlainButtonComponent
 import UIKitRuntimeUtils
 import TelegramCore
-import Postbox
 import EmojiStatusComponent
 import SwiftSignalKit
 import ContextUI
@@ -446,7 +445,7 @@ final class ChatSearchTitleAccessoryPanelNode: ChatTitleAccessoryPanelNode, Chat
     
     private var itemsDisposable: Disposable?
     
-    private var appliedScrollToTag: MemoryBuffer?
+    private var appliedScrollToTag: EngineMemoryBuffer?
     
     init(context: AccountContext, chatLocation: ChatLocation) {
         self.context = context
@@ -819,10 +818,10 @@ private final class TagContextExtractedContentSource: ContextExtractedContentSou
     }
     
     func takeView() -> ContextControllerTakeViewInfo? {
-        return ContextControllerTakeViewInfo(containingItem: .node(self.sourceNode), contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerTakeViewInfo(containingItem: .node(self.sourceNode), contentAreaInScreenSpace: mainWindowScreenBounds)
     }
     
     func putBack() -> ContextControllerPutBackViewInfo? {
-        return ContextControllerPutBackViewInfo(contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerPutBackViewInfo(contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }

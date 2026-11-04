@@ -1,6 +1,5 @@
 import Foundation
 import UIKit
-import Postbox
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
@@ -31,6 +30,7 @@ import ChatMessageAttachedContentButtonNode
 import MessageInlineBlockBackgroundView
 import ComponentFlow
 import PlainButtonComponent
+import BundleIconComponent
 import AvatarNode
 import EmojiTextAttachmentView
 
@@ -60,7 +60,7 @@ public struct ChatMessageAttachedContentNodeMediaFlags: OptionSet {
 
 public final class ChatMessageAttachedContentNode: ASDisplayNode {
     private enum InlineMedia: Equatable {
-        case media(Media)
+        case media(EngineRawMedia)
         case peerAvatar(EnginePeer)
         
         static func ==(lhs: InlineMedia, rhs: InlineMedia) -> Bool {
@@ -99,18 +99,18 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
     public var statusNode: ChatMessageDateAndStatusNode?
     
     private var closeButton: ComponentView<Empty>?
-    private var closeButtonImage: UIImage?
     
     private var inlineStickerLayers: [InlineStickerItemLayer] = []
+    private var giftEmojiLayer: InlineStickerItemLayer?
+    private var giftEmojiFileId: Int64?
     
     private var inlineMediaValue: InlineMedia?
     
-    //private var additionalImageBadgeNode: ChatMessageInteractiveMediaBadge?
     private var linkHighlightingNode: LinkHighlightingNode?
     
     private var context: AccountContext?
-    private var message: Message?
-    private var media: Media?
+    private var message: EngineRawMessage?
+    private var media: EngineRawMedia?
     private var theme: ChatPresentationThemeData?
     private var mainColor: UIColor?
     
@@ -135,6 +135,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                 self.contentInstantVideo?.visibility = self.visibility != .none
                 
                 self.inlineStickerLayers.forEach({ $0.isVisibleForAnimations = self.visibility != .none })
+                self.giftEmojiLayer?.isVisibleForAnimations = self.visibility != .none
                 
                 switch self.visibility {
                 case .none:
@@ -169,7 +170,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
         self.activateBadgeAction?()
     }
     
-    public typealias AsyncLayout = (_ presentationData: ChatPresentationData, _ automaticDownloadSettings: MediaAutoDownloadSettings, _ associatedData: ChatMessageItemAssociatedData, _ attributes: ChatMessageEntryAttributes, _ context: AccountContext, _ controllerInteraction: ChatControllerInteraction, _ message: Message, _ messageRead: Bool, _ chatLocation: ChatLocation, _ title: String?, _ titleBadge: String?, _ subtitle: NSAttributedString?, _ text: String?, _ entities: [MessageTextEntity]?, _ media: ([Media], ChatMessageAttachedContentNodeMediaFlags)?, _ mediaBadge: String?, _ actionIcon: ChatMessageAttachedContentActionIcon?, _ actionTitle: String?, _ displayLine: Bool, _ layoutConstants: ChatMessageItemLayoutConstants, _ preparePosition: ChatMessageBubblePreparePosition, _ constrainedSize: CGSize, _ animationCache: AnimationCache, _ animationRenderer: MultiAnimationRenderer) -> (CGFloat, (CGSize, ChatMessageBubbleContentPosition) -> (CGFloat, (CGFloat) -> (CGSize, (ListViewItemUpdateAnimation, Bool, ListViewItemApply?) -> Void)))
+    public typealias AsyncLayout = (_ presentationData: ChatPresentationData, _ automaticDownloadSettings: MediaAutoDownloadSettings, _ associatedData: ChatMessageItemAssociatedData, _ attributes: ChatMessageEntryAttributes, _ context: AccountContext, _ controllerInteraction: ChatControllerInteraction, _ message: EngineRawMessage, _ messageRead: Bool, _ chatLocation: ChatLocation, _ title: String?, _ titleBadge: String?, _ subtitle: NSAttributedString?, _ text: String?, _ entities: [MessageTextEntity]?, _ media: ([EngineRawMedia], ChatMessageAttachedContentNodeMediaFlags)?, _ mediaBadge: String?, _ actionIcon: ChatMessageAttachedContentActionIcon?, _ actionTitle: String?, _ displayLine: Bool, _ layoutConstants: ChatMessageItemLayoutConstants, _ preparePosition: ChatMessageBubblePreparePosition, _ constrainedSize: CGSize, _ animationCache: AnimationCache, _ animationRenderer: MultiAnimationRenderer) -> (CGFloat, (CGSize, ChatMessageBubbleContentPosition) -> (CGFloat, (CGFloat) -> (CGSize, (ListViewItemUpdateAnimation, Bool, ListViewItemApply?) -> Void)))
     
     public func makeProgress() -> Promise<Bool> {
         let progress = Promise<Bool>()
@@ -185,7 +186,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
         return progress
     }
     
-    public func asyncLayout() -> AsyncLayout {
+    public func asyncLayout(displayGiftIcon: Bool = false) -> AsyncLayout {
         let makeTitleLayout = TextNodeWithEntities.asyncLayout(self.title)
         let makeSubtitleLayout = TextNodeWithEntities.asyncLayout(self.subtitle)
         let makeTextLayout = TextNodeWithEntities.asyncLayout(self.text)
@@ -237,16 +238,20 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                 if let peer = forwardInfo.author {
                     author = peer
                 } else if let authorSignature = forwardInfo.authorSignature {
-                    author = TelegramUser(id: PeerId(namespace: Namespaces.Peer.Empty, id: PeerId.Id._internalFromInt64Value(Int64(authorSignature.persistentHashValue % 32))), accessHash: nil, firstName: authorSignature, lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil)
+                    author = TelegramUser(id: EnginePeer.Id(namespace: Namespaces.Peer.Empty, id: EnginePeer.Id.Id._internalFromInt64Value(Int64(authorSignature.persistentHashValue % 32))), accessHash: nil, firstName: authorSignature, lastName: nil, username: nil, phone: nil, photo: [], botInfo: nil, restrictionInfo: nil, flags: [], emojiStatus: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil, subscriberCount: nil, verificationIconFileId: nil)
                 }
             }
             
             let nameColors: PeerNameColors.Colors?
+            var giftEmojiFileId: Int64?
             switch author?.nameColor {
             case let .preset(nameColor):
                 nameColors = context.peerNameColors.get(nameColor, dark: presentationData.theme.theme.overallDarkAppearance)
             case let .collectible(collectibleColor):
                 nameColors = collectibleColor.peerNameColors(dark: presentationData.theme.theme.overallDarkAppearance)
+                if displayGiftIcon && displayLine && !isAd {
+                    giftEmojiFileId = collectibleColor.giftEmojiFileId
+                }
             default:
                 nameColors = nil
             }
@@ -315,7 +320,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                 insets.right += 6.0
             }
             
-            var contentMediaValue: Media?
+            var contentMediaValue: EngineRawMedia?
             var contentFileValue: TelegramMediaFile?
             var contentAnimatedFilesValue: [TelegramMediaFile] = []
             
@@ -357,15 +362,15 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                             contentMediaValue = file
                         } else if file.isVideo {
                             contentMediaValue = file
-                        } else if file.isSticker || file.isAnimatedSticker {
+                        } else if file.isSticker || file.isAnimatedSticker || file.isCustomEmoji {
                             contentMediaValue = file
                         } else {
                             contentFileValue = file
                         }
                         
-                        if shouldDownloadMediaAutomatically(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, authorPeerId: message.author?.id, contactsPeerIds: associatedData.contactsPeerIds, media: file, isAd: isAd) {
+                        if shouldDownloadMediaAutomatically(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, authorPeerId: message.author?.id, contactsPeerIds: associatedData.contactsPeerIds, media: .file(file), isAd: isAd) {
                             contentMediaAutomaticDownload = .full
-                        } else if shouldPredownloadMedia(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, media: file) {
+                        } else if shouldPredownloadMedia(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, media: .file(file)) {
                             contentMediaAutomaticDownload = .prefetch
                         }
                         
@@ -378,7 +383,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                             if case .full = contentMediaAutomaticDownload {
                                 willDownloadOrLocal = true
                             } else {
-                                willDownloadOrLocal = context.account.postbox.mediaBox.completedResourcePath(file.resource) != nil
+                                willDownloadOrLocal = context.engine.resources.completedResourcePath(id: EngineMediaResource.Id(file.resource.id)) != nil
                             }
                             if willDownloadOrLocal {
                                 contentMediaAutomaticPlayback = true
@@ -421,15 +426,15 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                 } else {
                     let contentMode: InteractiveMediaNodeContentMode = contentMediaAspectFilled ? .aspectFill : .aspectFit
                     
-                    let automaticDownload = shouldDownloadMediaAutomatically(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, authorPeerId: message.author?.id, contactsPeerIds: associatedData.contactsPeerIds, media: contentMediaValue, isAd: isAd)
+                    let automaticDownload = shouldDownloadMediaAutomatically(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, authorPeerId: message.author?.id, contactsPeerIds: associatedData.contactsPeerIds, media: EngineMedia(contentMediaValue), isAd: isAd)
                     
                     let (_, initialImageWidth, refineLayout) = makeContentMedia(
                         context,
                         presentationData,
                         presentationData.dateTimeFormat,
-                        message, associatedData,
+                        EngineMessage(message), associatedData,
                         attributes,
-                        contentMediaValue,
+                        EngineMedia(contentMediaValue),
                         nil,
                         nil,
                         automaticDownload ? .full : .none,
@@ -452,7 +457,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
             
             let contentFileContinueLayout: ChatMessageInteractiveFileNode.ContinueLayout?
             if let contentFileValue {
-                let automaticDownload = shouldDownloadMediaAutomatically(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, authorPeerId: message.author?.id, contactsPeerIds: associatedData.contactsPeerIds, media: contentFileValue, isAd: isAd)
+                let automaticDownload = shouldDownloadMediaAutomatically(settings: automaticDownloadSettings, peerType: associatedData.automaticDownloadPeerType, networkType: associatedData.automaticDownloadNetworkType, authorPeerId: message.author?.id, contactsPeerIds: associatedData.contactsPeerIds, media: .file(contentFileValue), isAd: isAd)
                 
                 let (_, refineLayout) = makeContentFile(ChatMessageInteractiveFileNode.Arguments(
                     context: context,
@@ -526,6 +531,16 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                 if !isPreview, actionTitle != nil {
                     contentLayoutOrder.append(.actionButton)
                 }
+
+                let giftLayerSize = CGSize(width: 18.0, height: 18.0)
+                let giftTextItem = giftEmojiFileId == nil ? nil : contentLayoutOrder.first(where: { item in
+                    switch item {
+                    case .title, .subtitle, .text:
+                        return true
+                    case .media, .file, .actionButton:
+                        return false
+                    }
+                })
                 
                 var actualWidth: CGFloat = 0.0
                 
@@ -543,14 +558,19 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                     cutoutWidth = inlineMediaSize.width + inlineMediaEdgeInset
                 }
                 for item in contentLayoutOrder {
+                    var textCutoutSize = CGSize()
+                    if remainingCutoutHeight > 0.0 {
+                        textCutoutSize = CGSize(width: cutoutWidth, height: remainingCutoutHeight)
+                    }
+                    if item == giftTextItem {
+                        textCutoutSize.width += giftLayerSize.width + 4.0
+                        textCutoutSize.height = max(textCutoutSize.height, giftLayerSize.height)
+                    }
+                    let cutout: TextNodeCutout? = textCutoutSize.height > 0.0 ? TextNodeCutout(topRight: textCutoutSize) : nil
+
                     switch item {
                     case .title:
                         if let title = title, !title.isEmpty {
-                            var cutout: TextNodeCutout?
-                            if remainingCutoutHeight > 0.0 {
-                                cutout = TextNodeCutout(topRight: CGSize(width: cutoutWidth, height: remainingCutoutHeight))
-                            }
-                            
                             let titleString = NSAttributedString(string: title, font: titleFont, textColor: mainColor)
                             let titleLayoutAndApplyValue = makeTitleLayout(TextNodeLayoutArguments(attributedString: titleString, backgroundColor: nil, maximumNumberOfLines: 2, truncationType: .end, constrainedSize: CGSize(width: maxContentsWidth, height: 10000.0), alignment: .natural, lineSpacing: textLineSpacing, cutout: cutout, insets: UIEdgeInsets()))
                             titleLayoutAndApply = titleLayoutAndApplyValue
@@ -564,11 +584,6 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                         }
                     case .subtitle:
                         if let subtitle = subtitle, !subtitle.string.isEmpty {
-                            var cutout: TextNodeCutout?
-                            if remainingCutoutHeight > 0.0 {
-                                cutout = TextNodeCutout(topRight: CGSize(width: cutoutWidth, height: remainingCutoutHeight))
-                            }
-                            
                             let subtitleString = NSMutableAttributedString(attributedString: subtitle)
                             subtitleString.addAttribute(.foregroundColor, value: messageTheme.primaryTextColor, range: NSMakeRange(0, subtitle.length))
                             subtitleString.addAttribute(.font, value: titleFont, range: NSMakeRange(0, subtitle.length))
@@ -580,10 +595,6 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                         }
                     case .text:
                         if let text = text, !text.isEmpty {
-                            var cutout: TextNodeCutout?
-                            if remainingCutoutHeight > 0.0 {
-                                cutout = TextNodeCutout(topRight: CGSize(width: cutoutWidth, height: remainingCutoutHeight))
-                            }
                             var maximumNumberOfLines: Int = 12
                             if isPreview {
                                 maximumNumberOfLines = mediaAndFlags != nil ? 4 : 6
@@ -715,7 +726,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                 } else {
                     dateFormat = .regular
                 }
-                let dateText = stringForMessageTimestampStatus(accountPeerId: context.account.peerId, message: message, dateTimeFormat: presentationData.dateTimeFormat, nameDisplayOrder: presentationData.nameDisplayOrder, strings: presentationData.strings, format: dateFormat, associatedData: associatedData)
+                let dateText = stringForMessageTimestampStatus(context: context, message: EngineMessage(message), dateTimeFormat: presentationData.dateTimeFormat, nameDisplayOrder: presentationData.nameDisplayOrder, strings: presentationData.strings, format: dateFormat, associatedData: associatedData)
                 
                 let statusType: ChatMessageDateAndStatusType
                 if incoming {
@@ -754,7 +765,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                 type: statusType,
                                 layoutInput: .trailingContent(
                                     contentWidth: trailingContentWidth,
-                                    reactionSettings: ChatMessageDateAndStatusNode.TrailingReactionSettings(displayInline: shouldDisplayInlineDateReactions(message: message, isPremium: associatedData.isPremium, forceInline: associatedData.forceInlineReactions), preferAdditionalInset: false)
+                                    reactionSettings: ChatMessageDateAndStatusNode.TrailingReactionSettings(displayInline: shouldDisplayInlineDateReactions(message: EngineMessage(message), isPremium: associatedData.isPremium, forceInline: associatedData.forceInlineReactions), preferAdditionalInset: false)
                                 ),
                                 constrainedSize: CGSize(width: maxStatusContentWidth, height: CGFloat.greatestFiniteMagnitude),
                                 availableReactions: associatedData.availableReactions,
@@ -769,7 +780,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                 starsCount: starsCount,
                                 isPinned: message.tags.contains(.pinned) && !associatedData.isInPinnedListMode && !isReplyThread,
                                 hasAutoremove: message.isSelfExpiring,
-                                canViewReactionList: canViewMessageReactionList(message: message),
+                                canViewReactionList: canViewMessageReactionList(message: EngineMessage(message)),
                                 animationCache: controllerInteraction.presentationContext.animationCache,
                                 animationRenderer: controllerInteraction.presentationContext.animationRenderer
                             ))
@@ -850,7 +861,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                     offsetY: actualSize.height
                                 ))
                                 
-                                actualSize.height += titleLayout.size.height - titleLayout.insets.top - titleLayout.insets.bottom
+                                actualSize.height += max(titleLayout.size.height - titleLayout.insets.top - titleLayout.insets.bottom, item == giftTextItem ? giftLayerSize.height : 0.0)
                             }
                         case .subtitle:
                             if let (subtitleLayout, _) = subtitleLayoutAndApply {
@@ -867,7 +878,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                     offsetY: actualSize.height
                                 ))
                                 
-                                actualSize.height += subtitleLayout.size.height - subtitleLayout.insets.top - subtitleLayout.insets.bottom
+                                actualSize.height += max(subtitleLayout.size.height - subtitleLayout.insets.top - subtitleLayout.insets.bottom, item == giftTextItem ? giftLayerSize.height : 0.0)
                             }
                         case .text:
                             if let (textLayout, _) = textLayoutAndApply {
@@ -884,7 +895,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                     offsetY: actualSize.height
                                 ))
                                 
-                                actualSize.height += textLayout.size.height - textLayout.insets.top - textLayout.insets.bottom
+                                actualSize.height += max(textLayout.size.height - textLayout.insets.top - textLayout.insets.bottom, item == giftTextItem ? giftLayerSize.height : 0.0)
                             }
                         case .media:
                             if let (contentMediaSize, _) = contentMediaSizeAndApply {
@@ -945,6 +956,12 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                         }
                     }
                     
+                    var giftLayerFrame: CGRect?
+                    if let giftTextItem, let item = contentDisplayOrder.first(where: { $0.item == giftTextItem }) {
+                        let mediaInset = inlineMediaAndSize.map { $0.1.width + inlineMediaEdgeInset } ?? 0.0
+                        giftLayerFrame = CGRect(origin: CGPoint(x: actualSize.width - backgroundInsets.right - mediaInset - giftLayerSize.width - 4.0, y: item.offsetY), size: giftLayerSize)
+                    }
+
                     if !contentLayoutOrder.isEmpty {
                         switch contentLayoutOrder[contentLayoutOrder.count - 1] {
                         case .title, .subtitle, .text:
@@ -984,7 +1001,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                         }
                     }
                     
-                    return (actualSize, { animation, synchronousLoads, applyInfo in
+                    return (actualSize, { [controllerInteraction] animation, synchronousLoads, applyInfo in
                         guard let self else {
                             return
                         }
@@ -1116,7 +1133,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                         inlineMedia.setSignal(updateInlineImageSignal)
                                     }
                                 case let .peerAvatar(peer):
-                                    if let peerReference = PeerReference(peer._asPeer()) {
+                                    if let peerReference = PeerReference(peer) {
                                         if let signal = peerAvatarImage(account: context.account, peerReference: peerReference, authorOfMessage: nil, representation: peer.largeProfileImage, displayDimensions: inlineMediaSize, clipStyle: .none, blurred: false, inset: 0.0, emptyColor: mainColor.withMultipliedAlpha(0.1), synchronousLoad: synchronousLoads, provideUnrounded: false) {
                                             let updateInlineImageSignal = signal |> map { images -> (TransformImageArguments) -> DrawingContext? in
                                                 let image = images?.0
@@ -1240,6 +1257,41 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                     animation.animator.updatePosition(layer: titleBadgeLabel.layer, position: titleBadgeFrame.origin, completion: nil)
                                 }
                             }
+                            
+                            if let _ = message.media.first(where: { $0 is TelegramMediaPoll }) {
+                                let closeButton: ComponentView<Empty>
+                                if let current = self.closeButton {
+                                    closeButton = current
+                                } else {
+                                    closeButton = ComponentView<Empty>()
+                                    self.closeButton = closeButton
+                                }
+                                let closeButtonSize = closeButton.update(
+                                    transition: .immediate,
+                                    component: AnyComponent(
+                                        PlainButtonComponent(
+                                            content: AnyComponent(
+                                                Image(image: PresentationResourcesChat.chatAttachedContentCloseIcon(presentationData.theme.theme), tintColor: mainColor, size: CGSize(width: 12.0, height: 12.0))
+                                            ),
+                                            minSize: CGSize(width: 44.0, height: 44.0),
+                                            action: { [weak controllerInteraction] in
+                                                controllerInteraction?.displayPollSolution(nil, nil)
+                                            },
+                                            animateAlpha: true,
+                                            animateScale: false
+                                        )
+                                    ),
+                                    environment: {},
+                                    containerSize: CGSize(width: 44.0, height: 44.0)
+                                )
+                                let closeButtonFrame = CGRect(origin: CGPoint(x: backgroundFrame.maxX - closeButtonSize.width + 11.0, y: floorToScreenPixels(titleFrame.midY - closeButtonSize.height / 2.0)), size: closeButtonSize)
+                                if let closeButtonView = closeButton.view {
+                                    if closeButtonView.superview == nil {
+                                        self.transformContainer.view.addSubview(closeButtonView)
+                                    }
+                                    closeButtonView.frame = closeButtonFrame
+                                }
+                            }
                         } else {
                             if let title = self.title {
                                 self.title = nil
@@ -1354,7 +1406,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                     guard let controllerInteraction else {
                                         return
                                     }
-                                    controllerInteraction.playMessageEffect(message)
+                                    controllerInteraction.playMessageEffect(message._asMessage())
                                 }
                                 contentMedia.activateLocalContent = { [weak self] mode in
                                     guard let self else {
@@ -1366,7 +1418,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                     guard let controllerInteraction else {
                                         return
                                     }
-                                    controllerInteraction.updateMessageReaction(message, value, force, sourceView)
+                                    controllerInteraction.updateMessageReaction(message._asMessage(), value, force, sourceView)
                                 }
                                 contentMedia.visibility = self.visibility != .none
                                 
@@ -1521,16 +1573,41 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                             }
                         }
                         
+                        if let giftEmojiFileId, let giftLayerFrame {
+                            let giftEmojiLayer: InlineStickerItemLayer
+                            if let current = self.giftEmojiLayer, self.giftEmojiFileId == giftEmojiFileId {
+                                giftEmojiLayer = current
+                                animation.animator.updateFrame(layer: giftEmojiLayer, frame: giftLayerFrame, completion: nil)
+                            } else {
+                                self.giftEmojiLayer?.removeFromSuperlayer()
+                                giftEmojiLayer = InlineStickerItemLayer(context: context, userLocation: .other, attemptSynchronousLoad: true, emoji: ChatTextInputTextCustomEmojiAttribute(interactivelySelectedFromPackId: nil, fileId: giftEmojiFileId, file: nil, custom: nil, enableAnimation: true), file: nil, cache: context.animationCache, renderer: context.animationRenderer, unique: false, placeholderColor: messageTheme.mediaPlaceholderColor, pointSize: CGSize(width: giftLayerSize.width * 2.0, height: giftLayerSize.height * 2.0), dynamicColor: nil, loopCount: 2)
+                                self.giftEmojiLayer = giftEmojiLayer
+                                self.giftEmojiFileId = giftEmojiFileId
+                                self.transformContainer.layer.addSublayer(giftEmojiLayer)
+                                giftEmojiLayer.frame = giftLayerFrame
+                            }
+                            giftEmojiLayer.isVisibleForAnimations = self.visibility != .none
+
+                            patternTopRightPosition = CGPoint(x: backgroundFrame.maxX - giftLayerFrame.maxX - 4.0, y: giftLayerFrame.minY - backgroundFrame.minY - 3.0)
+                        } else if let giftEmojiLayer = self.giftEmojiLayer {
+                            self.giftEmojiLayer = nil
+                            self.giftEmojiFileId = nil
+                            giftEmojiLayer.removeFromSuperlayer()
+                        }
+
                         if displayLine {
                             var pattern: MessageInlineBlockBackgroundView.Pattern?
-                            if let backgroundEmojiId = author?.backgroundEmojiId {
+                            if let _ = message.media.first(where: { $0 is TelegramMediaPoll }) {
+                                
+                            } else if let backgroundEmojiId = author?.backgroundEmojiId {
                                 pattern = MessageInlineBlockBackgroundView.Pattern(
                                     context: context,
                                     fileId: backgroundEmojiId,
-                                    file: message.associatedMedia[MediaId(
+                                    file: message.associatedMedia[EngineMedia.Id(
                                         namespace: Namespaces.Media.CloudFile,
                                         id: backgroundEmojiId
-                                    )] as? TelegramMediaFile
+                                    )] as? TelegramMediaFile,
+                                    emptyCorner: giftLayerFrame != nil
                                 )
                             }
                             
@@ -1569,7 +1646,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
         }
     }
     
-    public func updateHiddenMedia(_ media: [Media]?) -> Bool {
+    public func updateHiddenMedia(_ media: [EngineRawMedia]?) -> Bool {
         if let currentMedia = self.media {
             if let media = media {
                 var found = false
@@ -1592,7 +1669,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
         return false
     }
     
-    public func transitionNode(media: Media) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    public func transitionNode(media: EngineRawMedia) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         if let contentImageNode = self.contentMedia, let image = self.media as? TelegramMediaImage, image.isEqual(to: media) {
             return (contentImageNode, contentImageNode.bounds, { [weak contentImageNode] in
                 return (contentImageNode?.view.snapshotContentTree(unhide: true), nil)

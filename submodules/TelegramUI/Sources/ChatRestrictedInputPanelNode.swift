@@ -3,7 +3,6 @@ import UIKit
 import AsyncDisplayKit
 import Display
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import TelegramStringFormatting
 import ChatPresentationInterfaceState
@@ -81,7 +80,7 @@ final class ChatRestrictedInputPanelNode: ChatInputPanelNode {
         self.interfaceInteraction?.openBoostToUnrestrict()
     }
     
-    override func updateLayout(width: CGFloat, leftInset: CGFloat, rightInset: CGFloat, bottomInset: CGFloat, additionalSideInsets: UIEdgeInsets, maxHeight: CGFloat, maxOverlayHeight: CGFloat, isSecondary: Bool, transition: ContainedViewLayoutTransition, interfaceState: ChatPresentationInterfaceState, metrics: LayoutMetrics, isMediaInputExpanded: Bool) -> CGFloat {
+    override func updateLayout(width: CGFloat, leftInset: CGFloat, rightInset: CGFloat, bottomInset: CGFloat, additionalSideInsets: UIEdgeInsets, maxHeight: CGFloat, maxOverlayHeight: CGFloat, isSecondary: Bool, transition: ContainedViewLayoutTransition, interfaceState: ChatPresentationInterfaceState, metrics: LayoutMetrics, deviceMetrics: DeviceMetrics, isMediaInputExpanded: Bool) -> CGFloat {
         if self.presentationInterfaceState != interfaceState {
             self.presentationInterfaceState = interfaceState
         }
@@ -148,8 +147,16 @@ final class ChatRestrictedInputPanelNode: ChatInputPanelNode {
                 displayCount = customChatContents.messageLimit ?? 20
             case .businessLinkSetup:
                 displayCount = 0
+            case .welcomeMessages:
+                displayCount = customChatContents.messageLimit ?? 5
             }
-            self.textNode.attributedText = NSAttributedString(string: interfaceState.strings.Chat_QuickReplyMessageLimitReachedText(Int32(displayCount)), font: Font.regular(13.0), textColor: interfaceState.theme.chat.inputPanel.secondaryTextColor)
+            let text: String
+            if case .welcomeMessages = customChatContents.kind {
+                text = interfaceState.strings.WelcomeMessages_MessageLimitReachedText(Int32(displayCount))
+            } else {
+                text = interfaceState.strings.Chat_QuickReplyMessageLimitReachedText(Int32(displayCount))
+            }
+            self.textNode.attributedText = NSAttributedString(string: text, font: Font.regular(13.0), textColor: interfaceState.theme.chat.inputPanel.secondaryTextColor)
         }
         self.buttonNode.isUserInteractionEnabled = isUserInteractionEnabled
         

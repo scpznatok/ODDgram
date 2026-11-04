@@ -26,13 +26,19 @@ public final class BatchVideoRenderingContext {
         }
         
         deinit {
-            self.context?.targetRemoved(id: self.id)
+            // The handle can be released on any queue; hop to main so the context's
+            // non-thread-safe state (targetContexts, disposables, displayLink) is only
+            // mutated from one queue.
+            let context = self.context
+            let id = self.id
+            Queue.mainQueue().async {
+                context?.targetRemoved(id: id)
+            }
         }
     }
     
     public final class TargetState {
         private var lastRenderedFrame: (timestamp: Double, pts: Double, duration: Double)?
-        private var ptsOffset: Double = 0.0
         private(set) var sampleBuffers: [CMSampleBuffer] = []
         
         init() {
@@ -86,6 +92,14 @@ public final class BatchVideoRenderingContext {
         
         var isFailed: Bool = false
         var reader: FFMpegFileReader?
+        // Whether the *current* reader has produced at least one frame. A reader that reaches
+        // `.endOfStream` without ever producing one describes a file this build cannot decode
+        // — every frame decodes but `FFMpegMediaVideoFrameDecoder` rejects the pixel layout
+        // (10-bit is the remaining class; the reported 4:4:4 case and 4:2:2 are now folded
+        // down to 420 in the decoder). Restarting such a reader below would decode the
+        // whole file again and never return from this call — pinning a core and leaving
+        // `isRendering` stuck true, which freezes every other target sharing the queue.
+        var readerDidProduceFrame: Bool = false
         
         init(dataPath: String) {
             self.dataPath = dataPath
@@ -100,6 +114,9 @@ public final class BatchVideoRenderingContext {
                     let reader = FFMpegFileReader(
                         source: .file(self.dataPath),
                         useHardwareAcceleration: false,
+                        // These render into ~93pt tiles, where deblocking is not visible but
+                        // is a large fraction of the decode cost of a grid of animating GIFs.
+                        skipLoopFilter: true,
                         selectedStream: .mediaType(.video),
                         seek: nil,
                         maxReadablePts: nil
@@ -109,6 +126,7 @@ public final class BatchVideoRenderingContext {
                         break outer
                     }
                     self.reader = reader
+                    self.readerDidProduceFrame = false
                 }
                 
                 guard let reader = self.reader else {
@@ -117,13 +135,25 @@ public final class BatchVideoRenderingContext {
                 
                 switch reader.readFrame() {
                 case let .frame(frame):
+                    self.readerDidProduceFrame = true
                     return createSampleBuffer(fromSampleBuffer: frame.sampleBuffer, withTimeOffset: .zero, duration: nil, displayImmediately: true)
                 case .error:
                     self.isFailed = true
                     break outer
                 case .endOfStream:
+                    if !self.readerDidProduceFrame {
+                        // Nothing decodable in the whole file — fail permanently instead of
+                        // looping. The target keeps its static thumbnail.
+                        self.isFailed = true
+                        break outer
+                    }
+                    // Loop the clip.
                     self.reader = nil
                 case .waitingForMoreData:
+                    // Invariant: the reader is only constructed once the consumer's
+                    // `data.isComplete == true` (see `BatchVideoRenderingContext.update`),
+                    // so a `.file(...)` source should never report waitingForMoreData.
+                    // Treat it as fatal rather than spin if the invariant is ever violated.
                     self.isFailed = true
                     break outer
                 }
@@ -187,7 +217,10 @@ public final class BatchVideoRenderingContext {
     }
     
     private func targetRemoved(id: Int) {
-        if self.targetContexts.removeValue(forKey: id) != nil {
+        if let removed = self.targetContexts.removeValue(forKey: id) {
+            // Clear the leftover TargetState so a recycled target doesn't start its
+            // next session by replaying our queued buffers and stale lastRenderedFrame.
+            removed.target?.batchVideoRenderingTargetState = nil
             self.update()
         }
     }
@@ -197,20 +230,19 @@ public final class BatchVideoRenderingContext {
         for (id, targetContext) in self.targetContexts {
             if targetContext.target != nil {
                 if targetContext.fetchDisposable == nil {
-                    targetContext.fetchDisposable = fetchedMediaResource(
-                        mediaBox: self.context.account.postbox.mediaBox,
+                    targetContext.fetchDisposable = self.context.engine.resources.fetch(
+                        reference: targetContext.file.resourceReference(targetContext.file.media.resource),
                         userLocation: targetContext.userLocation,
-                        userContentType: .sticker,
-                        reference: targetContext.file.resourceReference(targetContext.file.media.resource)
+                        userContentType: .sticker
                     ).startStrict()
                 }
                 if targetContext.dataDisposable == nil {
-                    targetContext.dataDisposable = (self.context.account.postbox.mediaBox.resourceData(targetContext.file.media.resource)
+                    targetContext.dataDisposable = (self.context.engine.resources.data(resource: EngineMediaResource(targetContext.file.media.resource))
                     |> deliverOnMainQueue).startStrict(next: { [weak self, weak targetContext] data in
                         guard let self, let targetContext else {
                             return
                         }
-                        if data.complete && targetContext.dataPath == nil {
+                        if data.isComplete && targetContext.dataPath == nil {
                             targetContext.dataPath = data.path
                             self.update()
                         }
@@ -229,6 +261,10 @@ public final class BatchVideoRenderingContext {
             self.targetContexts.removeValue(forKey: id)
         }
         
+        self.updateDisplayLink()
+    }
+
+    private func updateDisplayLink() {
         if !self.targetContexts.isEmpty {
             if self.displayLink == nil {
                 self.displayLink = SharedDisplayLinkDriver.shared.add { [weak self] _ in
@@ -242,7 +278,7 @@ public final class BatchVideoRenderingContext {
             self.displayLink = nil
         }
     }
-    
+
     private func updateRendering() {
         if self.isRendering {
             return
@@ -319,18 +355,7 @@ public final class BatchVideoRenderingContext {
             self.updateFrames()
         }
         
-        if !self.targetContexts.isEmpty {
-            if self.displayLink == nil {
-                self.displayLink = SharedDisplayLinkDriver.shared.add { [weak self] _ in
-                    guard let self else {
-                        return
-                    }
-                    self.updateRendering()
-                }
-            }
-        } else {
-            self.displayLink = nil
-        }
+        self.updateDisplayLink()
     }
     
     private func updateFrames() {

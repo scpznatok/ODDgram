@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 
 extension MediaResourceReference {
     var apiFileReference: Data? {
@@ -175,6 +175,11 @@ private func findMediaResource(media: Media, previousMedia: Media?, resource: Me
                 return representation.resource
             }
         }
+        if let video = image.video {
+            if let resource = findMediaResource(media: video, previousMedia: previousMedia, resource: resource) {
+                return resource
+            }
+        }
     } else if let file = media as? TelegramMediaFile {
         if areResourcesEqual(file.resource, resource) {
             return file.resource
@@ -217,6 +222,18 @@ private func findMediaResource(media: Media, previousMedia: Media?, resource: Me
         if let file = game.file, let result = findMediaResource(media: file, previousMedia: previousMedia, resource: resource) {
             return result
         }
+    } else if let poll = media as? TelegramMediaPoll {
+        if let attachedMedia = poll.attachedMedia, let result = findMediaResource(media: attachedMedia, previousMedia: previousMedia, resource: resource) {
+            return result
+        }
+        for option in poll.options {
+            if let optionMedia = option.media, let result = findMediaResource(media: optionMedia, previousMedia: previousMedia, resource: resource) {
+                return result
+            }
+        }
+        if let solutionMedia = poll.results.solution?.media, let result = findMediaResource(media: solutionMedia, previousMedia: previousMedia, resource: resource) {
+            return result
+        }
     } else if let action = media as? TelegramMediaAction {
         switch action.action {
             case let .photoUpdated(image):
@@ -235,7 +252,7 @@ private func findMediaResource(media: Media, previousMedia: Media?, resource: Me
 }
 
 public func findMediaResourceById(message: EngineMessage, resourceId: MediaResourceId) -> TelegramMediaResource? {
-    for media in message.media {
+    for media in message.effectiveMedia {
         if let result = findMediaResourceById(media: media, resourceId: resourceId) {
             return result
         }
@@ -666,7 +683,7 @@ final class MediaReferenceRevalidationContext {
                 }
                 |> map { [$0] }
             } else {
-                signal = telegramWallpapers(postbox: postbox, network: network, forceUpdate: true)
+                signal = _internal_telegramWallpapers(postbox: postbox, network: network, forceUpdate: true)
                 |> last
                 |> mapError { _ -> RevalidateMediaReferenceError in
                 }
@@ -692,7 +709,7 @@ final class MediaReferenceRevalidationContext {
     
     func themes(postbox: Postbox, network: Network, background: Bool) -> Signal<[TelegramTheme], RevalidateMediaReferenceError> {
         return self.genericItem(key: .themes, background: background, request: { next, error in
-            return (telegramThemes(postbox: postbox, network: network, accountManager: nil, forceUpdate: true)
+            return (_internal_telegramThemes(postbox: postbox, network: network, accountManager: nil, forceUpdate: true)
             |> take(1)
             |> mapError { _ -> RevalidateMediaReferenceError in
             }).start(next: { value in
@@ -896,6 +913,18 @@ func revalidateMediaResourceReference(accountPeerId: PeerId, postbox: Postbox, n
                                 return .single(RevalidatedMediaResource(updatedResource: updatedResource, updatedReference: nil))
                             }
                         }
+                        // Rich-text messages (`RichTextMessageAttribute`) embed their media in the
+                        // attribute's `InstantPage`, not in `message.media` — search there too so a
+                        // stale instant-page audio/image file reference can revalidate.
+                        for attribute in message.attributes {
+                            if let attribute = attribute as? RichTextMessageAttribute {
+                                for (_, pageMedia) in attribute.instantPage.rawMedia {
+                                    if let updatedResource = findUpdatedMediaResource(media: pageMedia, previousMedia: previousMedia, resource: resource) {
+                                        return .single(RevalidatedMediaResource(updatedResource: updatedResource, updatedReference: nil))
+                                    }
+                                }
+                            }
+                        }
                         return .fail(.generic)
                     }
                 case let .stickerPack(stickerPack, media):
@@ -1005,6 +1034,11 @@ func revalidateMediaResourceReference(accountPeerId: PeerId, postbox: Postbox, n
                         } else {
                             for alternativeMediaValue in item.alternativeMediaList {
                                 if let updatedResource = findUpdatedMediaResource(media: alternativeMediaValue, previousMedia: nil, resource: resource) {
+                                    return .single(RevalidatedMediaResource(updatedResource: updatedResource, updatedReference: nil))
+                                }
+                            }
+                            if let music = item.music {
+                                if let updatedResource = findUpdatedMediaResource(media: music, previousMedia: nil, resource: resource) {
                                     return .single(RevalidatedMediaResource(updatedResource: updatedResource, updatedReference: nil))
                                 }
                             }

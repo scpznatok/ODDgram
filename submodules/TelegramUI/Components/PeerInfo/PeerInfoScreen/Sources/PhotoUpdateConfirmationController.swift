@@ -3,7 +3,6 @@ import UIKit
 import SwiftSignalKit
 import AsyncDisplayKit
 import Display
-import Postbox
 import TelegramCore
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -21,7 +20,8 @@ func photoUpdateConfirmationController(
     text: String,
     doneTitle: String,
     isDark: Bool = true,
-    commit: @escaping () -> Void
+    commit: @escaping () -> Void,
+    onCancel: (() -> Void)? = nil
 ) -> ViewController {
     let presentationData = context.sharedContext.currentPresentationData.with { $0 }
     let strings = presentationData.strings
@@ -63,16 +63,23 @@ func photoUpdateConfirmationController(
         updatedPresentationData = (presentationData, context.sharedContext.presentationData)
     }
     
+    var didCommit = false
     let alertController = AlertScreen(
         content: content,
         actions: [
             .init(title: strings.Common_Cancel),
             .init(title: doneTitle, type: .default, action: {
+                didCommit = true
                 commit()
             })
         ],
         updatedPresentationData: updatedPresentationData
     )
+    alertController.dismissed = { _ in
+        if !didCommit {
+            onCancel?()
+        }
+    }
     return alertController
 }
 

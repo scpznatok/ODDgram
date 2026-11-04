@@ -9,7 +9,6 @@ import TelegramStringFormatting
 import ContextUI
 import TelegramCore
 import ChatListUI
-import Postbox
 import StoryContainerScreen
 import AvatarNode
 
@@ -182,7 +181,8 @@ public final class LoadingOverlayNode: ASDisplayNode {
             let interaction = ChatListNodeInteraction(context: context, animationCache: context.animationCache, animationRenderer: context.animationRenderer, activateSearch: {}, peerSelected: { _, _, _, _, _ in }, disabledPeerSelected: { _, _, _ in }, togglePeerSelected: { _, _ in }, togglePeersSelection: { _, _ in }, additionalCategorySelected: { _ in
             }, messageSelected: { _, _, _, _ in}, groupSelected: { _ in }, addContact: { _ in }, setPeerIdWithRevealedOptions: { _, _ in }, setItemPinned: { _, _ in }, setPeerMuted: { _, _ in }, setPeerThreadMuted: { _, _, _ in }, deletePeer: { _, _ in }, deletePeerThread: { _, _ in }, setPeerThreadStopped: { _, _, _ in }, setPeerThreadPinned: { _, _, _ in }, setPeerThreadHidden: { _, _, _ in }, updatePeerGrouping: { _, _ in }, togglePeerMarkedUnread: { _, _ in}, toggleArchivedFolderHiddenByDefault: {}, toggleThreadsSelection: { _, _ in }, hidePsa: { _ in }, activateChatPreview: { _, _, _, gesture, _ in
                 gesture?.cancel()
-            }, present: { _ in }, openForumThread: { _, _ in }, openStorageManagement: {}, openPasswordSetup: {}, openPremiumIntro: {}, openPremiumGift: { _, _ in }, openPremiumManagement: {}, openActiveSessions: {}, openBirthdaySetup: {}, performActiveSessionAction: { _, _ in }, openChatFolderUpdates: {}, hideChatFolderUpdates: {}, openStories: { _, _ in }, openStarsTopup: { _ in
+            }, present: { _ in }, openForumThread: { _, _ in }, openStorageManagement: {}, openPasswordSetup: {}, openPremiumIntro: {}, openPremiumGift: { _, _ in }, openPremiumManagement: {}, openActiveSessions: {}, openBirthdaySetup: {}, performActiveSessionAction: { _, _ in }, performBotConnectionReviewAction: { _, _ in
+            }, openChatFolderUpdates: {}, hideChatFolderUpdates: {}, openStories: { _, _ in }, openStarsTopup: { _ in
             }, editPeer: { _ in
             }, openWebApp: { _ in
             }, openPhotoSetup: {
@@ -229,6 +229,7 @@ public final class LoadingOverlayNode: ASDisplayNode {
                     presence: nil,
                     hasUnseenMentions: false,
                     hasUnseenReactions: false,
+                    hasUnseenPollVotes: false,
                     draftState: nil,
                     mediaDraftContentType: nil,
                     inputActivities: nil,
@@ -248,11 +249,11 @@ public final class LoadingOverlayNode: ASDisplayNode {
             
             var itemNodes: [ChatListItemNode] = []
             for i in 0 ..< items.count {
-                items[i].nodeConfiguredForParams(async: { f in f() }, params: ListViewItemLayoutParams(width: size.width, leftInset: 0.0, rightInset: 0.0, availableHeight: 100.0), synchronousLoads: false, previousItem: i == 0 ? nil : items[i - 1], nextItem: (i == items.count - 1) ? nil : items[i + 1], completion: { node, apply in
+                items[i].nodeConfiguredForParams(async: { f in f() }, params: ListViewItemLayoutParams(width: size.width, leftInset: 0.0, rightInset: 0.0, availableHeight: 100.0), synchronousLoads: false, neighbors: ListViewItemNeighbors(previous: i == 0 ? nil : items[i - 1].neighborDescriptor, next: (i == items.count - 1) ? nil : items[i + 1].neighborDescriptor), completion: { node, apply in
                     if let itemNode = node as? ChatListItemNode {
                         itemNodes.append(itemNode)
                     }
-                    apply().1(ListViewItemApply(isOnScreen: true))
+                    apply().1(ListViewItemApply())
                 })
             }
             
@@ -391,7 +392,13 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
         super.didLoad()
         
         let recognizer = TapLongTapOrDoubleTapGestureRecognizer(target: self, action: #selector(self.tapLongTapOrDoubleTapGesture(_:)))
-        recognizer.tapActionAtPoint = { _ in
+        recognizer.tapActionAtPoint = { [weak self] point in
+            guard let self else {
+                return .waitForSingleTap
+            }
+            if self.hasAvatarAction(at: point) {
+                return .fail
+            }
             return .waitForSingleTap
         }
         recognizer.highlight = { [weak self] point in
@@ -419,6 +426,24 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
         default:
             break
         }
+    }
+
+    private func communityId() -> EnginePeer.Id? {
+        guard let itemNode = self.itemNode as? ChatListItemNode, let chatListItem = itemNode.item else {
+            return nil
+        }
+        guard case let .peer(peerData) = chatListItem.content else {
+            return nil
+        }
+        return peerData.peer.peer?.containerPeerId
+    }
+
+    private func hasAvatarAction(at point: CGPoint) -> Bool {
+        guard let item = self.item, let itemNode = self.itemNode as? ChatListItemNode else {
+            return false
+        }
+        let avatarFrame = itemNode.avatarNode.view.convert(itemNode.avatarNode.view.bounds, to: self.view)
+        return avatarFrame.contains(point) && (self.communityId() != nil || item.data.storyStats != nil)
     }
     
     override func update(context: AccountContext, width: CGFloat, safeInsets: UIEdgeInsets, presentationData: PresentationData, item: PeerInfoScreenItem, topItem: PeerInfoScreenItem?, bottomItem: PeerInfoScreenItem?, hasCorners: Bool, transition: ContainedViewLayoutTransition) -> CGFloat {
@@ -521,6 +546,8 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
             },
             performActiveSessionAction: { _, _ in
             },
+            performBotConnectionReviewAction: { _, _ in
+            },
             openChatFolderUpdates: {
             },
             hideChatFolderUpdates: {
@@ -537,6 +564,17 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
                 }
                 
                 StoryContainerScreen.openPeerStories(context: item.context, peerId: item.data.peer.peerId, parentController: controller, avatarNode: itemNode.avatarNode)
+            },
+            openCommunity: { [weak self] communityId in
+                guard let self, let item = self.item, let controller = item.controller() else {
+                    return
+                }
+                let communityController = item.context.sharedContext.makeCommunityViewScreen(
+                    context: item.context,
+                    communityId: communityId,
+                    mode: .sheet
+                )
+                controller.push(communityController)
             },
             openStarsTopup: { _ in
             },
@@ -559,10 +597,10 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
         let isLoading = item.data.isLoading
         
         if !isLoading, !item.data.topMessages.isEmpty {
-            index = EngineChatList.Item.Index.chatList(ChatListIndex(pinningIndex: nil, messageIndex: item.data.topMessages[0].index))
+            index = EngineChatList.Item.Index.chatList(EngineChatListIndex(pinningIndex: nil, messageIndex: item.data.topMessages[0].index))
             messages = item.data.topMessages
         } else {
-            index = EngineChatList.Item.Index.chatList(ChatListIndex(pinningIndex: nil, messageIndex: MessageIndex(id: MessageId(peerId: item.data.peer.peerId, namespace: Namespaces.Message.Cloud, id: 1), timestamp: 0)))
+            index = EngineChatList.Item.Index.chatList(EngineChatListIndex(pinningIndex: nil, messageIndex: EngineMessage.Index(id: EngineMessage.Id(peerId: item.data.peer.peerId, namespace: Namespaces.Message.Cloud, id: 1), timestamp: 0)))
             messages = []
         }
         
@@ -581,6 +619,7 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
                 presence: nil,
                 hasUnseenMentions: false,
                 hasUnseenReactions: false,
+                hasUnseenPollVotes: false,
                 draftState: nil,
                 mediaDraftContentType: nil,
                 inputActivities: nil,
@@ -627,8 +666,7 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
                     return current
                 },
                 params: params,
-                previousItem: nil,
-                nextItem: nil, animation: .None,
+                neighbors: .none, animation: .None,
                 completion: { layout, apply in
                     let nodeFrame = CGRect(origin: current.frame.origin, size: CGSize(width: layout.size.width, height: layout.size.height))
                     
@@ -636,7 +674,7 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
                     current.insets = layout.insets
                     current.frame = nodeFrame
                     
-                    apply(ListViewItemApply(isOnScreen: true))
+                    apply(ListViewItemApply())
                 })
         } else {
             var outItemNode: ListViewItemNode?
@@ -644,11 +682,10 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
                 async: { f in f() },
                 params: params,
                 synchronousLoads: true,
-                previousItem: nil,
-                nextItem: nil,
+                neighbors: .none,
                 completion: { node, apply in
                     outItemNode = node
-                    apply().1(ListViewItemApply(isOnScreen: true))
+                    apply().1(ListViewItemApply())
                 }
             )
             itemNode = outItemNode
@@ -661,7 +698,7 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
             
             self.itemNode = itemNode
             if let itemNode {
-                itemNode.isUserInteractionEnabled = false
+                itemNode.isUserInteractionEnabled = true
                 self.contextSourceNode.contentNode.addSubnode(itemNode)
             }
         }
@@ -738,7 +775,7 @@ private final class PeerInfoScreenPersonalChannelItemNode: PeerInfoScreenItemNod
         if let point, let itemNode = self.itemNode as? ChatListItemNode {
             if !itemNode.avatarNode.view.convert(itemNode.avatarNode.view.bounds, to: self.view).contains(point) {
                 isHighlighted = true
-            } else if let item = self.item, item.data.storyStats == nil {
+            } else if let item = self.item, item.data.storyStats == nil && self.communityId() == nil {
                 isHighlighted = true
             }
         }

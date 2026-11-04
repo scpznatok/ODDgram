@@ -454,43 +454,49 @@ final class StoragePeerListPanelComponent: Component {
     private struct ItemLayout: Equatable {
         let containerInsets: UIEdgeInsets
         let containerWidth: CGFloat
+        let sideInset: CGFloat
+        let rightSideInset: CGFloat
         let itemHeight: CGFloat
         let itemCount: Int
-        
+
         let contentHeight: CGFloat
-        
+
         init(
             containerInsets: UIEdgeInsets,
             containerWidth: CGFloat,
+            sideInset: CGFloat,
+            rightSideInset: CGFloat,
             itemHeight: CGFloat,
             itemCount: Int
         ) {
             self.containerInsets = containerInsets
             self.containerWidth = containerWidth
+            self.sideInset = sideInset
+            self.rightSideInset = rightSideInset
             self.itemHeight = itemHeight
             self.itemCount = itemCount
-            
+
             self.contentHeight = containerInsets.top + containerInsets.bottom + CGFloat(itemCount) * itemHeight
         }
-        
+
         func visibleItems(for rect: CGRect) -> Range<Int>? {
             let offsetRect = rect.offsetBy(dx: -self.containerInsets.left, dy: -self.containerInsets.top)
             var minVisibleRow = Int(floor((offsetRect.minY) / (self.itemHeight)))
             minVisibleRow = max(0, minVisibleRow)
             let maxVisibleRow = Int(ceil((offsetRect.maxY) / (self.itemHeight)))
-            
+
             let minVisibleIndex = minVisibleRow
             let maxVisibleIndex = maxVisibleRow
-            
+
             if maxVisibleIndex >= minVisibleIndex {
                 return minVisibleIndex ..< (maxVisibleIndex + 1)
             } else {
                 return nil
             }
         }
-        
+
         func itemFrame(for index: Int) -> CGRect {
-            return CGRect(origin: CGPoint(x: 0.0, y: self.containerInsets.top + CGFloat(index) * self.itemHeight), size: CGSize(width: self.containerWidth, height: self.itemHeight))
+            return CGRect(origin: CGPoint(x: self.sideInset, y: self.containerInsets.top + CGFloat(index) * self.itemHeight), size: CGSize(width: self.containerWidth - self.sideInset - self.rightSideInset, height: self.itemHeight))
         }
     }
     
@@ -502,7 +508,9 @@ final class StoragePeerListPanelComponent: Component {
     
     class View: UIView, UIScrollViewDelegate {
         private let scrollView: ScrollViewImpl
-        
+        private let listBackgroundView: UIImageView
+        private let listMaskView: UIImageView
+
         private let measureItem = ComponentView<Empty>()
         private var visibleItems: [EnginePeer.Id: ComponentView<Empty>] = [:]
         
@@ -514,25 +522,35 @@ final class StoragePeerListPanelComponent: Component {
         
         override init(frame: CGRect) {
             self.scrollView = ScrollViewImpl()
-            
+
+            self.listBackgroundView = UIImageView()
+            self.listBackgroundView.image = generateStretchableFilledCircleImage(diameter: 26.0 * 2.0, color: .white)?.withRenderingMode(.alwaysTemplate)
+            self.listMaskView = UIImageView()
+            self.listMaskView.image = generateImage(CGSize(width: 16.0 + 26.0 * 2.0 + 16.0, height: 26.0 * 2.0), rotatedContext: { size, context in
+                context.clear(CGRect(origin: CGPoint(), size: size))
+                context.setFillColor(UIColor.white.cgColor)
+                context.fill(CGRect(origin: CGPoint(), size: size))
+                context.setFillColor(UIColor.clear.cgColor)
+                context.setBlendMode(.copy)
+                context.fillEllipse(in: CGRect(origin: CGPoint(x: 16.0, y: 0.0), size: CGSize(width: 26.0 * 2.0, height: 26.0 * 2.0)))
+            })?.stretchableImage(withLeftCapWidth: 16 + 26, topCapHeight: 26).withRenderingMode(.alwaysTemplate)
+
             super.init(frame: frame)
-            
+
+            self.addSubview(self.listBackgroundView)
+
             self.scrollView.delaysContentTouches = true
             self.scrollView.canCancelContentTouches = true
-            self.scrollView.clipsToBounds = false
-            if #available(iOSApplicationExtension 11.0, iOS 11.0, *) {
-                self.scrollView.contentInsetAdjustmentBehavior = .never
-            }
-            if #available(iOS 13.0, *) {
-                self.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
-            }
-            self.scrollView.showsVerticalScrollIndicator = true
+            self.scrollView.contentInsetAdjustmentBehavior = .never
+            self.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
+            self.scrollView.showsVerticalScrollIndicator = false
             self.scrollView.showsHorizontalScrollIndicator = false
             self.scrollView.alwaysBounceHorizontal = false
             self.scrollView.scrollsToTop = false
             self.scrollView.delegate = self
             self.scrollView.clipsToBounds = true
             self.addSubview(self.scrollView)
+            self.addSubview(self.listMaskView)
         }
         
         required init?(coder: NSCoder) {
@@ -542,13 +560,44 @@ final class StoragePeerListPanelComponent: Component {
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             if !self.ignoreScrolling {
                 self.updateScrolling(transition: .immediate)
+                self.updateListBackground(transition: .immediate)
             }
         }
         
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             cancelContextGestures(view: scrollView)
         }
-        
+
+        private func updateListBackground(transition: ComponentTransition) {
+            guard let itemLayout = self.itemLayout else {
+                return
+            }
+            let size = CGSize(width: itemLayout.containerWidth, height: self.scrollView.bounds.height)
+            guard size.width != 0.0 else {
+                return
+            }
+
+            let topInset = itemLayout.containerInsets.top
+
+            var distanceToTop: CGFloat = -100.0
+            var distanceToBottom: CGFloat = -100.0
+
+            let scrollingOffset = self.scrollView.contentOffset.y
+            distanceToTop = -scrollingOffset + topInset
+
+            let itemsContentHeight = self.scrollView.contentSize.height - itemLayout.containerInsets.bottom
+            let contentBottomOffset = itemsContentHeight - scrollingOffset - self.scrollView.bounds.height
+            distanceToBottom = -contentBottomOffset
+
+            distanceToTop = max(-100.0, distanceToTop)
+            distanceToBottom = max(-100.0, distanceToBottom)
+
+            let listBackgroundFrame = CGRect(origin: CGPoint(x: itemLayout.sideInset, y: distanceToTop), size: CGSize(width: max(1.0, size.width - itemLayout.sideInset - itemLayout.rightSideInset), height: max(1.0, size.height - distanceToBottom - distanceToTop)))
+            let listMaskFrame = CGRect(origin: CGPoint(x: listBackgroundFrame.minX - 16.0, y: listBackgroundFrame.minY), size: CGSize(width: listBackgroundFrame.width + 16.0 * 2.0, height: listBackgroundFrame.height))
+            transition.setFrame(view: self.listBackgroundView, frame: listBackgroundFrame)
+            transition.setFrame(view: self.listMaskView, frame: listMaskFrame)
+        }
+
         private func updateScrolling(transition: ComponentTransition) {
             guard let component = self.component, let environment = self.environment, let items = component.items, let itemLayout = self.itemLayout else {
                 return
@@ -597,7 +646,7 @@ final class StoragePeerListPanelComponent: Component {
                         component: AnyComponent(PeerListItemComponent(
                             context: component.context,
                             theme: environment.theme,
-                            sideInset: environment.containerInsets.left,
+                            sideInset: min(environment.containerInsets.left, environment.containerInsets.right),
                             title: itemTitle,
                             peer: item.peer,
                             label: dataSizeString(item.size, formatting: dataSizeFormatting),
@@ -607,7 +656,7 @@ final class StoragePeerListPanelComponent: Component {
                             contextAction: component.contextAction
                         )),
                         environment: {},
-                        containerSize: CGSize(width: itemLayout.containerWidth, height: itemLayout.itemHeight)
+                        containerSize: CGSize(width: itemLayout.containerWidth - itemLayout.sideInset - itemLayout.rightSideInset, height: itemLayout.itemHeight)
                     )
                     let itemFrame = itemLayout.itemFrame(for: index)
                     if let itemComponentView = itemView.view {
@@ -640,13 +689,16 @@ final class StoragePeerListPanelComponent: Component {
             
             let environment = environment[StorageUsagePanelEnvironment.self].value
             self.environment = environment
+
+            self.listBackgroundView.tintColor = environment.theme.list.itemBlocksBackgroundColor
+            self.listMaskView.tintColor = environment.theme.list.blocksBackgroundColor
             
             let measureItemSize = self.measureItem.update(
                 transition: .immediate,
                 component: AnyComponent(PeerListItemComponent(
                     context: component.context,
                     theme: environment.theme,
-                    sideInset: environment.containerInsets.left,
+                    sideInset: min(environment.containerInsets.left, environment.containerInsets.right),
                     title: "ABCDEF",
                     peer: nil,
                     label: "1000",
@@ -664,6 +716,11 @@ final class StoragePeerListPanelComponent: Component {
             let itemLayout = ItemLayout(
                 containerInsets: environment.containerInsets,
                 containerWidth: availableSize.width,
+                // iPhone Duo: the part of one side's inset beyond the other's is the side strip; the list keeps 16pt
+                // clear of it, and the rows' own inset is the part both sides share. Equal insets give 16pt
+                // margins and the left inset in the rows, as before.
+                sideInset: 16.0 + max(0.0, environment.containerInsets.left - environment.containerInsets.right),
+                rightSideInset: 16.0 + max(0.0, environment.containerInsets.right - environment.containerInsets.left),
                 itemHeight: measureItemSize.height,
                 itemCount: component.items?.items.count ?? 0
             )
@@ -690,7 +747,8 @@ final class StoragePeerListPanelComponent: Component {
             }
             self.ignoreScrolling = false
             self.updateScrolling(transition: transition)
-            
+            self.updateListBackground(transition: transition)
+
             return availableSize
         }
     }

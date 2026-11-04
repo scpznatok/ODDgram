@@ -1,10 +1,10 @@
 import Foundation
+import LottieSettings
 import UIKit
 import Display
 import TelegramCore
 import SwiftSignalKit
 import AsyncDisplayKit
-import Postbox
 import TelegramPresentationData
 import StickerResources
 import AccountContext
@@ -21,7 +21,7 @@ public enum ChatMediaInputStickerGridSectionAccessory {
 }
 
 public final class ChatMediaInputStickerGridSection: GridSection {
-    public let collectionId: ItemCollectionId
+    public let collectionId: EngineItemCollectionId
     public let collectionInfo: StickerPackCollectionInfo?
     public let accessory: ChatMediaInputStickerGridSectionAccessory
     public let interaction: ChatMediaInputNodeInteraction
@@ -32,7 +32,7 @@ public final class ChatMediaInputStickerGridSection: GridSection {
         return self.collectionId.hashValue
     }
     
-    public init(collectionId: ItemCollectionId, collectionInfo: StickerPackCollectionInfo?, accessory: ChatMediaInputStickerGridSectionAccessory, theme: PresentationTheme, interaction: ChatMediaInputNodeInteraction) {
+    public init(collectionId: EngineItemCollectionId, collectionInfo: StickerPackCollectionInfo?, accessory: ChatMediaInputStickerGridSectionAccessory, theme: PresentationTheme, interaction: ChatMediaInputNodeInteraction) {
         self.collectionId = collectionId
         self.collectionInfo = collectionInfo
         self.accessory = accessory
@@ -118,7 +118,7 @@ public final class ChatMediaInputStickerGridSectionNode: ASDisplayNode {
 
 public final class ChatMediaInputStickerGridItem: GridItem {
     public let context: AccountContext
-    public let index: ItemCollectionViewEntryIndex
+    public let index: EngineItemCollectionViewEntryIndex
     public let stickerItem: StickerPackItem
     public let selected: () -> Void
     public let interfaceInteraction: ChatControllerInteraction?
@@ -129,7 +129,7 @@ public final class ChatMediaInputStickerGridItem: GridItem {
     
     public let section: GridSection?
     
-    public init(context: AccountContext, collectionId: ItemCollectionId, stickerPackInfo: StickerPackCollectionInfo?, index: ItemCollectionViewEntryIndex, stickerItem: StickerPackItem, canManagePeerSpecificPack: Bool?, interfaceInteraction: ChatControllerInteraction?, inputNodeInteraction: ChatMediaInputNodeInteraction, hasAccessory: Bool, theme: PresentationTheme, large: Bool = false, isLocked: Bool = false, selected: @escaping () -> Void) {
+    public init(context: AccountContext, collectionId: EngineItemCollectionId, stickerPackInfo: StickerPackCollectionInfo?, index: EngineItemCollectionViewEntryIndex, stickerItem: StickerPackItem, canManagePeerSpecificPack: Bool?, interfaceInteraction: ChatControllerInteraction?, inputNodeInteraction: ChatMediaInputNodeInteraction, hasAccessory: Bool, theme: PresentationTheme, large: Bool = false, isLocked: Bool = false, selected: @escaping () -> Void) {
         self.context = context
         self.index = index
         self.stickerItem = stickerItem
@@ -270,7 +270,7 @@ public final class ChatMediaInputStickerGridItemNode: GridItemNode {
                 
                 if item.stickerItem.file.isAnimatedSticker || item.stickerItem.file.isVideoSticker {
                     if self.animationNode == nil {
-                        let animationNode = DefaultAnimatedStickerNodeImpl()
+                        let animationNode = DefaultAnimatedStickerNodeImpl(lottieSettings: item.context.lottieRenderingSettings)
                         animationNode.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.imageNodeTap(_:))))
                         self.animationNode = animationNode
                         animationNode.started = { [weak self] in

@@ -66,6 +66,7 @@ swift_library(
     ],
     deps = sgdeps + [
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/AsyncDisplayKit:AsyncDisplayKit",
         "//submodules/Display:Display",
         "//submodules/Postbox:Postbox",
@@ -95,7 +96,8 @@ swift_library(
         "//submodules/Components/ViewControllerComponent:ViewControllerComponent",
         "//submodules/Components/MultilineTextComponent:MultilineTextComponent",
         "//submodules/Components/MultilineTextWithEntitiesComponent:MultilineTextWithEntitiesComponent",
-        "//submodules/Components/SheetComponent:SheetComponent",
+        "//submodules/Components/SheetComponent",
+        "//submodules/Components/ResizableSheetComponent",
         "//submodules/Components/BundleIconComponent:BundleIconComponent",
         "//submodules/Components/SolidRoundedButtonComponent:SolidRoundedButtonComponent",
         "//submodules/Components/BlurredBackgroundComponent:BlurredBackgroundComponent",

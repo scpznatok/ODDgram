@@ -13,7 +13,6 @@ import AvatarVideoNode
 import SwiftSignalKit
 import TelegramUniversalVideoContent
 import PeerInfoAvatarListNode
-import Postbox
 import TelegramCore
 import EmojiStatusComponent
 import GalleryUI
@@ -49,6 +48,8 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
     
     private var isFirstAvatarLoading = true
     var item: PeerInfoAvatarListItem?
+    /// The avatar's corner radius over its side, as last laid out: 0.5 round, 0.25 a forum's rounded square.
+    private(set) var cornerFraction: CGFloat = 0.5
     
     private let playbackStartDisposable = MetaDisposable()
     
@@ -89,9 +90,16 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
             if value {
                 self.updateFromParams()
             } else {
-                self.videoNode?.removeFromSupernode()
-                self.videoNode = nil
-                self.videoContent = nil
+                // A move to another superview (the chat ↔ profile expansion lends the avatar, then returns it) leaves the
+                // hierarchy and re-enters it in one turn: the video goes only if the avatar stays out.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.hierarchyTrackingLayer.isInHierarchy else {
+                        return
+                    }
+                    self.videoNode?.removeFromSupernode()
+                    self.videoNode = nil
+                    self.videoContent = nil
+                }
             }
         }
         self.layer.addSublayer(self.hierarchyTrackingLayer)
@@ -101,7 +109,7 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
         self.playbackStartDisposable.dispose()
     }
     
-    func updateStoryView(transition: ContainedViewLayoutTransition, theme: PresentationTheme, peer: Peer?) {
+    func updateStoryView(transition: ContainedViewLayoutTransition, theme: PresentationTheme, peer: EnginePeer?) {
         var colors = AvatarNode.Colors(theme: theme)
         
         let regularNavigationContentsSecondaryColor: UIColor
@@ -160,7 +168,7 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
         }
         
         var isForum = false
-        if let peer, let channel = peer as? TelegramChannel, channel.isForumOrMonoForum {
+        if let peer, case let .channel(channel) = peer, channel.isForumOrMonoForum {
             isForum = true
         }
         
@@ -210,7 +218,7 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
     }
 
     private struct Params {
-        let peer: Peer?
+        let peer: EnginePeer?
         let threadId: Int64?
         let threadInfo: EngineMessageHistoryThread.Info?
         let item: PeerInfoAvatarListItem?
@@ -219,7 +227,7 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
         let isExpanded: Bool
         let isSettings: Bool
 
-        init(peer: Peer?, threadId: Int64?, threadInfo: EngineMessageHistoryThread.Info?, item: PeerInfoAvatarListItem?, theme: PresentationTheme, avatarSize: CGFloat, isExpanded: Bool, isSettings: Bool) {
+        init(peer: EnginePeer?, threadId: Int64?, threadInfo: EngineMessageHistoryThread.Info?, item: PeerInfoAvatarListItem?, theme: PresentationTheme, avatarSize: CGFloat, isExpanded: Bool, isSettings: Bool) {
             self.peer = peer
             self.threadId = threadId
             self.threadInfo = threadInfo
@@ -251,7 +259,7 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
         )
     }
 
-    func update(peer: Peer?, threadId: Int64?, threadInfo: EngineMessageHistoryThread.Info?, item: PeerInfoAvatarListItem?, theme: PresentationTheme, avatarSize: CGFloat, isExpanded: Bool, isSettings: Bool) {
+    func update(peer: EnginePeer?, threadId: Int64?, threadInfo: EngineMessageHistoryThread.Info?, item: PeerInfoAvatarListItem?, theme: PresentationTheme, avatarSize: CGFloat, isExpanded: Bool, isSettings: Bool) {
         self.params = Params(peer: peer, threadId: threadId, threadInfo: threadInfo, item: item, theme: theme, avatarSize: avatarSize, isExpanded: isExpanded, isSettings: isSettings)
 
         if let peer = peer {
@@ -282,7 +290,7 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
             }
             
             self.avatarNode.imageNode.animateFirstTransition = !isSettings
-            self.avatarNode.setPeer(context: self.context, theme: theme, peer: EnginePeer(peer), overrideImage: overrideImage, clipStyle: .none, synchronousLoad: self.isFirstAvatarLoading, displayDimensions: CGSize(width: avatarSize, height: avatarSize), storeUnrounded: true)
+            self.avatarNode.setPeer(context: self.context, theme: theme, peer: peer, overrideImage: overrideImage, clipStyle: .none, synchronousLoad: self.isFirstAvatarLoading, displayDimensions: CGSize(width: avatarSize, height: avatarSize), storeUnrounded: true)
             
             if let threadInfo = threadInfo {
                 self.avatarNode.isHidden = true
@@ -327,12 +335,13 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
             
             var isForum = false
             let avatarCornerRadius: CGFloat
-            if let channel = peer as? TelegramChannel, channel.isForumOrMonoForum {
+            if case let .channel(channel) = peer, channel.isForumOrMonoForum {
                 avatarCornerRadius = floor(avatarSize * 0.25)
                 isForum = true
             } else {
                 avatarCornerRadius = avatarSize / 2.0
             }
+            self.cornerFraction = isForum ? 0.25 : 0.5
             if self.avatarNode.layer.cornerRadius != 0.0 {
                 ContainedViewLayoutTransition.animated(duration: 0.3, curve: .easeInOut).updateCornerRadius(layer: self.avatarNode.contentNode.layer, cornerRadius: avatarCornerRadius)
             } else {
@@ -402,7 +411,7 @@ final class PeerInfoAvatarTransformContainerNode: ASDisplayNode {
                     markupNode.update(markup: markup, size: CGSize(width: 320.0, height: 320.0))
                     markupNode.updateVisibility(true)
                 } else if threadInfo == nil, let video = videoRepresentations.last, let peerReference = PeerReference(peer) {
-                    let videoFileReference = FileMediaReference.avatarList(peer: peerReference, media: TelegramMediaFile(fileId: MediaId(namespace: Namespaces.Media.LocalFile, id: 0), partialReference: nil, resource: video.representation.resource, previewRepresentations: representations.map { $0.representation }, videoThumbnails: [], immediateThumbnailData: immediateThumbnailData, mimeType: "video/mp4", size: nil, attributes: [.Animated, .Video(duration: 0, size: video.representation.dimensions, flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)], alternativeRepresentations: []))
+                    let videoFileReference = FileMediaReference.avatarList(peer: peerReference, media: TelegramMediaFile(fileId: EngineMedia.Id(namespace: Namespaces.Media.LocalFile, id: 0), partialReference: nil, resource: video.representation.resource, previewRepresentations: representations.map { $0.representation }, videoThumbnails: [], immediateThumbnailData: immediateThumbnailData, mimeType: "video/mp4", size: nil, attributes: [.Animated, .Video(duration: 0, size: video.representation.dimensions, flags: [], preloadSize: nil, coverTime: nil, videoCodec: nil)], alternativeRepresentations: []))
                     let videoContent = NativeVideoContent(id: .profileVideo(videoId, nil), userLocation: .other, fileReference: videoFileReference, streamVideo: isMediaStreamable(resource: video.representation.resource) ? .conservative : .none, loopVideo: true, enableSound: false, fetchAutomatically: true, onlyFullSizeThumbnail: false, useLargeThumbnail: true, autoFetchFullSizeThumbnail: true, startTimestamp: video.representation.startTimestamp, continuePlayingWithoutSoundOnLostAudioSession: false, placeholderColor: .clear, captureProtected: peer.isCopyProtectionEnabled, storeAfterDownload: nil)
                     if videoContent.id != self.videoContent?.id {
                         self.videoNode?.removeFromSupernode()

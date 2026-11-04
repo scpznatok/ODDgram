@@ -152,6 +152,7 @@ final class ContextControllerNode: ViewControllerTracingNode, ASScrollViewDelega
         if #available(iOS 11.0, *) {
             self.scrollNode.view.contentInsetAdjustmentBehavior = .never
         }
+        self.scrollNode.view.scrollsToTop = false
         
         self.contentContainerNode = ContextContentContainerNode()
         
@@ -624,7 +625,6 @@ final class ContextControllerNode: ViewControllerTracingNode, ASScrollViewDelega
                         self?.clippingNode.view.mask = nil
                         self?.animatedIn = true
                     })
-                    contentParentNode.applyAbsoluteOffsetSpring?(-contentContainerOffset.y, springDuration, springDamping)
                 }
                 
                 extracted.willUpdateIsExtractedToContextPreview?(true, .animated(duration: 0.2, curve: .easeInOut))
@@ -943,7 +943,6 @@ final class ContextControllerNode: ViewControllerTracingNode, ASScrollViewDelega
                     intermediateCompletion()
                 })
                 contentParentNode.updateAbsoluteRect?(self.contentContainerNode.frame.offsetBy(dx: 0.0, dy: -self.scrollNode.view.contentOffset.y + contentContainerOffset.y), self.bounds.size)
-                contentParentNode.applyAbsoluteOffset?(CGPoint(x: 0.0, y: -contentContainerOffset.y), transitionCurve, transitionDuration)
                 
                 contentParentNode.willUpdateIsExtractedToContextPreview?(false, .animated(duration: 0.2, curve: .easeInOut))
             } else {
@@ -1581,7 +1580,7 @@ final class ContextControllerNode: ViewControllerTracingNode, ASScrollViewDelega
                         }
                         contentUnscaledSize = CGSize(width: constrainedWidth, height: max(100.0, proposedContentHeight))
                         
-                        if let preferredSize = contentParentNode.controller.preferredContentSizeForLayout(ContainerViewLayout(size: contentUnscaledSize, metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact, orientation: nil), deviceMetrics: layout.deviceMetrics, intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false)) {
+                        if let preferredSize = contentParentNode.controller.preferredContentSizeForLayout(ContainerViewLayout(size: contentUnscaledSize, metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact, orientation: nil), deviceMetrics: layout.deviceMetrics, intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), reservedCorners: .none, division: nil, additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false, presentedInFormSheet: false)) {
                             contentUnscaledSize = preferredSize
                         }
                     } else {
@@ -1591,7 +1590,7 @@ final class ContextControllerNode: ViewControllerTracingNode, ASScrollViewDelega
                         let proposedContentHeight = layout.size.height - topEdge - contentActionsSpacing - actionsSize.height - layout.intrinsicInsets.bottom - actionsBottomInset
                         contentUnscaledSize = CGSize(width: min(layout.size.width, 340.0), height: min(568.0, proposedContentHeight))
                         
-                        if let preferredSize = contentParentNode.controller.preferredContentSizeForLayout(ContainerViewLayout(size: contentUnscaledSize, metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact, orientation: nil), deviceMetrics: layout.deviceMetrics, intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false)) {
+                        if let preferredSize = contentParentNode.controller.preferredContentSizeForLayout(ContainerViewLayout(size: contentUnscaledSize, metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact, orientation: nil), deviceMetrics: layout.deviceMetrics, intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), reservedCorners: .none, division: nil, additionalInsets: UIEdgeInsets(), statusBarHeight: nil, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false, presentedInFormSheet: false)) {
                             contentUnscaledSize = preferredSize
                         }
                     }
@@ -1754,6 +1753,10 @@ final class ContextControllerNode: ViewControllerTracingNode, ASScrollViewDelega
             return nil
         }
         
+        if let controller = self.getController() as? ContextControllerImpl, let passthroughHitTest = controller.passthroughHitTest, let result = passthroughHitTest(self.view.convert(point, to: nil)) {
+            return result
+        }
+        
         if let controller = self.getController() as? ContextController {
             var innerResult: UIView?
             controller.forEachController { c in
@@ -1896,6 +1899,7 @@ public final class ContextControllerImpl: ViewController, ContextController, Sta
     let hideReactionPanelTail: Bool
 
     public var passthroughTouchEvent: ((UIView, CGPoint) -> HandledTouchEvent)?
+    public var passthroughHitTest: ((CGPoint) -> UIView?)?
     
     private var shouldBeDismissedDisposable: Disposable?
     

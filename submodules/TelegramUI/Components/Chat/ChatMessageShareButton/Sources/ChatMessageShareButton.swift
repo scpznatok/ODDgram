@@ -6,7 +6,6 @@ import TelegramPresentationData
 import ChatControllerInteraction
 import AccountContext
 import TelegramCore
-import Postbox
 import WallpaperBackgroundNode
 import ChatMessageItemCommon
 import ContextUI
@@ -107,7 +106,7 @@ public class ChatMessageShareButton: ASDisplayNode {
         self.morePressed?()
     }
     
-    public func update(hasTranslation: Bool? = nil, presentationData: ChatPresentationData, controllerInteraction: ChatControllerInteraction, chatLocation: ChatLocation, subject: ChatControllerSubject?, message: Message, account: Account, disableComments: Bool = false, isSummarize: Bool = false) -> CGSize {
+    public func update(hasTranslation: Bool? = nil, presentationData: ChatPresentationData, controllerInteraction: ChatControllerInteraction, chatLocation: ChatLocation, subject: ChatControllerSubject?, message: EngineMessage, accountPeerId: EnginePeer.Id, disableComments: Bool = false, isSummarize: Bool = false) -> CGSize {
         var isReplies = false
         var isNavigate = false
         var replyCount = 0
@@ -178,7 +177,7 @@ public class ChatMessageShareButton: ASDisplayNode {
                 updatedIconOffset = CGPoint(x: UIScreenPixel, y: 1.0)
             } else if isReplies {
                 updatedIconImage = PresentationResourcesChat.chatFreeCommentButtonIcon(presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper)
-            } else if message.id.peerId.isRepliesOrSavedMessages(accountPeerId: account.peerId) {
+            } else if message.id.peerId.isRepliesOrSavedMessages(accountPeerId: accountPeerId) {
                 updatedIconImage = PresentationResourcesChat.chatFreeNavigateButtonIcon(presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper)
                 updatedIconOffset = CGPoint(x: UIScreenPixel, y: 1.0)
             } else {
@@ -327,12 +326,6 @@ public class ChatMessageShareButton: ASDisplayNode {
             self.backgroundBlurView?.view.isHidden = true
             backgroundContent.cornerRadius = min(size.width, size.height) / 2.0
             backgroundContent.frame = CGRect(origin: CGPoint(), size: size)
-            if let (rect, containerSize) = self.absolutePosition {
-                var backgroundFrame = backgroundContent.frame
-                backgroundFrame.origin.x += rect.minX
-                backgroundFrame.origin.y += rect.minY
-                backgroundContent.update(rect: backgroundFrame, within: containerSize, transition: .immediate)
-            }
         } else {
             //self.backgroundNode.isHidden = false
             self.backgroundBlurView?.view.isHidden = false
@@ -359,12 +352,6 @@ public class ChatMessageShareButton: ASDisplayNode {
     
     public func updateAbsoluteRect(_ rect: CGRect, within containerSize: CGSize) {
         self.absolutePosition = (rect, containerSize)
-        if let backgroundContent = self.backgroundContent {
-            var backgroundFrame = backgroundContent.frame
-            backgroundFrame.origin.x += rect.minX
-            backgroundFrame.origin.y += rect.minY
-            backgroundContent.update(rect: backgroundFrame, within: containerSize, transition: .immediate)
-        }
     }
 }
 

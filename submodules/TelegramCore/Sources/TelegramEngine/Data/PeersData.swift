@@ -5,6 +5,15 @@ public typealias EngineExportedPeerInvitation = ExportedInvitation
 public typealias EngineSecretChatKeyFingerprint = SecretChatKeyFingerprint
 
 
+/// The basic group a channel was migrated from, as the channel's history views read it: they
+/// include that group's history when the channel's cached data names it (`peerIdsForLocation`).
+func channelMigratedFromGroupId(channelId: PeerId, cachedData: CachedPeerData?) -> PeerId? {
+    guard let groupId = cachedData?.associatedHistoryMessageId?.peerId, groupId != channelId else {
+        return nil
+    }
+    return groupId
+}
+
 public enum EnginePeerCachedInfoItem<T> {
     case known(T)
     case unknown
@@ -184,6 +193,36 @@ public extension TelegramEngine.EngineData.Item {
             }
         }
 
+        public struct MainPeer: TelegramEngineDataItem, TelegramEngineMapKeyDataItem, PostboxViewDataItem {
+            public typealias Result = Optional<EnginePeer>
+
+            fileprivate var id: EnginePeer.Id
+            public var mapKey: EnginePeer.Id {
+                return self.id
+            }
+
+            public init(id: EnginePeer.Id) {
+                self.id = id
+            }
+
+            var key: PostboxViewKey {
+                return .peer(peerId: self.id, components: [])
+            }
+
+            func extract(view: PostboxView) -> Result {
+                guard let view = view as? PeerView else {
+                    preconditionFailure()
+                }
+                guard let peer = view.peers[self.id] else {
+                    return nil
+                }
+                if let secretChat = peer as? TelegramSecretChat {
+                    return view.peers[secretChat.regularPeerId].flatMap(EnginePeer.init)
+                }
+                return EnginePeer(peer)
+            }
+        }
+
         public struct RenderedPeer: TelegramEngineDataItem, TelegramEngineMapKeyDataItem, PostboxViewDataItem {
             public typealias Result = Optional<EngineRenderedPeer>
 
@@ -310,6 +349,30 @@ public extension TelegramEngine.EngineData.Item {
             }
         }
 
+        public struct CachedData: TelegramEngineDataItem, TelegramEngineMapKeyDataItem, PostboxViewDataItem {
+            public typealias Result = Optional<EngineCachedPeerData>
+
+            fileprivate var id: EnginePeer.Id
+            public var mapKey: EnginePeer.Id {
+                return self.id
+            }
+
+            public init(id: EnginePeer.Id) {
+                self.id = id
+            }
+
+            var key: PostboxViewKey {
+                return .cachedPeerData(peerId: self.id)
+            }
+
+            func extract(view: PostboxView) -> Result {
+                guard let view = view as? CachedPeerDataView else {
+                    preconditionFailure()
+                }
+                return view.cachedPeerData
+            }
+        }
+
         public struct ParticipantCount: TelegramEngineDataItem, TelegramEngineMapKeyDataItem, PostboxViewDataItem {
             public typealias Result = Optional<Int>
 
@@ -344,6 +407,32 @@ public extension TelegramEngine.EngineData.Item {
             }
         }
         
+        /// The basic group this channel was migrated from, whose history the channel's history
+        /// views include (`channelMigratedFromGroupId`).
+        public struct MigratedFromGroupId: TelegramEngineDataItem, TelegramEngineMapKeyDataItem, PostboxViewDataItem {
+            public typealias Result = Optional<EnginePeer.Id>
+
+            fileprivate var id: EnginePeer.Id
+            public var mapKey: EnginePeer.Id {
+                return self.id
+            }
+
+            public init(id: EnginePeer.Id) {
+                self.id = id
+            }
+
+            var key: PostboxViewKey {
+                return .cachedPeerData(peerId: self.id)
+            }
+
+            func extract(view: PostboxView) -> Result {
+                guard let view = view as? CachedPeerDataView else {
+                    preconditionFailure()
+                }
+                return channelMigratedFromGroupId(channelId: self.id, cachedData: view.cachedPeerData)
+            }
+        }
+
         public struct Wallpaper: TelegramEngineDataItem, TelegramEngineMapKeyDataItem, PostboxViewDataItem {
             public typealias Result = Optional<TelegramWallpaper>
 
@@ -1688,6 +1777,9 @@ public extension TelegramEngine.EngineData.Item {
             }
 
             func _extract(data: TelegramEngine.EngineData, views: [PostboxViewKey: PostboxView]) -> Any {
+                guard self.id != data.accountPeerId else {
+                    return false
+                }
                 guard let basicPeerView = views[.basicPeer(data.accountPeerId)] as? BasicPeerView else {
                     assertionFailure()
                     return false

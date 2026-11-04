@@ -4,7 +4,6 @@ import Display
 import ComponentFlow
 import TelegramPresentationData
 import TelegramCore
-import Postbox
 import SwiftSignalKit
 import AccountContext
 import PhotoResources
@@ -183,7 +182,7 @@ public final class StorySetIndicatorComponent: Component {
         init(context: AccountContext, item: StorySetIndicatorComponent.Item, displayAvatars: Bool, updated: @escaping () -> Void) {
             self.updated = updated
             
-            let peerReference = PeerReference(item.peer._asPeer())
+            let peerReference = PeerReference(item.peer)
             
             var messageMedia: EngineMedia?
             switch item.storyItem.media {
@@ -204,7 +203,7 @@ public final class StorySetIndicatorComponent: Component {
                 var fetchSignal: Signal<Never, NoError>?
                 
                 if displayAvatars {
-                    imageSignal = peerAvatarCompleteImage(postbox: context.account.postbox, network: context.account.network, peer: item.peer, forceProvidedRepresentation: false, representation: nil, size: CGSize(width: 26.0, height: 26.0), round: true, font: avatarPlaceholderFont(size: 13.0), drawLetters: true, fullSize: false, blurred: false)
+                    imageSignal = peerAvatarCompleteImage(postbox: context.account.postbox, peer: item.peer, forceProvidedRepresentation: false, representation: nil, size: CGSize(width: 26.0, height: 26.0), round: true, font: avatarPlaceholderFont(size: 13.0), drawLetters: true, fullSize: false, blurred: false)
                 } else {
                     switch messageMedia {
                     case let .image(image):
@@ -217,11 +216,10 @@ public final class StorySetIndicatorComponent: Component {
                             highQuality: true
                         )
                         if let representation = image.representations.last {
-                            fetchSignal = fetchedMediaResource(
-                                mediaBox: context.account.postbox.mediaBox,
+                            fetchSignal = context.engine.resources.fetch(
+                                reference: ImageMediaReference.story(peer: peerReference, id: item.storyItem.id, media: image).resourceReference(representation.resource),
                                 userLocation: .peer(peerReference.id),
-                                userContentType: .story,
-                                reference: ImageMediaReference.story(peer: peerReference, id: item.storyItem.id, media: image).resourceReference(representation.resource)
+                                userContentType: .story
                             )
                             |> ignoreValues
                             |> `catch` { _ -> Signal<Never, NoError> in
@@ -243,11 +241,10 @@ public final class StorySetIndicatorComponent: Component {
                             useMiniThumbnailIfAvailable: false,
                             blurred: false
                         )
-                        fetchSignal = fetchedMediaResource(
-                            mediaBox: context.account.postbox.mediaBox,
+                        fetchSignal = context.engine.resources.fetch(
+                            reference: FileMediaReference.story(peer: peerReference, id: item.storyItem.id, media: file).resourceReference(file.resource),
                             userLocation: .peer(peerReference.id),
-                            userContentType: .story,
-                            reference: FileMediaReference.story(peer: peerReference, id: item.storyItem.id, media: file).resourceReference(file.resource)
+                            userContentType: .story
                         )
                         |> ignoreValues
                         |> `catch` { _ -> Signal<Never, NoError> in

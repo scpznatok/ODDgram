@@ -6,7 +6,6 @@ import ComponentFlow
 import PagerComponent
 import TelegramPresentationData
 import TelegramCore
-import Postbox
 import BundleIconComponent
 import AudioToolbox
 import SwiftSignalKit
@@ -127,6 +126,7 @@ public final class EntityKeyboardComponent: Component {
     public let useExternalSearchContainer: Bool
     public let hidePanels: Bool
     public let customTintColor: UIColor?
+    public let alwaysShowsTopPanel: Bool
     
     public init(
         theme: PresentationTheme,
@@ -162,7 +162,8 @@ public final class EntityKeyboardComponent: Component {
         clipContentToTopPanel: Bool,
         useExternalSearchContainer: Bool,
         hidePanels: Bool = false,
-        customTintColor: UIColor? = nil
+        customTintColor: UIColor? = nil,
+        alwaysShowsTopPanel: Bool = false
     ) {
         self.theme = theme
         self.strings = strings
@@ -198,6 +199,7 @@ public final class EntityKeyboardComponent: Component {
         self.useExternalSearchContainer = useExternalSearchContainer
         self.hidePanels = hidePanels
         self.customTintColor = customTintColor
+        self.alwaysShowsTopPanel = alwaysShowsTopPanel
     }
     
     public static func ==(lhs: EntityKeyboardComponent, rhs: EntityKeyboardComponent) -> Bool {
@@ -258,6 +260,9 @@ public final class EntityKeyboardComponent: Component {
         if lhs.isExpanded != rhs.isExpanded {
             return false
         }
+        if lhs.alwaysShowsTopPanel != rhs.alwaysShowsTopPanel {
+            return false
+        }
         if lhs.clipContentToTopPanel != rhs.clipContentToTopPanel {
             return false
         }
@@ -273,7 +278,7 @@ public final class EntityKeyboardComponent: Component {
     public final class View: UIView {
         private let tintContainerView: UIView
         
-        private let pagerView: ComponentHostView<EntityKeyboardChildEnvironment>
+        private let pagerView: ComponentView<EntityKeyboardChildEnvironment>
         
         private var component: EntityKeyboardComponent?
         public private(set) weak var state: EmptyComponentState?
@@ -296,18 +301,30 @@ public final class EntityKeyboardComponent: Component {
         
         override init(frame: CGRect) {
             self.tintContainerView = UIView()
-            self.pagerView = ComponentHostView<EntityKeyboardChildEnvironment>()
+            self.pagerView = ComponentView()
             
             super.init(frame: frame)
             
             //self.clipsToBounds = true
             self.disablesInteractiveTransitionGestureRecognizer = true
-            
-            self.addSubview(self.pagerView)
         }
         
         required init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
+        }
+        
+        override public func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+            if self.alpha.isZero {
+                return nil
+            }
+            for view in self.subviews.reversed() {
+                if let result = view.hitTest(self.convert(point, to: view), with: event), result.isUserInteractionEnabled {
+                    return result
+                }
+            }
+            
+            let result = super.hitTest(point, with: event)
+            return result
         }
         
         func update(component: EntityKeyboardComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
@@ -694,7 +711,7 @@ public final class EntityKeyboardComponent: Component {
                 panelHideBehavior = .hide
             } else if component.hidePanels {
                 panelHideBehavior = .disable
-            } else if component.isExpanded {
+            } else if component.isExpanded || component.alwaysShowsTopPanel {
                 panelHideBehavior = .show
             } else {
                 panelHideBehavior = .hideOnScroll
@@ -793,7 +810,12 @@ public final class EntityKeyboardComponent: Component {
                 forceUpdate: forceUpdate,
                 containerSize: availableSize
             )
-            transition.setFrame(view: self.pagerView, frame: CGRect(origin: CGPoint(), size: pagerSize))
+            if let pagerComponentView = self.pagerView.view {
+                if pagerComponentView.superview == nil {
+                    self.insertSubview(pagerComponentView, at: 0)
+                }
+                transition.setFrame(view: pagerComponentView, frame: CGRect(origin: CGPoint(), size: pagerSize))
+            }
             
             let accountContext = component.emojiContent?.context ?? component.stickerContent?.context
             if let searchComponent = self.searchComponent, let accountContext = accountContext {
@@ -992,6 +1014,14 @@ public final class EntityKeyboardComponent: Component {
             
             pagerContentView.scrollToItemGroup(id: groupId, subgroupId: subgroupId, animated: animated)
             pagerView.collapseTopPanel()
+        }
+        
+        public func revealHiddenPanels() {
+            guard let pagerView = self.pagerView.findTaggedView(tag: PagerComponentViewTag()) as? PagerComponent<EntityKeyboardChildEnvironment, EntityKeyboardTopContainerPanelEnvironment>.View else {
+                return
+            }
+            
+            pagerView.revealHiddenPanels()
         }
         
         private func reorderPacks(category: ReorderCategory, items: [EntityKeyboardTopPanelComponent.Item]) {

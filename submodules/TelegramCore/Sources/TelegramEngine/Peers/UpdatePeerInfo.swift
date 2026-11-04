@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 
@@ -13,7 +13,7 @@ func _internal_updatePeerTitle(account: Account, peerId: PeerId, title: String) 
     let accountPeerId = account.peerId
     return account.postbox.transaction { transaction -> Signal<Void, UpdatePeerTitleError> in
         if let peer = transaction.getPeer(peerId) {
-            if let peer = peer as? TelegramChannel, let inputChannel = apiInputChannel(peer) {
+            if (peer is TelegramChannel || peer is TelegramCommunity), let inputChannel = apiInputChannel(peer) {
                 return account.network.request(Api.functions.channels.editTitle(channel: inputChannel, title: title))
                     |> mapError { _ -> UpdatePeerTitleError in
                         return .generic

@@ -4,7 +4,6 @@ import Display
 import ComponentFlow
 import SwiftSignalKit
 import TelegramCore
-import Postbox
 import TelegramPresentationData
 import PresentationDataUtils
 import ViewControllerComponent
@@ -187,6 +186,7 @@ private final class StarsPurchaseScreenContentComponent: CombinedComponent {
             let component = context.component
             let scrollEnvironment = context.environment[ScrollChildEnvironment.self].value
             let environment = context.environment[ViewControllerComponentContainer.Environment.self].value
+            let controller = environment.controller
             let state = context.state
     
             state.products = component.products
@@ -197,6 +197,8 @@ private final class StarsPurchaseScreenContentComponent: CombinedComponent {
             
             let availableWidth = context.availableSize.width
             let sideInsets = sideInset * 2.0 + environment.safeInsets.left + environment.safeInsets.right
+            // Content is centered in the band between the side insets (the screen's center unless one is iPhone Duo's strip).
+            let bandCenterX = environment.safeInsets.left + (availableWidth - environment.safeInsets.left - environment.safeInsets.right) / 2.0
             var size = CGSize(width: context.availableSize.width, height: 0.0)
                         
             size.height += 183.0 + 10.0 + environment.navigationHeight - 56.0
@@ -296,7 +298,7 @@ private final class StarsPurchaseScreenContentComponent: CombinedComponent {
                 transition: .immediate
             )
             context.add(text
-                .position(CGPoint(x: size.width / 2.0, y: size.height + text.size.height / 2.0))
+                .position(CGPoint(x: bandCenterX, y: size.height + text.size.height / 2.0))
                 .appear(.default(alpha: true))
                 .disappear(.default(alpha: true))
             )
@@ -447,7 +449,7 @@ private final class StarsPurchaseScreenContentComponent: CombinedComponent {
                 transition: context.transition
             )
             context.add(list
-                .position(CGPoint(x: availableWidth / 2.0, y: size.height + list.size.height / 2.0))
+                .position(CGPoint(x: bandCenterX, y: size.height + list.size.height / 2.0))
             )
             size.height += list.size.height
             
@@ -476,7 +478,10 @@ private final class StarsPurchaseScreenContentComponent: CombinedComponent {
                         }
                     },
                     tapAction: { attributes, _ in
-                        component.context.sharedContext.openExternalUrl(context: component.context, urlContext: .generic, url: strings.Stars_Purchase_Terms_URL, forceExternal: false, presentationData: presentationData, navigationController: nil, dismissInput: {})
+                        guard let controller = controller(), let navigationController = controller.navigationController as? NavigationController else {
+                            return
+                        }
+                        component.context.sharedContext.openExternalUrl(context: component.context, urlContext: .generic, url: strings.Stars_Purchase_Terms_URL, forceExternal: false, presentationData: presentationData, navigationController: navigationController, dismissInput: {})
                     }
                 ),
                 environment: {},
@@ -484,7 +489,7 @@ private final class StarsPurchaseScreenContentComponent: CombinedComponent {
                 transition: context.transition
             )
             context.add(termsText
-                .position(CGPoint(x: availableWidth / 2.0, y: size.height + termsText.size.height / 2.0))
+                .position(CGPoint(x: bandCenterX, y: size.height + termsText.size.height / 2.0))
             )
             size.height += termsText.size.height
             size.height += 10.0
@@ -924,6 +929,8 @@ private final class StarsPurchaseScreenComponent: CombinedComponent {
             )
             
             let topInset: CGFloat = environment.navigationHeight - 56.0
+            // The header and title are centered in the band between the side insets, as the content is.
+            let headerCenterX = environment.safeInsets.left + (context.availableSize.width - environment.safeInsets.left - environment.safeInsets.right) / 2.0
             
             context.add(background
                 .position(CGPoint(x: context.availableSize.width / 2.0, y: context.availableSize.height / 2.0))
@@ -952,13 +959,13 @@ private final class StarsPurchaseScreenComponent: CombinedComponent {
             }
             
             context.addWithExternalContainer(header
-                .position(CGPoint(x: context.availableSize.width / 2.0, y: topInset + header.size.height / 2.0 - 30.0 - titleOffset * titleScale))
+                .position(CGPoint(x: headerCenterX, y: topInset + header.size.height / 2.0 - 30.0 - titleOffset * titleScale))
                 .scale(titleScale),
                 container: context.component.overNavigationContainer
             )
             
             context.addWithExternalContainer(title
-                .position(CGPoint(x: context.availableSize.width / 2.0, y: max(topInset + 160.0 - titleOffset, environment.statusBarHeight + (environment.navigationHeight - environment.statusBarHeight) / 2.0)))
+                .position(CGPoint(x: headerCenterX, y: max(topInset + 160.0 - titleOffset, environment.statusBarHeight + (environment.navigationHeight - environment.statusBarHeight) / 2.0)))
                 .scale(titleScale)
                 .opacity(titleAlpha),
                 container: context.component.overNavigationContainer
@@ -967,15 +974,15 @@ private final class StarsPurchaseScreenComponent: CombinedComponent {
             let navigationHeight = environment.navigationHeight - environment.statusBarHeight
             let topBalanceOriginY = environment.statusBarHeight + (navigationHeight - balanceTitle.size.height - balanceValue.size.height) / 2.0
             context.addWithExternalContainer(balanceTitle
-                .position(CGPoint(x: context.availableSize.width - 16.0 - environment.safeInsets.right - balanceTitle.size.width / 2.0, y: topBalanceOriginY + balanceTitle.size.height / 2.0)),
+                .position(CGPoint(x: context.availableSize.width - 16.0 - environment.safeInsets.right - environment.navigationBarTrailingButtonsInset - balanceTitle.size.width / 2.0, y: topBalanceOriginY + balanceTitle.size.height / 2.0)),
                 container: context.component.overNavigationContainer
             )
             context.addWithExternalContainer(balanceValue
-                .position(CGPoint(x: context.availableSize.width - 16.0 - environment.safeInsets.right - balanceValue.size.width / 2.0, y: topBalanceOriginY + balanceTitle.size.height + balanceValue.size.height / 2.0)),
+                .position(CGPoint(x: context.availableSize.width - 16.0 - environment.safeInsets.right - environment.navigationBarTrailingButtonsInset - balanceValue.size.width / 2.0, y: topBalanceOriginY + balanceTitle.size.height + balanceValue.size.height / 2.0)),
                 container: context.component.overNavigationContainer
             )
             context.addWithExternalContainer(balanceIcon
-                .position(CGPoint(x: context.availableSize.width - 16.0 - environment.safeInsets.right - balanceValue.size.width - balanceIcon.size.width / 2.0 - 2.0, y: topBalanceOriginY + balanceTitle.size.height + balanceValue.size.height / 2.0 - UIScreenPixel)),
+                .position(CGPoint(x: context.availableSize.width - 16.0 - environment.safeInsets.right - environment.navigationBarTrailingButtonsInset - balanceValue.size.width - balanceIcon.size.width / 2.0 - 2.0, y: topBalanceOriginY + balanceTitle.size.height + balanceValue.size.height / 2.0 - UIScreenPixel)),
                 container: context.component.overNavigationContainer
             )
                                     
@@ -1034,10 +1041,8 @@ public final class StarsPurchaseScreen: ViewControllerComponentContainer {
                 completionImpl?(stars)
             }
         ), navigationBarAppearance: .default, presentationMode: .modal, theme: customTheme.flatMap { .custom($0) } ?? .default)
-        
-        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-        
-        let cancelItem = UIBarButtonItem(title: presentationData.strings.Common_Close, style: .plain, target: self, action: #selector(self.cancelPressed))
+                
+        let cancelItem = UIBarButtonItem(title: "___close", style: .plain, target: self, action: #selector(self.cancelPressed))
         self.navigationItem.setLeftBarButton(cancelItem, animated: false)
         self.navigationPresentation = .modal
         

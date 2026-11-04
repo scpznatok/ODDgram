@@ -2,7 +2,6 @@ import Foundation
 import UIKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import SwiftSignalKit
 import TelegramCore
 import TelegramPresentationData
@@ -39,7 +38,6 @@ class ContactSelectionControllerImpl: ViewController, ContactSelectionController
         }
     }
     
-    private let index: PeerNameIndex = .lastNameFirst
     private let titleProducer: (PresentationStrings) -> String
     private let options: Signal<[ContactListAdditionalOption], NoError>
     private let displayDeviceContacts: Bool
@@ -70,7 +68,7 @@ class ContactSelectionControllerImpl: ViewController, ContactSelectionController
     private let isPeerEnabled: (ContactListPeer) -> Bool
     var dismissed: (() -> Void)?
     
-    var presentScheduleTimePicker: (@escaping (Int32, Int32?) -> Void) -> Void = { _ in }
+    var presentScheduleTimePicker: (@escaping (Int32, Int32?, Bool) -> Void) -> Void = { _ in }
     
     private let createActionDisposable = MetaDisposable()
     private let confirmationDisposable = MetaDisposable()
@@ -133,7 +131,7 @@ class ContactSelectionControllerImpl: ViewController, ContactSelectionController
             self.presentationData = self.presentationData.withUpdated(theme: self.presentationData.theme.withModalBlocksBackground())
         }
         
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: self.presentationData.theme, hideBackground: glass, hideSeparator: glass, style: .glass), strings: NavigationBarStrings(presentationStrings: self.presentationData.strings)))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: self.presentationData.theme), strings: NavigationBarStrings(presentationStrings: self.presentationData.strings)))
         
         self._hasGlassStyle = true
         
@@ -157,9 +155,10 @@ class ContactSelectionControllerImpl: ViewController, ContactSelectionController
                 let previousTheme = self.presentationData.theme
                 let previousStrings = self.presentationData.strings
                 
-                self.presentationData = presentationData
                 if case .glass = params.style {
-                    self.presentationData = self.presentationData.withUpdated(theme: self.presentationData.theme.withModalBlocksBackground())
+                    self.presentationData = self.presentationData.withUpdated(theme: presentationData.theme.withModalBlocksBackground())
+                } else {
+                    self.presentationData = presentationData
                 }
                 
                 if previousTheme !== presentationData.theme || previousStrings !== presentationData.strings {
@@ -309,11 +308,7 @@ class ContactSelectionControllerImpl: ViewController, ContactSelectionController
     
     private func updateThemeAndStrings() {
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
-        var glass = false
-        if case .glass = self.style {
-            glass = true
-        }
-        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: self.presentationData.theme, hideBackground: glass, hideSeparator: glass, style: .glass), strings: NavigationBarStrings(presentationStrings: self.presentationData.strings)), transition: .immediate)
+        self.navigationBar?.updatePresentationData(NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: self.presentationData.theme), strings: NavigationBarStrings(presentationStrings: self.presentationData.strings)), transition: .immediate)
         (self.searchContentNode as? NavigationBarSearchContentNode)?.updateThemeAndPlaceholder(theme: self.presentationData.theme, placeholder: self.presentationData.strings.Common_Search)
         self.title = self.titleProducer(self.presentationData.strings)
         self.tabBarItem.title = self.presentationData.strings.Contacts_Title
@@ -513,7 +508,7 @@ class ContactSelectionControllerImpl: ViewController, ContactSelectionController
                 a(.default)
               
                 if let self {
-                    self.sendMessage?(EnginePeer(peer))
+                    self.sendMessage?(peer)
                 }
             })))
             
@@ -523,7 +518,7 @@ class ContactSelectionControllerImpl: ViewController, ContactSelectionController
                 a(.default)
 
                 if let self {
-                    self.openProfile?(EnginePeer(peer))
+                    self.openProfile?(peer)
                 }
             })))
             
@@ -645,8 +640,8 @@ final class ContactsPickerContext: AttachmentMediaPickerContext {
     }
     
     func schedule(parameters: ChatSendMessageActionSheetController.SendParameters?) {
-        self.controller?.presentScheduleTimePicker ({ time, repeatPeriod in
-            self.controller?.contactsNode.requestMultipleAction?(false, time, parameters)
+        self.controller?.presentScheduleTimePicker ({ time, repeatPeriod, silentPosting in
+            self.controller?.contactsNode.requestMultipleAction?(silentPosting, time, parameters)
         })
     }
     
@@ -664,6 +659,6 @@ private final class ContactContextReferenceContentSource: ContextReferenceConten
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceNode.view, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }

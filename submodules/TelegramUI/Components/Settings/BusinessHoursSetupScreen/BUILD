@@ -11,8 +11,8 @@ swift_library(
     ],
     deps = [
         "//submodules/AsyncDisplayKit",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/Display",
-        "//submodules/Postbox",
         "//submodules/TelegramCore",
         "//submodules/SSignalKit/SwiftSignalKit",
         "//submodules/TelegramPresentationData",
@@ -36,7 +36,7 @@ swift_library(
         "//submodules/TextFormat",
         "//submodules/UIKitRuntimeUtils",
         "//submodules/TelegramUI/Components/Settings/TimezoneSelectionScreen",
-        "//submodules/TelegramUI/Components/TimeSelectionActionSheet",
+        "//submodules/TelegramUI/Components/ChatTimerScreen",
     ],
     visibility = [
         "//visibility:public",

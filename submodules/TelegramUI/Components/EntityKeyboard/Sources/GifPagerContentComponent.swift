@@ -5,7 +5,6 @@ import ComponentFlow
 import PagerComponent
 import TelegramPresentationData
 import TelegramCore
-import Postbox
 import MultiAnimationRenderer
 import AnimationCache
 import AccountContext
@@ -248,7 +247,7 @@ public final class GifPagerContentComponent: Component {
         }
         
         fileprivate enum ItemKey: Hashable {
-            case media(MediaId)
+            case media(EngineMedia.Id)
             case placeholder(Int)
         }
         
@@ -898,7 +897,15 @@ public final class GifPagerContentComponent: Component {
             
             let pagerEnvironment = environment[PagerComponentChildEnvironment.self].value
             self.pagerEnvironment = pagerEnvironment
-            
+
+            pagerEnvironment.scrollToTop.connect { [weak self] in
+                guard let self else {
+                    return
+                }
+
+                self.scrollView.setContentOffset(CGPoint(), animated: true)
+            }
+
             transition.setFrame(view: self.shimmerHostView, frame: CGRect(origin: CGPoint(), size: availableSize))
             
             let shimmerBackgroundColor = keyboardChildEnvironment.theme.chat.inputPanel.primaryTextColor.withMultipliedAlpha(0.08)

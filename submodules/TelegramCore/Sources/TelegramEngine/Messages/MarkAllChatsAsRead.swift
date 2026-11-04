@@ -1,5 +1,5 @@
 import Foundation
-import TelegramApi
+internal import TelegramApi
 import Postbox
 import SwiftSignalKit
 import MtProtoKit
@@ -54,6 +54,8 @@ func _internal_markAllChatsAsRead(postbox: Postbox, network: Network, stateManag
                         } else {
                             assertionFailure()
                         }
+                    case .dialogPeerCommunity:
+                        break
                     case .dialogPeerFolder:
                         assertionFailure()
                 }

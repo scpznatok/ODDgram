@@ -29,6 +29,12 @@
             case FFMpegAVFramePixelFormatYUVA:
                 _impl->format = AV_PIX_FMT_YUVA420P;
                 break;
+            case FFMpegAVFramePixelFormatYUV422:
+            case FFMpegAVFramePixelFormatYUVA422:
+            case FFMpegAVFramePixelFormatYUV444:
+            case FFMpegAVFramePixelFormatYUVA444:
+            case FFMpegAVFramePixelFormatUnsupported:
+                return nil;
         }
         _impl->width = width;
         _impl->height = height;
@@ -97,12 +103,29 @@
     return _impl;
 }
 
+- (void)copyColorRangeFrom:(FFMpegAVFrame *)other {
+    _impl->color_range = ((AVFrame *)[other impl])->color_range;
+}
+
 - (FFMpegAVFramePixelFormat)pixelFormat {
     switch (_impl->format) {
         case AV_PIX_FMT_YUVA420P:
             return FFMpegAVFramePixelFormatYUVA;
-        default:
+        case AV_PIX_FMT_YUV420P:
+        case AV_PIX_FMT_YUVJ420P:
             return FFMpegAVFramePixelFormatYUV;
+        case AV_PIX_FMT_YUV422P:
+        case AV_PIX_FMT_YUVJ422P:
+            return FFMpegAVFramePixelFormatYUV422;
+        case AV_PIX_FMT_YUVA422P:
+            return FFMpegAVFramePixelFormatYUVA422;
+        case AV_PIX_FMT_YUV444P:
+        case AV_PIX_FMT_YUVJ444P:
+            return FFMpegAVFramePixelFormatYUV444;
+        case AV_PIX_FMT_YUVA444P:
+            return FFMpegAVFramePixelFormatYUVA444;
+        default:
+            return FFMpegAVFramePixelFormatUnsupported;
     }
 }
 

@@ -1,8 +1,8 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
-import Postbox
 import TelegramCore
 import TelegramUIPreferences
 import TelegramPresentationData
@@ -35,7 +35,8 @@ public struct ChatMessageBubbleContentProperties {
     public let hidesHeaders: Bool
     public let avatarOffset: CGFloat?
     public let isDetached: Bool
-    
+    public let wantsReactionsOutside: Bool
+
     public init(
         hidesSimpleAuthorHeader: Bool,
         headerSpacing: CGFloat,
@@ -45,7 +46,8 @@ public struct ChatMessageBubbleContentProperties {
         shareButtonOffset: CGPoint? = nil,
         hidesHeaders: Bool = false,
         avatarOffset: CGFloat? = nil,
-        isDetached: Bool = false
+        isDetached: Bool = false,
+        wantsReactionsOutside: Bool = false
     ) {
         self.hidesSimpleAuthorHeader = hidesSimpleAuthorHeader
         self.headerSpacing = headerSpacing
@@ -56,6 +58,7 @@ public struct ChatMessageBubbleContentProperties {
         self.hidesHeaders = hidesHeaders
         self.avatarOffset = avatarOffset
         self.isDetached = isDetached
+        self.wantsReactionsOutside = wantsReactionsOutside
     }
 }
 
@@ -144,24 +147,26 @@ public struct ChatMessageBubbleContentTapAction {
         case url(Url)
         case phone(String)
         case textMention(String)
-        case peerMention(peerId: PeerId, mention: String, openProfile: Bool)
+        case peerMention(peerId: EnginePeer.Id, mention: String, openProfile: Bool)
         case botCommand(String)
         case hashtag(String?, String)
         case instantPage
         case wallpaper
         case theme
-        case call(peerId: PeerId, isVideo: Bool)
-        case conferenceCall(message: Message)
+        case call(peerId: EnginePeer.Id, isVideo: Bool)
+        case conferenceCall(message: EngineRawMessage)
         case openMessage
         case timecode(Double, String)
         case tooltip(String, ASDisplayNode?, CGRect?)
         case bankCard(String)
+        case tonAddress(String)
         case ignore
         case openPollResults(Data)
         case copy(String)
         case date(Int32, String)
         case largeEmoji(String, String?, TelegramMediaFile)
         case customEmoji(TelegramMediaFile)
+        case externalInstantPage(url: Url, webpageId: EngineMedia.Id, anchor: String?)
         case custom(() -> Void)
     }
     
@@ -181,8 +186,8 @@ public struct ChatMessageBubbleContentTapAction {
 public final class ChatMessageBubbleContentItem {
     public let context: AccountContext
     public let controllerInteraction: ChatControllerInteraction
-    public let message: Message
-    public let topMessage: Message
+    public let message: EngineRawMessage
+    public let topMessage: EngineRawMessage
     public let content: ChatMessageItemContent
     public let read: Bool
     public let chatLocation: ChatLocation
@@ -192,7 +197,7 @@ public final class ChatMessageBubbleContentItem {
     public let isItemPinned: Bool
     public let isItemEdited: Bool
     
-    public init(context: AccountContext, controllerInteraction: ChatControllerInteraction, message: Message, topMessage: Message, content: ChatMessageItemContent, read: Bool, chatLocation: ChatLocation, presentationData: ChatPresentationData, associatedData: ChatMessageItemAssociatedData, attributes: ChatMessageEntryAttributes, isItemPinned: Bool, isItemEdited: Bool) {
+    public init(context: AccountContext, controllerInteraction: ChatControllerInteraction, message: EngineRawMessage, topMessage: EngineRawMessage, content: ChatMessageItemContent, read: Bool, chatLocation: ChatLocation, presentationData: ChatPresentationData, associatedData: ChatMessageItemAssociatedData, attributes: ChatMessageEntryAttributes, isItemPinned: Bool, isItemEdited: Bool) {
         self.context = context
         self.controllerInteraction = controllerInteraction
         self.message = message
@@ -225,13 +230,30 @@ open class ChatMessageBubbleContentNode: ASDisplayNode {
     
     public var updateIsTextSelectionActive: ((Bool) -> Void)?
     public var requestInlineUpdate: (() -> Void)?
-    public var requestFullUpdate: (() -> Void)?
+    public var requestFullUpdate: ((ControlledTransition?) -> Void)?
+    /// Performs a message-button action on behalf of a content node. Wired by
+    /// `ChatMessageBubbleItemNode`, which owns `performMessageButtonAction` — a content node cannot
+    /// reach its item view directly, and the dispatch is not on `ControllerInteraction`.
+    public var performRichTextButtonAction: ((ReplyMarkupButton, Promise<Bool>) -> Void)?
+    /// Fires when a downloaded `.document` row in a rich message is tapped, with that exact file.
+    public var openRichTextDocument: ((TelegramMediaFile) -> Void)?
     
     open var disablesClipping: Bool {
         return false
     }
     
-    required public override init() {
+    /// Which Lottie rasterizer this node's animations should use.
+    ///
+    /// Carried on every content node rather than only the three that animate
+    /// today: content nodes are built through a metatype in
+    /// ChatMessageBubbleItemNode, before their item exists, so a node that
+    /// later adds an animation has no other way to reach an AccountContext at
+    /// construction time.
+    public let lottieSettings: LottieRenderingSettings
+
+    required public init(lottieSettings: LottieRenderingSettings) {
+        self.lottieSettings = lottieSettings
+
         super.init()
     }
     
@@ -257,15 +279,29 @@ open class ChatMessageBubbleContentNode: ASDisplayNode {
         })
     }
     
-    open func transitionNode(messageId: MessageId, media: Media, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
+    open func transitionNode(messageId: EngineMessage.Id, media: EngineRawMedia, adjustRect: Bool) -> (ASDisplayNode, CGRect, () -> (UIView?, UIView?))? {
         return nil
     }
-    
-    open func updateHiddenMedia(_ media: [Media]?) -> Bool {
+
+    open func getAnchorRect(anchor: String) -> CGRect? {
+        return nil
+    }
+
+    /// Rects, in this node's own coordinate space, that the host bubble should tear out of its
+    /// background — so that content this node cannot render sits in a gap rather than on top of a
+    /// bubble. Read after this node's apply closure has run.
+    ///
+    /// Plural because one message can hold two runs of unsupported blocks separated by supported
+    /// content: a run collapses to one pill, but two runs stay two pills.
+    open func unsupportedContentAreas() -> [CGRect] {
+        return []
+    }
+
+    open func updateHiddenMedia(_ media: [EngineRawMedia]?) -> Bool {
         return false
     }
     
-    open func updateSearchTextHighlightState(text: String?, messages: [MessageIndex]?) {
+    open func updateSearchTextHighlightState(text: String?, messages: [EngineMessage.Index]?) {
     }
     
     open func updateAutomaticMediaDownloadSettings(_ settings: MediaAutoDownloadSettings) {
@@ -295,12 +331,6 @@ open class ChatMessageBubbleContentNode: ASDisplayNode {
     open func updateAbsoluteRect(_ rect: CGRect, within containerSize: CGSize) {
     }
 
-    open func applyAbsoluteOffset(value: CGPoint, animationCurve: ContainedViewLayoutTransitionCurve, duration: Double) {
-    }
-
-    open func applyAbsoluteOffsetSpring(value: CGFloat, duration: Double, damping: CGFloat) {
-    }
-    
     open func unreadMessageRangeUpdated() {
     }
     
@@ -312,7 +342,7 @@ open class ChatMessageBubbleContentNode: ASDisplayNode {
         return nil
     }
     
-    open func targetForStoryTransition(id: StoryId) -> UIView? {
+    open func targetForStoryTransition(id: EngineStoryId) -> UIView? {
         return nil
     }
     

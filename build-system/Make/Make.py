@@ -16,6 +16,7 @@ from BuildConfiguration import CodesigningSource, GitCodesigningSource, Director
 import RemoteBuild
 import TartBuild
 import GenerateProfiles
+import PostboxImportCheck
 
 
 class ResolvedCodesigningData:
@@ -47,6 +48,14 @@ class BazelCommandLine:
         self.enable_sandbox = False
         self.disable_provisioning_profiles = False
         self.profile_swift = False
+        # MARK: Swiftgram
+        self.bazel_profile = None
+        #
+        self.embed_watch_app = False
+        self.watch_api_id = None
+        self.watch_api_hash = None
+        self.watch_signing_identity = None
+        self.watch_provisioning_profile = None
 
         self.common_args = [
             # https://docs.bazel.build/versions/master/command-line-reference.html
@@ -81,6 +90,9 @@ class BazelCommandLine:
         ]
 
         self.common_release_args = [
+            # Enable cross-crate link-time optimization for Rust targets.
+            '--@rules_rust//rust/settings:lto=fat',
+
             # https://github.com/bazelbuild/rules_swift
             # Enable whole module optimization.
             '--features=swift.opt_uses_wmo',
@@ -136,6 +148,11 @@ class BazelCommandLine:
     def set_profile_swift(self, value):
         self.profile_swift = value
 
+    # MARK: Swiftgram
+    def set_bazel_profile(self, path):
+        self.bazel_profile = path
+    #
+
     def set_configuration(self, configuration):
         if configuration == 'debug_arm64':
             self.configuration_args = [
@@ -146,7 +163,7 @@ class BazelCommandLine:
                 '--ios_multi_cpus=arm64',
 
                 # Always build universal Watch binaries.
-                '--watchos_cpus=armv7k,arm64_32'
+                '--watchos_cpus=arm64_32'
             ] + self.common_debug_args
         elif configuration == 'debug_sim_arm64':
             self.configuration_args = [
@@ -157,7 +174,7 @@ class BazelCommandLine:
                 '--ios_multi_cpus=sim_arm64',
 
                 # Always build universal Watch binaries.
-                '--watchos_cpus=armv7k,arm64_32'
+                '--watchos_cpus=arm64_32'
             ] + self.common_debug_args
         elif configuration == 'release_sim_arm64':
             self.configuration_args = [
@@ -168,7 +185,7 @@ class BazelCommandLine:
                 '--ios_multi_cpus=sim_arm64',
 
                 # Always build universal Watch binaries.
-                '--watchos_cpus=armv7k,arm64_32'
+                '--watchos_cpus=arm64_32'
             ] + self.common_debug_args
         elif configuration == 'release_arm64':
             self.configuration_args = [
@@ -179,7 +196,7 @@ class BazelCommandLine:
                 '--ios_multi_cpus=arm64',
 
                 # Always build universal Watch binaries.
-                '--watchos_cpus=armv7k,arm64_32',
+                '--watchos_cpus=arm64_32',
 
                 # Generate DSYM files when building.
                 '--apple_generate_dsym',
@@ -189,6 +206,13 @@ class BazelCommandLine:
             ] + self.common_release_args
         else:
             raise Exception('Unknown configuration {}'.format(configuration))
+
+    def set_watch_app(self, api_id, api_hash, signing_identity, provisioning_profile):
+        self.embed_watch_app = True
+        self.watch_api_id = api_id
+        self.watch_api_hash = api_hash
+        self.watch_signing_identity = signing_identity
+        self.watch_provisioning_profile = provisioning_profile
 
     def get_startup_bazel_arguments(self):
         combined_arguments = []
@@ -210,10 +234,20 @@ class BazelCommandLine:
         call_executable(combined_arguments)
 
     def get_define_arguments(self):
-        return [
+        args = [
             '--define=buildNumber={}'.format(self.build_number),
-            '--define=telegramVersion={}'.format(self.build_environment.app_version)
         ]
+        if self.embed_watch_app:
+            args += ['--//Telegram:embedWatchApp']
+            # watch_api_id/hash are guaranteed non-None here: set_watch_app is the only
+            # setter of embed_watch_app, and build() raises if they are missing.
+            args += [
+                '--define=watchApiId={}'.format(self.watch_api_id),
+                '--define=watchApiHash={}'.format(self.watch_api_hash),
+                '--define=watchSigningIdentity={}'.format(self.watch_signing_identity or ''),
+                '--define=watchProvisioningProfile={}'.format(self.watch_provisioning_profile or ''),
+            ]
+        return args
 
     def get_project_generation_arguments(self):
         combined_arguments = []
@@ -271,6 +305,11 @@ class BazelCommandLine:
         if self.show_actions:
             combined_arguments += ['--subcommands']
 
+        # MARK: Swiftgram
+        if self.bazel_profile is not None:
+            combined_arguments += ['--profile={}'.format(self.bazel_profile)]
+        #
+
         if self.enable_sandbox:
             combined_arguments += ['--spawn_strategy=sandboxed']
 
@@ -300,7 +339,7 @@ class BazelCommandLine:
         print(subprocess.list2cmdline(combined_arguments))
         call_executable(combined_arguments)
 
-    def invoke_test(self):
+    def invoke_test(self, test_target='Tests/AllTests'):
         combined_arguments = [
             self.build_environment.bazel_path
         ]
@@ -310,7 +349,7 @@ class BazelCommandLine:
         combined_arguments += ['--cache_test_results=no']
         combined_arguments += ['--test_output=errors']
 
-        combined_arguments += ['Tests/AllTests']
+        combined_arguments += [test_target]
 
         combined_arguments += self.common_args
         combined_arguments += self.common_build_args
@@ -361,47 +400,6 @@ class BazelCommandLine:
         combined_arguments += query_args
 
         print('TelegramBuild: running')
-        print(subprocess.list2cmdline(combined_arguments))
-        call_executable(combined_arguments)
-
-    def invoke_spm_build(self):
-        combined_arguments = [
-            self.build_environment.bazel_path
-        ]
-        combined_arguments += self.get_startup_bazel_arguments()
-        combined_arguments += ['build']
-
-        # Build the generate_spm target directly to get the dependency tree JSON
-        combined_arguments += ['//Telegram:spm_build_root']
-
-        if self.continue_on_error:
-            combined_arguments += ['--keep_going']
-        if self.show_actions:
-            combined_arguments += ['--subcommands']
-
-        if self.enable_sandbox:
-            combined_arguments += ['--spawn_strategy=sandboxed']
-
-        if self.disable_provisioning_profiles:
-            combined_arguments += ['--//Telegram:disableProvisioningProfiles']
-
-        combined_arguments += self.common_args
-        combined_arguments += self.common_build_args
-        combined_arguments += self.get_define_arguments()
-        combined_arguments += self.get_additional_build_arguments()
-
-        if self.remote_cache is not None:
-            combined_arguments += [
-                '--remote_cache={}'.format(self.remote_cache),
-                '--experimental_remote_downloader={}'.format(self.remote_cache)
-            ]
-        elif self.cache_dir is not None:
-            combined_arguments += [
-                '--disk_cache={path}'.format(path=self.cache_dir)
-            ]
-
-        combined_arguments += self.configuration_args
-
         print(subprocess.list2cmdline(combined_arguments))
         call_executable(combined_arguments)
 
@@ -569,24 +567,60 @@ def generate_project(bazel, arguments):
         target_name=target_name
     )
 
-    if target_name == "Telegram":
-        run_executable_with_output('swift', arguments=[
-            'run',
-            '-c',
-            'release',
-            '--package-path',
-            'build-system/XcodeParse',
-            'XcodeParse',
-            '--project-path',
-            xcodeproj_path,
-            '--output-path',
-            'Telegram/Telegram.LSP.json'
-        ], check_result=True)
-
     call_executable(['open', xcodeproj_path])
 
 
+def resolve_watch_provisioning_profile(arguments, base_path):
+    """Resolve the watchkitapp provisioning profile for an --embedWatchApp build.
+
+    Returns the absolute path of the profile to sign the embedded watch app with, or None
+    to build the watch app UNSIGNED. None is only returned (with a warning) for
+    non-distribution codesigning — a distribution build (appstore/adhoc/enterprise) raises
+    instead, because the host ios_application does NOT re-sign the embedded watch app, so an
+    unsigned Watch/ payload ships as-is and is silently rejected at install time. Failing
+    here turns that silent "won't install" into a build error that names the missing profile.
+    """
+    is_distribution_codesigning = arguments.gitCodesigningType in ('appstore', 'adhoc', 'enterprise')
+
+    explicit_profile = arguments.watchProvisioningProfile
+    if explicit_profile is not None:
+        if not os.path.exists(explicit_profile):
+            raise Exception('--watchProvisioningProfile was set to a path that does not exist: {}'.format(explicit_profile))
+        return explicit_profile
+
+    # Default to the watchkitapp profile that resolve_configuration() just extracted from the
+    # codesigning material (renamed via the bundle-id mapping in BuildConfiguration.py). This
+    # matches the active codesigning type (e.g. appstore) and the host app's identity, so the
+    # embedded watch app is signed correctly without an explicit --watchProvisioningProfile.
+    # The worker derives the signing identity (cert) from this profile when
+    # --watchSigningIdentity is omitted.
+    resolved_watch_profile = os.path.join(base_path, 'build-input/configuration-repository/provisioning/WatchApp.mobileprovision')
+    if os.path.exists(resolved_watch_profile):
+        return resolved_watch_profile
+
+    if is_distribution_codesigning:
+        raise Exception(
+            '--embedWatchApp is set for a distribution build (--gitCodesigningType={ct}), but no watchkitapp '
+            'provisioning profile resolved (looked for {p}).\n'
+            'The {ct} codesigning material does not contain a `.watchkitapp` profile, so the embedded watch app '
+            'would be UNSIGNED — the host app is not re-signed over it, so it ships unsigned and is silently '
+            'rejected when installing on a watch.\n'
+            'Fix: fetch the latest codesigning material so the watchkitapp profile is present — drop '
+            '--gitCodesigningUseCurrent (it skips the fetch), or run '
+            '`git -C build-input/configuration-repository-workdir/encrypted pull` — or create/register the {ct} '
+            'watchkitapp provisioning profile, or pass an explicit --watchProvisioningProfile.'.format(
+                ct=arguments.gitCodesigningType, p=resolved_watch_profile
+            )
+        )
+
+    print('TelegramBuild: warning: --embedWatchApp is set but no watch provisioning profile was found (pass --watchProvisioningProfile, or use codesigning material that includes the watchkitapp profile; looked for {}). The embedded watch app will be UNSIGNED and rejected by the App Store.'.format(resolved_watch_profile))
+    return None
+
+
 def build(bazel, arguments):
+    if PostboxImportCheck.run(os.getcwd()) != 0:
+        sys.exit(1)
+
     bazel_command_line = BazelCommandLine(
         bazel=bazel,
         override_bazel_version=arguments.overrideBazelVersion,
@@ -610,11 +644,32 @@ def build(bazel, arguments):
     )
 
     bazel_command_line.set_configuration(arguments.configuration)
+    if arguments.embedWatchApp:
+        if arguments.configuration in ('debug_arm64', 'release_arm64'):
+            if arguments.watchApiId is None or arguments.watchApiHash is None:
+                raise Exception('--embedWatchApp requires --watchApiId and --watchApiHash (the embedded watch app build needs API credentials).')
+            watch_provisioning_profile = resolve_watch_provisioning_profile(arguments=arguments, base_path=os.getcwd())
+            bazel_command_line.set_watch_app(
+                arguments.watchApiId,
+                arguments.watchApiHash,
+                arguments.watchSigningIdentity,
+                watch_provisioning_profile
+            )
+        else:
+            print('TelegramBuild: warning: --embedWatchApp requires a device configuration (debug_arm64 or release_arm64); ignored for simulator builds.')
     bazel_command_line.set_build_number(arguments.buildNumber)
     bazel_command_line.set_custom_target(arguments.target)
     bazel_command_line.set_continue_on_error(arguments.continueOnError)
     bazel_command_line.set_show_actions(arguments.showActions)
     bazel_command_line.set_enable_sandbox(arguments.sandbox)
+    # MARK: Swiftgram
+    if arguments.disableProvisioningProfiles:
+        bazel_command_line.set_disable_provisioning_profiles()
+    if arguments.bazelProfile is not None:
+        bazel_profile_path = os.path.abspath(arguments.bazelProfile)
+        os.makedirs(os.path.dirname(bazel_profile_path), exist_ok=True)
+        bazel_command_line.set_bazel_profile(bazel_profile_path)
+    #
     bazel_command_line.set_profile_swift(arguments.profileSwift)
 
     bazel_command_line.set_split_swiftmodules(arguments.enableParallelSwiftmoduleGeneration)
@@ -640,7 +695,7 @@ def build(bazel, arguments):
             sys.exit(1)
         shutil.copyfile(ipa_paths[0], artifacts_path + '/Swiftgram.ipa')
 
-        dsym_paths = glob.glob('bazel-bin/Telegram/*.dSYM') + glob.glob('bazel-out/watchos_arm64_32-opt-watchos-arm64_32-min7.0-applebin_watchos-ST-*/bin/Telegram/TelegramWatchApp_dsyms/*.dSYM') + glob.glob('bazel-out/watchos_armv7k-opt-watchos-armv7k-min7.0-applebin_watchos-ST-*/bin/Telegram/TelegramWatchApp_dsyms/*.dSYM') 
+        dsym_paths = glob.glob('bazel-bin/Telegram/*.dSYM') + glob.glob('bazel-out/watchos_arm64_32-opt-watchos-arm64_32-min7.0-applebin_watchos-ST-*/bin/Telegram/SwiftgramWatchApp_dsyms/*.dSYM') + glob.glob('bazel-out/watchos_armv7k-opt-watchos-armv7k-min7.0-applebin_watchos-ST-*/bin/Telegram/SwiftgramWatchApp_dsyms/*.dSYM') 
         for dsym_path in dsym_paths:
             file_name = os.path.basename(dsym_path)
             shutil.copytree(dsym_path, artifacts_path + '/DSYMs/{}'.format(file_name))
@@ -656,6 +711,9 @@ def build(bazel, arguments):
 
 
 def test(bazel, arguments):
+    if PostboxImportCheck.run(os.getcwd()) != 0:
+        sys.exit(1)
+
     bazel_command_line = BazelCommandLine(
         bazel=bazel,
         override_bazel_version=arguments.overrideBazelVersion,
@@ -678,7 +736,7 @@ def test(bazel, arguments):
     bazel_command_line.set_configuration('debug_sim_arm64')
     bazel_command_line.set_build_number('10000')
 
-    bazel_command_line.invoke_test()
+    bazel_command_line.invoke_test(test_target=arguments.target)
 
 
 def query(bazel, arguments):
@@ -711,34 +769,66 @@ def query(bazel, arguments):
     bazel_command_line.invoke_query(query_args)
 
 
-def build_spm(bazel, arguments):
-    bazel_command_line = BazelCommandLine(
-        bazel=bazel,
-        override_bazel_version=arguments.overrideBazelVersion,
-        override_xcode_version=arguments.overrideXcodeVersion,
-        bazel_user_root=arguments.bazelUserRoot
+def add_remote_watch_arguments(current_parser):
+    """The watch app flags of a build that runs in another environment (remote-build, vm-build)."""
+    current_parser.add_argument(
+        '--embedWatchApp',
+        action='store_true',
+        default=False,
+        help='Embed the tgwatch watch app (from the in-repo Telegram/WatchApp snapshot) under Watch/ in the remote device build.'
+    )
+    current_parser.add_argument(
+        '--watchApiId',
+        required=False,
+        type=str,
+        help='TG_API_ID for the watch build.',
+        metavar='api_id'
+    )
+    current_parser.add_argument(
+        '--watchApiHash',
+        required=False,
+        type=str,
+        help='TG_API_HASH for the watch build.',
+        metavar='api_hash'
+    )
+    current_parser.add_argument(
+        '--watchSigningIdentity',
+        required=False,
+        type=str,
+        help='Codesigning identity (SHA1 hash) for the watch app. The matching certificate must be present in the uploaded codesigning material.',
+        metavar='identity'
+    )
+    current_parser.add_argument(
+        '--watchProvisioningProfile',
+        required=False,
+        type=str,
+        help='Local absolute path to the watchkitapp .mobileprovision file; uploaded to the remote build environment.',
+        metavar='path'
     )
 
-    if arguments.cacheDir is not None:
-        bazel_command_line.add_cache_dir(arguments.cacheDir)
-    elif arguments.cacheHost is not None:
-        bazel_command_line.add_remote_cache(arguments.cacheHost)
 
-    resolve_configuration(
-        base_path=os.getcwd(),
-        bazel_command_line=bazel_command_line,
-        arguments=arguments,
-        additional_codesigning_output_path=None
+def prepare_remote_watch_inputs(arguments, remote_input_path):
+    """Validates the watch flags of a remote build and stages the watch provisioning profile with the other
+    build inputs. Returns the profile's path in the guest, or None."""
+    if not arguments.embedWatchApp:
+        return None
+    if arguments.watchApiId is None or arguments.watchApiHash is None:
+        raise Exception('--embedWatchApp requires --watchApiId and --watchApiHash (the embedded watch app build needs API credentials).')
+    if arguments.watchProvisioningProfile is None:
+        return None
+    shutil.copyfile(arguments.watchProvisioningProfile, remote_input_path + '/watch_provisioning_profile.mobileprovision')
+    # remote_input_path is uploaded to the guest as $HOME/telegram-build-input.
+    return '$HOME/telegram-build-input/watch_provisioning_profile.mobileprovision'
+
+
+def add_vm_lock_arguments(current_parser):
+    current_parser.add_argument(
+        '--waitForLock',
+        action='store_true',
+        default=False,
+        help='Wait for another VM job on this host to finish instead of failing at once. Only one build VM runs at a time per host.'
     )
 
-    bazel_command_line.set_configuration(arguments.configuration)
-    bazel_command_line.set_build_number(arguments.buildNumber)
-    bazel_command_line.set_continue_on_error(False)
-    bazel_command_line.set_show_actions(False)
-    bazel_command_line.set_enable_sandbox(False)
-    bazel_command_line.set_split_swiftmodules(False)
-
-    bazel_command_line.invoke_spm_build()
 
 def add_codesigning_common_arguments(current_parser: argparse.ArgumentParser):
     configuration_group = current_parser.add_mutually_exclusive_group(required=True)
@@ -878,6 +968,12 @@ if __name__ == '__main__':
             '''
     )
     add_project_and_build_common_arguments(testParser)
+    testParser.add_argument(
+        '--target',
+        type=str,
+        default='Tests/AllTests',
+        help='Bazel test target to run (default: Tests/AllTests, the full suite).'
+    )
 
     generateProjectParser = subparsers.add_parser('generateProject', help='Generate Xcode project')
     generateProjectParser.add_argument(
@@ -968,6 +1064,20 @@ if __name__ == '__main__':
         help='Generate .swiftmodule files in parallel to building modules, can speed up compilation on multi-core '
              'systems. '
     )
+    # MARK: Swiftgram
+    buildParser.add_argument(
+        '--disableProvisioningProfiles',
+        action='store_true',
+        default=False,
+        help='Build without provisioning profiles.',
+    )
+    buildParser.add_argument(
+        '--bazelProfile',
+        required=False,
+        help='Write a Bazel execution profile to this path.',
+        metavar='path',
+    )
+    #
     buildParser.add_argument(
         '--profileSwift',
         action='store_true',
@@ -1010,6 +1120,40 @@ if __name__ == '__main__':
         default=False,
         help='Respect MODULE.bazel.lock.'
     )
+    buildParser.add_argument(
+        '--embedWatchApp',
+        action='store_true',
+        default=False,
+        help='Embed the tgwatch watch app (from the in-repo Telegram/WatchApp snapshot) under Watch/ in a device build.'
+    )
+    buildParser.add_argument(
+        '--watchApiId',
+        required=False,
+        type=str,
+        help='TG_API_ID for the watch build.',
+        metavar='api_id'
+    )
+    buildParser.add_argument(
+        '--watchApiHash',
+        required=False,
+        type=str,
+        help='TG_API_HASH for the watch build.',
+        metavar='api_hash'
+    )
+    buildParser.add_argument(
+        '--watchSigningIdentity',
+        required=False,
+        type=str,
+        help='Codesigning identity (SHA1 hash) for the watch app.',
+        metavar='identity'
+    )
+    buildParser.add_argument(
+        '--watchProvisioningProfile',
+        required=False,
+        type=str,
+        help='Absolute path to the watchkitapp .mobileprovision file.',
+        metavar='path'
+    )
 
     remote_build_parser = subparsers.add_parser('remote-build', help='Build the app using a remote environment.')
     add_codesigning_common_arguments(remote_build_parser)
@@ -1039,6 +1183,7 @@ if __name__ == '__main__':
         type=str,
         help='Bazel remote cache host address.'
     )
+    add_remote_watch_arguments(remote_build_parser)
 
     vm_build_parser = subparsers.add_parser('vm-build', help='Build the app using a VM.')
     add_codesigning_common_arguments(vm_build_parser)
@@ -1056,6 +1201,35 @@ if __name__ == '__main__':
         type=str,
         help='Bazel remote cache host address.'
     )
+    vm_build_parser.add_argument(
+        '--vmImage',
+        required=False,
+        type=str,
+        help='Name of the Tart image to clone. Defaults to macos-<macos_version>-xcode-<xcode_version> as declared in versions.json.',
+        metavar='name'
+    )
+    vm_build_parser.add_argument(
+        '--persistentVM',
+        action='store_true',
+        default=False,
+        help='Reuse the VM named by --vmImage instead of cloning a throwaway copy of it. The VM is booted in place and kept afterwards, so its guest-side bazel cache and source tree survive between builds.'
+    )
+    vm_build_parser.add_argument(
+        '--vmCpu',
+        required=False,
+        type=int,
+        help='Number of CPUs to give the ephemeral VM clone. Defaults to the host CPU count minus one. Not valid with --persistentVM, which uses the VM as it is configured.',
+        metavar='n'
+    )
+    vm_build_parser.add_argument(
+        '--vmMemory',
+        required=False,
+        type=int,
+        help='Memory in megabytes to give the ephemeral VM clone. Defaults to half of host memory, capped at 32 GB. Not valid with --persistentVM, which uses the VM as it is configured.',
+        metavar='megabytes'
+    )
+    add_remote_watch_arguments(vm_build_parser)
+    add_vm_lock_arguments(vm_build_parser)
 
     generate_profiles_build_parser = subparsers.add_parser('generate-verification-profiles', help='Generate provisioning profiles that can be used to build a veritication IPA.')
     add_codesigning_common_arguments(generate_profiles_build_parser)
@@ -1125,6 +1299,44 @@ if __name__ == '__main__':
         help='Path to IPA 2 file.'
     )
 
+    vm_deploy_testflight_parser = subparsers.add_parser('vm-deploy-testflight', help='Upload an IPA to TestFlight from a VM.')
+    vm_deploy_testflight_parser.add_argument(
+        '--ipa',
+        required=True,
+        type=str,
+        help='Path to IPA file.'
+    )
+    vm_deploy_testflight_parser.add_argument(
+        '--vmImage',
+        required=False,
+        type=str,
+        help='Name of the Tart image to clone. Defaults to macos-<macos_version>-xcode-<deploy_xcode_version> as declared in versions.json.',
+        metavar='name'
+    )
+    add_vm_lock_arguments(vm_deploy_testflight_parser)
+
+    vm_ipadiff_parser = subparsers.add_parser('vm-ipa-diff', help='Execute ipa-diff in a VM.')
+    vm_ipadiff_parser.add_argument(
+        '--ipa1',
+        required=True,
+        type=str,
+        help='Path to IPA 1 file.'
+    )
+    vm_ipadiff_parser.add_argument(
+        '--ipa2',
+        required=True,
+        type=str,
+        help='Path to IPA 2 file.'
+    )
+    vm_ipadiff_parser.add_argument(
+        '--vmImage',
+        required=False,
+        type=str,
+        help='Name of the Tart image to clone. Defaults to macos-<macos_version>-xcode-<xcode_version> as declared in versions.json.',
+        metavar='name'
+    )
+    add_vm_lock_arguments(vm_ipadiff_parser)
+
     query_parser = subparsers.add_parser('query', help='Run arbitrary bazel queries')
     # Configuration is optional for queries
     query_parser.add_argument(
@@ -1192,28 +1404,6 @@ if __name__ == '__main__':
         metavar='query_string'
     )
 
-    spm_parser = subparsers.add_parser('spm', help='Generate SPM package (outputs bazel-bin/Telegram/spm_build_root_modules.json)')
-    spm_parser.add_argument(
-        '--buildNumber',
-        required=False,
-        type=int,
-        default=10000,
-        help='Build number.',
-        metavar='number'
-    )
-    spm_parser.add_argument(
-        '--configuration',
-        choices=[
-            'debug_arm64',
-            'debug_sim_arm64',
-            'release_sim_arm64',
-            'release_arm64',
-        ],
-        required=True,
-        help='Build configuration'
-    )
-    add_codesigning_common_arguments(spm_parser)
-
     if len(sys.argv) < 2:
         parser.print_help()
         sys.exit(1)
@@ -1259,40 +1449,77 @@ if __name__ == '__main__':
             
             shutil.copyfile(args.configurationPath, remote_input_path + '/configuration.json')
 
+            watch_provisioning_profile_remote_path = prepare_remote_watch_inputs(arguments=args, remote_input_path=remote_input_path)
+
             RemoteBuild.remote_build_darwin_containers(
                 darwin_containers_path=args.darwinContainers,
                 darwin_containers_host=args.darwinContainersHost,
                 macos_version=versions.macos_version,
                 bazel_cache_host=args.cacheHost,
                 configuration=args.configuration,
-                build_input_data_path=remote_input_path
+                build_input_data_path=remote_input_path,
+                embed_watch_app=args.embedWatchApp,
+                watch_api_id=args.watchApiId,
+                watch_api_hash=args.watchApiHash,
+                watch_signing_identity=args.watchSigningIdentity,
+                watch_provisioning_profile_remote_path=watch_provisioning_profile_remote_path
             )
         elif args.commandName == 'vm-build':
+            # Checked before the codesigning repository work below, so a bad combination
+            # fails at once instead of after a git checkout.
+            if args.persistentVM and (args.vmCpu is not None or args.vmMemory is not None):
+                raise Exception('--vmCpu and --vmMemory are not valid with --persistentVM: a persistent VM is used as it is configured.')
+            if args.embedWatchApp and (args.watchApiId is None or args.watchApiHash is None):
+                raise Exception('--embedWatchApp requires --watchApiId and --watchApiHash (the embedded watch app build needs API credentials).')
+
             base_path = os.getcwd()
-            remote_input_path = '{}/build-input/remote-input'.format(base_path)
-            if os.path.exists(remote_input_path):
-                shutil.rmtree(remote_input_path)
-            os.makedirs(remote_input_path)
-            os.makedirs(remote_input_path + '/certs')
-            os.makedirs(remote_input_path + '/profiles')
+            versions = BuildEnvironmentVersions(base_path=base_path)
 
-            versions = BuildEnvironmentVersions(base_path=os.getcwd())
+            # The lock is taken here, not inside remote_build_tart, because everything
+            # below shares state between runs: build-input/remote-input is deleted and
+            # rebuilt, and resolve_configuration checks out the codesigning repository.
+            # A second vm-build does all of that before it discovers it is refused, so a
+            # late lock let a refused run empty the certificates directory underneath a
+            # build that was already rsyncing it into its VM.
+            with TartBuild.exclusive_vm_build(
+                target=args.vmImage if args.vmImage is not None else TartBuild.default_vm_image_name(versions.macos_version, versions.xcode_version),
+                mode='persistent' if args.persistentVM else 'ephemeral',
+                wait=args.waitForLock
+            ):
+                remote_input_path = '{}/build-input/remote-input'.format(base_path)
+                if os.path.exists(remote_input_path):
+                    shutil.rmtree(remote_input_path)
+                os.makedirs(remote_input_path)
+                os.makedirs(remote_input_path + '/certs')
+                os.makedirs(remote_input_path + '/profiles')
 
-            resolve_configuration(
-                base_path=os.getcwd(),
-                bazel_command_line=None,
-                arguments=args,
-                additional_codesigning_output_path=remote_input_path
-            )
-            
-            shutil.copyfile(args.configurationPath, remote_input_path + '/configuration.json')
+                resolve_configuration(
+                    base_path=os.getcwd(),
+                    bazel_command_line=None,
+                    arguments=args,
+                    additional_codesigning_output_path=remote_input_path
+                )
 
-            TartBuild.remote_build_tart(
-                macos_version=versions.macos_version,
-                bazel_cache_host=args.cacheHost,
-                configuration=args.configuration,
-                build_input_data_path=remote_input_path
-            )
+                shutil.copyfile(args.configurationPath, remote_input_path + '/configuration.json')
+
+                watch_provisioning_profile_remote_path = prepare_remote_watch_inputs(arguments=args, remote_input_path=remote_input_path)
+
+                TartBuild.remote_build_tart(
+                    macos_version=versions.macos_version,
+                    bazel_cache_host=args.cacheHost,
+                    configuration=args.configuration,
+                    build_input_data_path=remote_input_path,
+                    vm_image=args.vmImage,
+                    override_xcode_version=args.overrideXcodeVersion,
+                    ephemeral_vm=not args.persistentVM,
+                    vm_cpu=args.vmCpu,
+                    vm_memory=args.vmMemory,
+                    embed_watch_app=args.embedWatchApp,
+                    watch_api_id=args.watchApiId,
+                    watch_api_hash=args.watchApiHash,
+                    watch_signing_identity=args.watchSigningIdentity,
+                    watch_provisioning_profile_remote_path=watch_provisioning_profile_remote_path
+                )
         elif args.commandName == 'generate-verification-profiles':
             base_path = os.getcwd()
             remote_input_path = '{}/build-input/remote-input'.format(base_path)
@@ -1344,13 +1571,47 @@ if __name__ == '__main__':
                 ipa1_path=args.ipa1,
                 ipa2_path=args.ipa2
             )
+        elif args.commandName == 'vm-deploy-testflight':
+            env = os.environ
+            if 'APPSTORE_CONNECT_USERNAME' not in env:
+                print('APPSTORE_CONNECT_USERNAME environment variable is not set')
+                sys.exit(1)
+            if 'APPSTORE_CONNECT_PASSWORD' not in env:
+                print('APPSTORE_CONNECT_PASSWORD environment variable is not set')
+                sys.exit(1)
+
+            versions = BuildEnvironmentVersions(base_path=os.getcwd())
+            # Uploads use their own Xcode (versions.json "deploy_xcode"), as the darwin-containers path did.
+            deploy_xcode_version = TartBuild.deploy_xcode_version()
+            vm_image = args.vmImage if args.vmImage is not None else TartBuild.default_vm_image_name(versions.macos_version, deploy_xcode_version)
+
+            with TartBuild.exclusive_vm_build(target=vm_image, mode='ephemeral', wait=args.waitForLock):
+                TartBuild.remote_deploy_testflight_tart(
+                    vm_image=vm_image,
+                    ipa_path=args.ipa,
+                    username=env['APPSTORE_CONNECT_USERNAME'],
+                    password=env['APPSTORE_CONNECT_PASSWORD']
+                )
+        elif args.commandName == 'vm-ipa-diff':
+            versions = BuildEnvironmentVersions(base_path=os.getcwd())
+            vm_image = args.vmImage if args.vmImage is not None else TartBuild.default_vm_image_name(versions.macos_version, versions.xcode_version)
+
+            with TartBuild.exclusive_vm_build(target=vm_image, mode='ephemeral', wait=args.waitForLock):
+                TartBuild.remote_ipa_diff_tart(
+                    vm_image=vm_image,
+                    ipa1_path=args.ipa1,
+                    ipa2_path=args.ipa2
+                )
         elif args.commandName == 'test':
             test(bazel=bazel_path, arguments=args)
         elif args.commandName == 'query':
             query(bazel=bazel_path, arguments=args)
-        elif args.commandName == 'spm':
-            build_spm(bazel=bazel_path, arguments=args)
         else:
             raise Exception('Unknown command')
+    except TartBuild.TartBuildError as e:
+        # Refusing a second concurrent vm-build is a routine outcome, not a crash;
+        # a stack trace buries the one line the user needs to act on.
+        print('error: {}'.format(e), file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass

@@ -2,11 +2,11 @@ import SGConfig
 import SGAPIWebSettings
 import SGLogging
 import Foundation
+import LottieSettings
 import UIKit
 @preconcurrency import WebKit
 import Display
 import AsyncDisplayKit
-import Postbox
 import TelegramCore
 import SwiftSignalKit
 import ComponentFlow
@@ -21,7 +21,7 @@ import PhotoResources
 import MediaResources
 import LegacyComponents
 import UrlHandling
-import MoreButtonNode
+import MoreHeaderButton
 import BotPaymentsUI
 import PromptUI
 import PhoneNumberFormat
@@ -30,7 +30,6 @@ import InstantPageUI
 import InstantPageCache
 import LocalAuth
 import OpenInExternalAppUI
-import ShareController
 import UndoUI
 import AvatarNode
 import OverlayStatusController
@@ -70,8 +69,8 @@ public struct WebAppParameters {
     }
     
     let source: Source
-    let peerId: PeerId
-    let botId: PeerId
+    let peerId: EnginePeer.Id
+    let botId: EnginePeer.Id
     let botName: String
     let botVerified: Bool
     let botAddress: String
@@ -84,12 +83,14 @@ public struct WebAppParameters {
     let forceHasSettings: Bool
     let fullSize: Bool
     let isFullscreen: Bool
+    let sameOrigin: Bool
     let appSettings: BotAppSettings?
+    let isOnramp: Bool
     
     public init(
         source: Source,
-        peerId: PeerId,
-        botId: PeerId,
+        peerId: EnginePeer.Id,
+        botId: EnginePeer.Id,
         botName: String,
         botVerified: Bool,
         botAddress: String,
@@ -102,7 +103,9 @@ public struct WebAppParameters {
         forceHasSettings: Bool,
         fullSize: Bool,
         isFullscreen: Bool = false,
-        appSettings: BotAppSettings? = nil
+        sameOrigin: Bool = false,
+        appSettings: BotAppSettings? = nil,
+        isOnramp: Bool = false
     ) {
         self.source = source
         self.peerId = peerId
@@ -119,7 +122,9 @@ public struct WebAppParameters {
         self.forceHasSettings = forceHasSettings
         self.fullSize = fullSize || isFullscreen
         self.isFullscreen = isFullscreen
+        self.sameOrigin = sameOrigin
         self.appSettings = appSettings
+        self.isOnramp = isOnramp
     }
 }
 
@@ -190,6 +195,12 @@ private let registeredProtocols: Void = {
 }()
 #endif
 
+// A single shared probe used only to read authorization state. The iOS 14 replacements for
+// `CLLocationManager.authorizationStatus()` are instance properties, and allocating a manager
+// per subscription (on whichever queue happened to subscribe) is both wasteful and at odds
+// with CLLocationManager's threading guidance, so keep exactly one.
+private let sharedLocationAuthorizationManager = CLLocationManager()
+
 public final class WebAppController: ViewController, AttachmentContainable {
     public var requestAttachmentMenuExpansion: () -> Void = { }
     public var updateNavigationStack: (@escaping ([AttachmentContainable]) -> ([AttachmentContainable], AttachmentMediaPickerContext?)) -> Void = { _ in }
@@ -215,6 +226,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
         private var placeholderIcon: (UIImage, Bool)?
         private var placeholderNode: ShimmerEffectNode?
         private var fullscreenControls: ComponentView<Empty>?
+        private var sideColumnBackButton: ComponentView<Empty>?
             
         fileprivate let loadingProgressPromise = Promise<CGFloat?>(nil)
         
@@ -275,14 +287,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
             }
             
             // MARK: Swiftgram
-            var userScripts: [WKUserScript] = []
-            let globalSGConfig = context.currentAppConfiguration.with({ $0 }).sgWebSettings.global
-            let botIdInt = controller.botId.id._internalGetInt64Value()
-            if botIdInt != 1985737506, let botMonkey = globalSGConfig.botMonkeys.first(where: { $0.botId == botIdInt}) {
-                if !botMonkey.src.isEmpty {
-                    userScripts.append(WKUserScript(source: botMonkey.src, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-                }
-            }
+            // TODO(swiftgram): Supply locally installed user scripts through `userScripts`.
             let webView = WebAppWebView(userScripts: userScripts, account: context.account)
             webView.alpha = 0.0
             webView.navigationDelegate = self
@@ -357,7 +362,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                     return .single(nil)
                 }
                 |> mapToSignal { bot -> Signal<(FileMediaReference, Bool)?, NoError> in
-                    if let bot = bot, let peerReference = PeerReference(bot.peer._asPeer()) {
+                    if let bot = bot, let peerReference = PeerReference(bot.peer) {
                         var imageFile: TelegramMediaFile?
                         var isPlaceholder = false
                         if let file = bot.icons[.placeholder] {
@@ -483,6 +488,10 @@ public final class WebAppController: ViewController, AttachmentContainable {
             super.didLoad()
             
             self.setupWebView()
+            if let pendingExternalUrl = self.controller?.pendingExternalUrl {
+                self.controller?.pendingExternalUrl = nil
+                self.loadExternal(url: pendingExternalUrl)
+            }
             
             guard let webView = self.webView else {
                 return
@@ -529,9 +538,22 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 return
             }
             #endif*/
+
+            if self.controller?.sameOrigin == true {
+                self.webView?.bindTrustedOrigin(from: url)
+            } else {
+                self.webView?.setupEventProxySource()
+            }
             self.webView?.load(URLRequest(url: url))
         }
         
+        fileprivate func loadExternal(url: String) {
+            guard let parsedUrl = URL(string: url) else {
+                return
+            }
+            self.load(url: parsedUrl)
+        }
+
         func setupWebView() {
             guard let controller = self.controller else {
                 return
@@ -563,6 +585,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                         }
                         if let parsedUrl = URL(string: result.url) {
                             strongSelf.queryId = result.queryId
+                            strongSelf.controller?.sameOrigin = result.flags.contains(.sameOrigin)
                             strongSelf.load(url: parsedUrl)
                         }
                     })
@@ -583,6 +606,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                                     return
                                 }
                                 self.controller?.titleView?.title = WebAppTitle(title: botApp.title, counter: self.presentationData.strings.WebApp_Miniapp, isVerified: controller.botVerified)
+                                self.controller?.sameOrigin = result.flags.contains(.sameOrigin)
                                 self.load(url: parsedUrl)
                             })
                         })
@@ -593,6 +617,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                                 return
                             }
                             strongSelf.queryId = result.queryId
+                            strongSelf.controller?.sameOrigin = result.flags.contains(.sameOrigin)
                             strongSelf.load(url: parsedUrl)
                                                         
                             if let keepAliveSignal = result.keepAliveSignal {
@@ -691,7 +716,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
         @available(iOS 14.5, *)
         func downloadDidFinish(_ download: WKDownload) {
             if let (path, fileName) = self.downloadArguments {
-                let tempFile = TempBox.shared.file(path: path, fileName: fileName)
+                let tempFile = EngineTempBox.shared.file(path: path, fileName: fileName)
                 let url = URL(fileURLWithPath: tempFile.path)
                 
                 if fileName.hasSuffix(".pkpass") {
@@ -867,7 +892,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
         private func updateNavigationBarAlpha(transition: ContainedViewLayoutTransition) {
             let contentOffset = self.webView?.scrollView.contentOffset.y ?? 0.0
             let backgroundAlpha = min(30.0, contentOffset) / 30.0
-            self.controller?.navigationBar?.updateBackgroundAlpha(backgroundAlpha, transition: transition)
+            self.controller?.navigationBar?.setBackdropAlpha(backgroundAlpha, transition: transition)
         }
         
         private var targetContentOffset: CGPoint?
@@ -916,6 +941,9 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 }
                 let controlsMargin: CGFloat = 8.0
                 let componentTransition: ComponentTransition = added ? .immediate : ComponentTransition(transition)
+                // iPhone Duo: the back/close button goes in the side strip, where a screen's own back button belongs;
+                // the row keeps minimize and more. Nil without a strip.
+                let sideColumnFrame = layout.sideColumnNavigationButtonFrame
                 let controlsSize = fullscreenControls.update(
                     transition: componentTransition,
                     component: AnyComponent(
@@ -924,9 +952,10 @@ public final class WebAppController: ViewController, AttachmentContainable {
                             strings: self.presentationData.strings,
                             title: controller.botName,
                             isVerified: controller.botVerified,
-                            insets: UIEdgeInsets(top: 0.0, left: layout.safeInsets.left, bottom: 0.0, right: layout.safeInsets.right),
+                            insets: UIEdgeInsets(top: 0.0, left: layout.safeInsets.left, bottom: 0.0, right: layout.safeInsets.right + layout.navigationBarTrailingButtonsInset),
                             statusBarStyle: self.fullScreenStatusBarStyle,
                             hasBack: self.hasBackButton,
+                            showsBackButton: sideColumnFrame == nil,
                             backPressed: { [weak self] in
                                 guard let self else {
                                     return
@@ -954,13 +983,61 @@ public final class WebAppController: ViewController, AttachmentContainable {
                     if view.superview == nil {
                         self.view.addSubview(view)
                     }
-                    transition.updateFrame(view: view, frame: CGRect(origin: CGPoint(x: 0.0, y: (layout.statusBarHeight ?? 0.0) + controlsMargin), size: controlsSize))
+                    // iPhone Duo unfolded portrait: the controls sit beside the status island, the right ones clear of it.
+                    transition.updateFrame(view: view, frame: CGRect(origin: CGPoint(x: 0.0, y: (layout.navigationBarStatusBarHeight ?? 0.0) + controlsMargin), size: controlsSize))
                     if added {
                         view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.25)
                     }
                 }
+                if let sideColumnFrame {
+                    let sideColumnBackButton: ComponentView<Empty>
+                    var sideColumnTransition = componentTransition
+                    if let current = self.sideColumnBackButton {
+                        sideColumnBackButton = current
+                    } else {
+                        sideColumnBackButton = ComponentView<Empty>()
+                        self.sideColumnBackButton = sideColumnBackButton
+                        sideColumnTransition = .immediate
+                    }
+                    let buttonSize = sideColumnBackButton.update(
+                        transition: sideColumnTransition,
+                        component: AnyComponent(GlassBarButtonComponent(
+                            size: CGSize(width: 44.0, height: 44.0),
+                            backgroundColor: nil,
+                            isDark: self.presentationData.theme.overallDarkAppearance,
+                            state: .glass,
+                            component: AnyComponentWithIdentity(id: self.hasBackButton ? "back" : "close", component: AnyComponent(
+                                BundleIconComponent(name: self.hasBackButton ? "Navigation/Back" : "Navigation/Close", tintColor: self.presentationData.theme.chat.inputPanel.panelControlColor)
+                            )),
+                            action: { [weak self] _ in
+                                self?.controller?.cancelPressed()
+                            }
+                        )),
+                        environment: {},
+                        containerSize: CGSize(width: 44.0, height: 44.0)
+                    )
+                    if let view = sideColumnBackButton.view {
+                        if view.superview == nil {
+                            self.view.addSubview(view)
+                            view.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.25)
+                        }
+                        sideColumnTransition.setFrame(view: view, frame: CGRect(origin: CGPoint(x: sideColumnFrame.midX - buttonSize.width / 2.0, y: sideColumnFrame.midY - buttonSize.height / 2.0), size: buttonSize))
+                    }
+                } else if let sideColumnBackButton = self.sideColumnBackButton {
+                    self.sideColumnBackButton = nil
+                    sideColumnBackButton.view?.removeFromSuperview()
+                }
+                
                 contentTopInset = controlsSize.height + controlsMargin * 2.0
+                if let island = layout.topBarStatusIsland {
+                    // The page's content starts below both the controls and the island beside them.
+                    contentTopInset = max(contentTopInset, island.height - (layout.navigationBarStatusBarHeight ?? 0.0))
+                }
             } else if let fullscreenControls = self.fullscreenControls {
+                if let sideColumnBackButton = self.sideColumnBackButton {
+                    self.sideColumnBackButton = nil
+                    sideColumnBackButton.view?.removeFromSuperview()
+                }
                 self.fullscreenControls = nil
                 fullscreenControls.view?.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.25, removeOnCompletion: false, completion: { _ in
                     fullscreenControls.view?.removeFromSuperview()
@@ -999,7 +1076,11 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 }
                 
                 if previousLayout != nil && (previousLayout?.inputHeight ?? 0.0).isZero, let inputHeight = layout.inputHeight, inputHeight > 44.0, transition.isAnimated {
-                    Queue.mainQueue().after(0.4, {
+                    Queue.mainQueue().after(0.4, { [weak self] in
+                        guard let self else {
+                            return
+                        }
+
                         if let inputHeight = self.validLayout?.0.inputHeight, inputHeight > 44.0 {
                             webView.scrollToActiveElement(layout: layout, completion: { [weak self] contentOffset in
                                 let _ = self
@@ -1028,7 +1109,8 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 
                 var customInsets: UIEdgeInsets = .zero
                 if controller.isFullscreen {
-                    customInsets.top = layout.statusBarHeight ?? 0.0
+                    // The status height the controls sit under (compact beside iPhone Duo's status island).
+                    customInsets.top = layout.navigationBarStatusBarHeight ?? 0.0
                 }
                 if layout.intrinsicInsets.bottom > 44.0 || (layout.inputHeight ?? 0.0) > 0.0 {
                     customInsets.bottom = 0.0
@@ -1036,7 +1118,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                     customInsets.bottom = layout.intrinsicInsets.bottom
                 }
                 customInsets.left = layout.safeInsets.left
-                customInsets.right = layout.safeInsets.left
+                customInsets.right = layout.safeInsets.right
                 webView.customInsets = customInsets
                 
                 if let controller = self.controller {
@@ -1105,7 +1187,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
             guard let controller = self.controller else {
                 return
             }
-            guard message.frameInfo.isMainFrame else {
+            guard self.webView?.isTrustedMainFrameMessage(message) == true else {
                 return
             }
             guard let body = message.body as? [String: Any] else {
@@ -1253,8 +1335,9 @@ public final class WebAppController: ViewController, AttachmentContainable {
             case "web_app_open_tg_link":
                 if let json = json, let path = json["path_full"] as? String {
                     let forceRequest = json["force_request"] as? Bool ?? false
-                    controller.openUrl("https://t.me\(path)", false, forceRequest, {
-                    })
+                    if let url = makeWebAppTelegramLink(pathFull: path) {
+                        controller.openUrl(url, false, forceRequest, {})
+                    }
                 }
             case "web_app_open_invoice":
                 if let json = json, let slug = json["slug"] as? String {
@@ -1613,7 +1696,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                     self.controller?._isPanGestureEnabled = isPanGestureEnabled
                 }
             case "web_app_share_to_story":
-                if let json, let mediaUrl = json["media_url"] as? String {
+                if let json, let mediaUrl = json["media_url"] as? String, isAllowedBotMediaUrl(mediaUrl) {
                     let text = json["text"] as? String
                     let link = json["widget_link"] as? [String: Any]
                     
@@ -1663,7 +1746,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                             if let image = UIImage(data: data) {
                                 source = image
                             } else {
-                                let tempFile = TempBox.shared.tempFile(fileName: "image.mp4")
+                                let tempFile = EngineTempBox.shared.tempFile(fileName: "image.mp4")
                                 if let _ = try? data.write(to: URL(fileURLWithPath: tempFile.path), options: .atomic) {
                                     source = tempFile.path
                                 }
@@ -1942,6 +2025,10 @@ public final class WebAppController: ViewController, AttachmentContainable {
                         self.controller?.verifyAgeCompletion?(Int(ageValue))
                     }
                 }
+            case "web_app_request_chat":
+                if let json, let requestId = json["req_id"] as? String {
+                    self.requestChat(requestId: requestId)
+                }
             default:
                 break
             }
@@ -2023,8 +2110,6 @@ public final class WebAppController: ViewController, AttachmentContainable {
             }
             
             controller.titleView?.updateTextColors(primary: primaryTextColor, secondary: secondaryTextColor, transition: transition)
-            controller.cancelButtonNode.updateColor(primaryTextColor, transition: transition)
-            controller.moreButtonNode.updateColor(primaryTextColor, transition: transition)
             transition.updateBackgroundColor(node: self.headerBackgroundNode, color: color ?? .clear)
             transition.updateBackgroundColor(node: self.topOverscrollNode, color: color ?? .clear)
         }
@@ -2308,6 +2393,70 @@ public final class WebAppController: ViewController, AttachmentContainable {
                     }
                 }
                 controller.present(alertController, in: .window(.root))
+            })
+        }
+        
+        fileprivate func requestChat(requestId: String) {
+            guard let controller = self.controller, !self.dismissed else {
+                return
+            }
+            let _ = (self.context.engine.messages.requestMiniAppButton(peerId: controller.botId, requestId: requestId)
+            |> deliverOnMainQueue).startStandalone(next: { [weak self] button in
+                guard let self, let button else {
+                    return
+                }
+                switch button.action {
+                case let .requestPeer(peerType, buttonId, maxQuantity):
+                    let _ = maxQuantity
+                    
+                    switch peerType {
+                    case let .createBot(createBot):
+                        Task { @MainActor [weak self] in
+                            guard let self, let controller = self.controller else {
+                                return
+                            }
+                            let createBotScreen = await self.context.sharedContext.makeCreateBotScreen(
+                                context: self.context,
+                                parentBot: controller.botId,
+                                initialUsername: createBot.suggestedUsername,
+                                initialTitle: createBot.suggestedName,
+                                openAutomatically: false,
+                                completion: { [weak self] resultId in
+                                    guard let self, let controller = self.controller else {
+                                        return
+                                    }
+                                    if let resultId {
+                                        let _ = self.context.engine.peers.sendBotRequestedPeer(peerId: controller.botId, requestId: requestId, buttonId: buttonId, requestedPeerIds: [resultId]
+                                        ).startStandalone(error: { [weak self] _ in
+                                            guard let self else {
+                                                return
+                                            }
+                                            self.webView?.sendEvent(name: "requested_chat_failed", data: nil)
+                                        }, completed: { [weak self] in
+                                            guard let self else {
+                                                return
+                                            }
+                                            self.webView?.sendEvent(name: "requested_chat_sent", data: nil)
+                                        })
+                                    } else {
+                                        self.webView?.sendEvent(name: "requested_chat_failed", data: nil)
+                                    }
+                                }
+                            )
+                            if let createBotScreen, let navigationController = controller.getNavigationController() {
+                                navigationController.pushViewController(createBotScreen)
+                            }
+                        }
+                    case let .channel(channel):
+                        if channel.isCreator {
+                            
+                        }
+                    default:
+                        break
+                    }
+                default:
+                    break
+                }
             })
         }
         
@@ -2712,7 +2861,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 var effectiveIsAbsolute = false
                 let referenceFrame: CMAttitudeReferenceFrame
                 
-                if absolute && [.authorizedWhenInUse, .authorizedAlways].contains(CLLocationManager.authorizationStatus()) && CMMotionManager.availableAttitudeReferenceFrames().contains(.xTrueNorthZVertical) {
+                if absolute && [.authorizedWhenInUse, .authorizedAlways].contains(sharedLocationAuthorizationManager.authorizationStatus) && CMMotionManager.availableAttitudeReferenceFrames().contains(.xTrueNorthZVertical) {
                     referenceFrame = .xTrueNorthZVertical
                     effectiveIsAbsolute = true
                 } else if absolute && CMMotionManager.availableAttitudeReferenceFrames().contains(.xMagneticNorthZVertical) {
@@ -2866,10 +3015,17 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 title = self.presentationData.strings.WebApp_Download_Document
             }
             
-            let _ = combineLatest(queue: Queue.mainQueue(),
-                FileDownload.getFileSize(url: url),
-                self.context.engine.messages.checkBotDownload(botId: controller.botId, fileName: fileName, url: url)
-            ).start(next: { [weak self] fileSize, canDownload in
+            let _ = (self.context.engine.messages.checkBotDownload(botId: controller.botId, fileName: fileName, url: url)
+            |> mapToSignal { canDownload -> Signal<(Int64?, Bool), NoError> in
+                guard canDownload else {
+                    return .single((nil, false))
+                }
+                return FileDownload.getFileSize(url: url)
+                |> map { fileSize in
+                    return (fileSize, true)
+                }
+            }
+            |> deliverOnMainQueue).start(next: { [weak self] fileSize, canDownload in
                 guard let self else {
                     return
                 }
@@ -2948,7 +3104,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                         undoText: self.presentationData.strings.WebApp_Download_Cancel
                     )
                 },
-                completion: { [weak self] resultUrl, _ in
+                completion: { [weak self, controller] resultUrl, _ in
                     if let resultUrl, let self {
                         removeImpl?()
                         
@@ -2992,7 +3148,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                                 tooltip.dismissWithCommitAction()
                             }
                             
-                            let tempFile = TempBox.shared.file(path: resultUrl.absoluteString, fileName: fileName)
+                            let tempFile = EngineTempBox.shared.file(path: resultUrl.absoluteString, fileName: fileName)
                             let url = URL(fileURLWithPath: tempFile.path)
                             try? FileManager.default.copyItem(at: resultUrl, to: url)
                             
@@ -3317,7 +3473,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 guard let self, let controller = self.controller, let peer else {
                     return
                 }
-                if let infoController = self.context.sharedContext.makePeerInfoController(context: self.context, updatedPresentationData: nil, peer: peer._asPeer(), mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) {
+                if let infoController = self.context.sharedContext.makePeerInfoController(context: self.context, updatedPresentationData: nil, peer: peer, mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) {
                     controller.parentController()?.push(infoController)
                 }
             })
@@ -3435,7 +3591,9 @@ public final class WebAppController: ViewController, AttachmentContainable {
                                             elevatedLayout: true,
                                             action: { action in
                                                 if case .undo = action {
-                                                    
+                                                    let _ = updateWebAppPermissionsStateInteractively(context: context, peerId: botId) { current in
+                                                        return WebAppPermissionsState(location: WebAppPermissionsState.Location(isRequested: true, isAllowed: false), emojiStatus: current?.emojiStatus)
+                                                    }.startStandalone()
                                                 }
                                                 return true
                                             }
@@ -3468,16 +3626,15 @@ public final class WebAppController: ViewController, AttachmentContainable {
     }
     
     private var titleView: WebAppTitleView?
-    fileprivate let cancelButtonNode: WebAppCancelButtonNode
-    fileprivate let moreButtonNode: MoreButtonNode
-    private var cancelBarButtonNode: BarComponentHostNode?
-    private var moreBarButtonNode: BarComponentHostNode?
-    private let moreButtonPlayOnce = ActionSlot<Void>()
+    /// The "…" in the bar's own platter, as the chat's; drawn in the bar's button colour (`updateNavigationBarTheme`).
+    private let moreBarButton: MoreHeaderButton
+    /// Whether the bar's left item is its back button (the app shows one) rather than its close button.
+    private var leftItemIsBack: Bool?
     
     private let context: AccountContext
     public let source: WebAppParameters.Source
-    private let peerId: PeerId
-    public let botId: PeerId
+    private let peerId: EnginePeer.Id
+    public let botId: EnginePeer.Id
     fileprivate let botName: String
     fileprivate let botVerified: Bool
     fileprivate let botAppSettings: BotAppSettings?
@@ -3488,10 +3645,13 @@ public final class WebAppController: ViewController, AttachmentContainable {
     private let payload: String?
     private let buttonText: String?
     private let forceHasSettings: Bool
+    private let isOnramp: Bool
     private let keepAliveSignal: Signal<Never, KeepWebViewError>?
-    private let replyToMessageId: MessageId?
+    private let replyToMessageId: EngineMessage.Id?
     private let threadId: Int64?
     public var isFullscreen: Bool
+    private var sameOrigin: Bool
+    private var pendingExternalUrl: String?
     
     private var presentationData: PresentationData
     fileprivate let updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)?
@@ -3507,7 +3667,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
     
     public var verifyAgeCompletion: ((Int) -> Void)?
     
-    public init(context: AccountContext, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, params: WebAppParameters, replyToMessageId: MessageId?, threadId: Int64?) {
+    public init(context: AccountContext, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, params: WebAppParameters, replyToMessageId: EngineMessage.Id?, threadId: Int64?) {
         self.context = context
         self.source = params.source
         self.peerId = params.peerId
@@ -3522,10 +3682,12 @@ public final class WebAppController: ViewController, AttachmentContainable {
         self.payload = params.payload
         self.buttonText = params.buttonText
         self.forceHasSettings = params.forceHasSettings
+        self.isOnramp = params.isOnramp
         self.keepAliveSignal = params.keepAliveSignal
         self.replyToMessageId = replyToMessageId
         self.threadId = threadId
         self.isFullscreen = params.isFullscreen
+        self.sameOrigin = params.sameOrigin
         
         self.updatedPresentationData = updatedPresentationData
         
@@ -3534,29 +3696,29 @@ public final class WebAppController: ViewController, AttachmentContainable {
         presentationData = presentationData.withUpdated(theme: updatedTheme)
         self.presentationData = presentationData
         
-        self.cancelButtonNode = WebAppCancelButtonNode(theme: self.presentationData.theme, strings: self.presentationData.strings)
+        let navigationBarPresentationData = NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: self.presentationData.theme), strings: NavigationBarStrings(back: "", close: "", more: ""))
+        self.moreBarButton = MoreHeaderButton(color: navigationBarPresentationData.theme.buttonColor)
+        self.moreBarButton.isUserInteractionEnabled = true
         
-        self.moreButtonNode = MoreButtonNode(theme: self.presentationData.theme)
-        self.moreButtonNode.iconNode.enqueueState(.more, animated: false)
-        
-        let navigationBarPresentationData = NavigationBarPresentationData(theme: NavigationBarTheme(rootControllerTheme: self.presentationData.theme), strings: NavigationBarStrings(back: "", close: ""))
         super.init(navigationBarPresentationData: navigationBarPresentationData)
         
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
         self.automaticallyControlPresentationContextLayout = false
+        // A mini app sheet opens to the whole screen beside iPhone Duo's status island (unfolded portrait).
+        self.fillsScreenBesideStatusIsland = true
         
-        if case .attachMenu = self.source {
-            
-        } else {
-            self.navigationItem.leftBarButtonItem = UIBarButtonItem(customDisplayNode: self.cancelButtonNode)
-            self.navigationItem.leftBarButtonItem?.action = #selector(self.cancelPressed)
-            self.navigationItem.leftBarButtonItem?.target = self
-            
-            if !self.isVerifyAgeBot {
-                self.navigationItem.rightBarButtonItem = UIBarButtonItem(customDisplayNode: self.moreButtonNode)
-                self.navigationItem.rightBarButtonItem?.action = #selector(self.moreButtonPressed)
-                self.navigationItem.rightBarButtonItem?.target = self
+        // The bar's own buttons, as on every screen on it: close or back on the left (`updateNavigationButtons`), and the
+        // "…" on the right (none for the age verification bot).
+        self.moreBarButton.setContent(.more(MoreHeaderButton.optionsCircleImage(color: navigationBarPresentationData.theme.buttonColor)))
+        self.moreBarButton.contextAction = { [weak self] sourceNode, gesture in
+            guard let self else {
+                return
             }
+            self.morePressed(view: self.navigationBar?.navigationButtonContextContainer(sourceView: sourceNode.view) ?? sourceNode.view, gesture: gesture)
+        }
+        self.moreBarButton.addTarget(self, action: #selector(self.moreButtonPressed), forControlEvents: .touchUpInside)
+        if !self.isVerifyAgeBot {
+            self.navigationItem.rightBarButtonItem = UIBarButtonItem(customDisplayNode: self.moreBarButton)
         }
         
         self.navigationItem.backBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Back, style: .plain, target: nil, action: nil)
@@ -3568,12 +3730,6 @@ public final class WebAppController: ViewController, AttachmentContainable {
             self.titleView = titleView
         }
         
-        self.moreButtonNode.action = { [weak self] _, gesture in
-            if let strongSelf = self {
-                strongSelf.morePressed(view: strongSelf.moreButtonNode.contextSourceNode.view, gesture: gesture)
-            }
-        }
-        
         self.presentationDataDisposable = ((updatedPresentationData?.signal ?? context.sharedContext.presentationData)
         |> deliverOnMainQueue).start(next: { [weak self] presentationData in
             if let strongSelf = self {
@@ -3583,9 +3739,6 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 
                 strongSelf.updateNavigationBarTheme(transition: .immediate)
                 strongSelf.titleView?.theme = presentationData.theme
-
-                strongSelf.cancelButtonNode.theme = presentationData.theme
-                strongSelf.moreButtonNode.theme = presentationData.theme
                 
                 if strongSelf.isNodeLoaded {
                     strongSelf.controllerNode.updatePresentationData(presentationData)
@@ -3623,79 +3776,27 @@ public final class WebAppController: ViewController, AttachmentContainable {
         self.presentationDataDisposable?.dispose()
     }
     
+    /// The bar's left item: its close button, or its back button while the app shows one (`web_app_setup_back_button`).
+    /// Set only when that changes, since a new item lays the bar out again.
     private func updateNavigationButtons() {
-        if case .attachMenu = self.source {
-            let barButtonSize = CGSize(width: 44.0, height: 44.0)
-            let closeComponent: AnyComponentWithIdentity<Empty> = AnyComponentWithIdentity(
-                id: "close",
-                component: AnyComponent(GlassBarButtonComponent(
-                    size: barButtonSize,
-                    backgroundColor: self.presentationData.theme.rootController.navigationBar.glassBarButtonBackgroundColor,
-                    isDark: self.presentationData.theme.overallDarkAppearance,
-                    state: .generic,
-                    component: AnyComponentWithIdentity(id: self.controllerNode.hasBackButton ? "back" : "close", component: AnyComponent(
-                        BundleIconComponent(
-                            name: self.controllerNode.hasBackButton ? "Navigation/Back" : "Navigation/Close",
-                            tintColor: self.presentationData.theme.chat.inputPanel.panelControlColor
-                        )
-                    )),
-                    action: { [weak self] _ in
-                        self?.cancelPressed()
-                    }
-                ))
-            )
-            
-            let moreComponent: AnyComponentWithIdentity<Empty> = AnyComponentWithIdentity(
-                id: "more",
-                component: AnyComponent(GlassBarButtonComponent(
-                    size: barButtonSize,
-                    backgroundColor: self.presentationData.theme.rootController.navigationBar.glassBarButtonBackgroundColor,
-                    isDark: self.presentationData.theme.overallDarkAppearance,
-                    state: .generic,
-                    component: AnyComponentWithIdentity(id: "more", component: AnyComponent(
-                        LottieComponent(
-                            content: LottieComponent.AppBundleContent(
-                                name: "anim_morewide"
-                            ),
-                            color: self.presentationData.theme.chat.inputPanel.panelControlColor,
-                            size: CGSize(width: 34.0, height: 34.0),
-                            playOnce: self.moreButtonPlayOnce
-                        )
-                    )),
-                    action: { [weak self] view in
-                        self?.morePressed(view: view, gesture: nil)
-                        self?.moreButtonPlayOnce.invoke(Void())
-                    }
-                ))
-            )
-            
-            let cancelButtonNode: BarComponentHostNode
-            if let current = self.cancelBarButtonNode {
-                cancelButtonNode = current
-                cancelButtonNode.component = closeComponent
-            } else {
-                cancelButtonNode = BarComponentHostNode(component: closeComponent, size: barButtonSize)
-                self.cancelBarButtonNode = cancelButtonNode
-                self.navigationItem.leftBarButtonItem = UIBarButtonItem(customDisplayNode: cancelButtonNode)
-            }
-            
-            let morehButtonNode: BarComponentHostNode
-            if let current = self.moreBarButtonNode {
-                morehButtonNode = current
-                morehButtonNode.component = moreComponent
-            } else {
-                morehButtonNode = BarComponentHostNode(component: moreComponent, size: barButtonSize)
-                self.moreBarButtonNode = morehButtonNode
-                self.navigationItem.rightBarButtonItem = UIBarButtonItem(customDisplayNode: morehButtonNode)
-            }
+        let isBack = self.controllerNode.hasBackButton
+        guard self.leftItemIsBack != isBack else {
+            return
         }
-            
-        self.cancelButtonNode.setState(self.controllerNode.hasBackButton ? .back : .cancel, animated: true)
+        let animated = self.leftItemIsBack != nil
+        self.leftItemIsBack = isBack
+        if isBack {
+            self.navigationItem.setLeftBarButton(UIBarButtonItem(backButtonAppearanceWithTitle: self.presentationData.strings.Common_Back, target: self, action: #selector(self.cancelPressed)), animated: animated)
+        } else {
+            self.navigationItem.setLeftBarButton(UIBarButtonItem(title: "___close", style: .plain, target: self, action: #selector(self.cancelPressed)), animated: animated)
+        }
     }
     
     private var isVerifyAgeBot: Bool {
         if let ageBotUsername = self.context.currentAppConfiguration.with({ $0 }).data?["verify_age_bot_username"] as? String {
-            return self.botAddress == ageBotUsername
+            if self.botAddress == ageBotUsername {
+                return true
+            }
         }
         return false
     }
@@ -3740,26 +3841,27 @@ public final class WebAppController: ViewController, AttachmentContainable {
                     buttonColor: textColor,
                     disabledButtonColor: textColor,
                     primaryTextColor: textColor,
-                    backgroundColor: backgroundColor,
-                    enableBackgroundBlur: true,
-                    separatorColor: UIColor(rgb: 0x000000, alpha: 0.25),
                     badgeBackgroundColor: .clear,
-                    badgeStrokeColor: .clear,
-                    badgeTextColor: .clear
+                    badgeTextColor: .clear,
+                    edgeEffectColor: backgroundColor,
+                    accentButtonColor: self.presentationData.theme.list.itemCheckColors.fillColor,
+                    accentDisabledButtonColor: self.presentationData.theme.chat.inputPanel.panelControlDisabledColor,
+                    accentForegroundColor: self.presentationData.theme.list.itemCheckColors.foregroundColor
                 ),
-                strings: NavigationBarStrings(back: "", close: "")
+                strings: NavigationBarStrings(back: "", close: "", more: "")
             )
         } else {
             navigationBarPresentationData = NavigationBarPresentationData(
                 theme: NavigationBarTheme(rootControllerTheme: self.presentationData.theme),
-                strings: NavigationBarStrings(back: "", close: "")
+                strings: NavigationBarStrings(back: "", close: "", more: "")
             )
         }
         self.navigationBar?.updatePresentationData(navigationBarPresentationData, transition: .immediate)
+        self.moreBarButton.updateColor(color: navigationBarPresentationData.theme.buttonColor)
     }
     
     @objc fileprivate func cancelPressed() {
-        if case .back = self.cancelButtonNode.state {
+        if self.controllerNode.hasBackButton {
             self.controllerNode.sendBackButtonEvent()
         } else {
             self.requestDismiss {
@@ -3769,7 +3871,8 @@ public final class WebAppController: ViewController, AttachmentContainable {
     }
     
     @objc fileprivate func moreButtonPressed() {
-        self.moreButtonNode.buttonPressed()
+        self.moreBarButton.play()
+        self.moreBarButton.contextAction?(self.moreBarButton.containerNode, nil)
     }
     
     @objc fileprivate func morePressed(view: UIView, gesture: ContextGesture?) {
@@ -3809,8 +3912,9 @@ public final class WebAppController: ViewController, AttachmentContainable {
         )
         |> map { [weak self] attachMenuBots, botPeer, botCommands, privacyPolicyUrl, activeDownloadProgress -> ContextController.Items in
             var items: [ContextMenuItem] = []
+            let displayFullMenu = self?.isOnramp == false
             
-            if let activeDownload, let progress = activeDownloadProgress {
+            if displayFullMenu, let activeDownload, let progress = activeDownloadProgress {
                 let isActive = progress < 1.0 - .ulpOfOne
                 let progressString: String
                 if isActive {
@@ -3837,7 +3941,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
             }
             
             let attachMenuBot = attachMenuBots.first(where: { $0.peer.id == botId && !$0.flags.contains(.notActivated) })
-            if hasSettings {
+            if displayFullMenu && hasSettings {
                 items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_Settings, icon: { theme in
                     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Settings"), color: theme.contextMenu.primaryColor)
                 }, action: { [weak self] c, _ in
@@ -3849,7 +3953,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 })))
             }
             
-            if peerId != botId {
+            if displayFullMenu && peerId != botId {
                 items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_OpenBot, icon: { theme in
                     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Bots"), color: theme.contextMenu.primaryColor)
                 }, action: { [weak self] c, _ in
@@ -3874,7 +3978,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 })))
             }
             
-            if let addressName = botPeer?.addressName {
+            if displayFullMenu, let addressName = botPeer?.addressName {
                 items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_Share, icon: { theme in
                     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Forward"), color: theme.contextMenu.primaryColor)
                 }, action: { [weak self] c, _ in
@@ -3883,24 +3987,25 @@ public final class WebAppController: ViewController, AttachmentContainable {
                     guard let self else {
                         return
                     }
-                    let shareController = ShareController(context: context, subject: .url("https://t.me/\(addressName)?profile"))
-                    shareController.actionCompleted = { [weak self] in
+                    let shareController = context.sharedContext.makeShareScreen(context: context, params: ShareControllerParams(subject: .url("https://t.me/\(addressName)?profile"), actionCompleted: { [weak self] in
                         let presentationData = context.sharedContext.currentPresentationData.with { $0 }
                         self?.present(UndoOverlayController(presentationData: presentationData, content: .linkCopied(title: nil, text: presentationData.strings.Conversation_LinkCopied), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .window(.root))
-                    }
+                    }))
                     self.present(shareController, in: .window(.root))
                 })))
             }
             
-            items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_ReloadPage, icon: { theme in
-                return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Reload"), color: theme.contextMenu.primaryColor)
-            }, action: { [weak self] c, _ in
-                c?.dismiss(completion: nil)
-                
-                self?.controllerNode.webView?.reload()
-            })))
+            if displayFullMenu {
+                items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_ReloadPage, icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Reload"), color: theme.contextMenu.primaryColor)
+                }, action: { [weak self] c, _ in
+                    c?.dismiss(completion: nil)
+                    
+                    self?.controllerNode.webView?.reload()
+                })))
+            }
             
-            if let _ = self?.appName {
+            if displayFullMenu, let _ = self?.appName {
                 items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_AddToHomeScreen, icon: { theme in
                     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/AddSquare"), color: theme.contextMenu.primaryColor)
                 }, action: { [weak self] c, _ in
@@ -3921,7 +4026,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 
                 let context = self.context
                 let _ = (cachedWebAppTermsPage(context: context)
-                |> deliverOnMainQueue).startStandalone(next: { resolvedUrl in
+                |> deliverOnMainQueue).startStandalone(next: { [weak self] resolvedUrl in
                     context.sharedContext.openResolvedUrl(resolvedUrl, context: context, urlContext: .generic, navigationController: navigationController, forceExternal: true, forceUpdate: false, openPeer: { peer, navigation in
                     }, sendFile: nil, sendSticker: nil, sendEmoji: nil, requestMessageActionUrlAuth: nil, joinVoiceChat: nil, present: { [weak self] c, arguments in
                         self?.push(c)
@@ -3930,17 +4035,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
             })))
 
             // MARK: Swiftgram
-            let globalSGConfig = context.currentAppConfiguration.with({ $0 }).sgWebSettings.global
-            let botIdInt = botId.id._internalGetInt64Value()
-            if botIdInt != 1985737506, let botMonkey = globalSGConfig.botMonkeys.first(where: { $0.botId == botIdInt}) {
-                let itemText = (self?.controllerNode.webView?.monkeyClickerActive ?? false) ? "Disable Clicker" : "Enable Clicker"
-                items.append(.action(ContextMenuActionItem(text: itemText, icon: { theme in
-                    return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Bots"), color: theme.contextMenu.primaryColor)
-                }, action: { [weak self] c, _ in
-                    c?.dismiss(completion: nil)
-                    self?.controllerNode.webView?.toggleClicker(enableJS: botMonkey.enable, disableJS: botMonkey.disable)
-                })))
-            }
+            // TODO(swiftgram): Add an action that opens the user-script management webpage.
             
             items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_PrivacyPolicy, icon: { theme in
                 return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Privacy"), color: theme.contextMenu.primaryColor)
@@ -3954,7 +4049,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 (self.parentController() as? AttachmentController)?.minimizeIfNeeded()
                 if let privacyPolicyUrl {
                     self.context.sharedContext.openExternalUrl(context: self.context, urlContext: .generic, url: privacyPolicyUrl, forceExternal: false, presentationData: self.presentationData, navigationController: self.getNavigationController(), dismissInput: {})
-                } else if let botCommands, botCommands.contains(where: { $0.text == "privacy" }) {
+                } else if displayFullMenu, let botCommands, botCommands.contains(where: { $0.text == "privacy" }) {
                     let _ = enqueueMessages(account: self.context.account, peerId: self.botId, messages: [.message(text: "/privacy", attributes: [], inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])]).startStandalone()
                     
                     if let botPeer, let navigationController = self.getNavigationController() {
@@ -3965,7 +4060,7 @@ public final class WebAppController: ViewController, AttachmentContainable {
                 }
             })))
                         
-            if let _ = attachMenuBot, [.attachMenu, .settings, .generic].contains(source) {
+            if displayFullMenu, let _ = attachMenuBot, [.attachMenu, .settings, .generic].contains(source) {
                 items.append(.action(ContextMenuActionItem(text: presentationData.strings.WebApp_RemoveBot, textColor: .destructive, icon: { theme in
                     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Delete"), color: theme.contextMenu.destructiveColor)
                 }, action: { [weak self] c, _ in
@@ -4007,10 +4102,18 @@ public final class WebAppController: ViewController, AttachmentContainable {
     override public func loadDisplayNode() {
         self.displayNode = Node(context: self.context, controller: self)
         
-        self.navigationBar?.updateBackgroundAlpha(0.0, transition: .immediate)
+        self.navigationBar?.setBackdropAlpha(0.0, transition: .immediate)
         self.updateTabBarAlpha(1.0, .immediate)
     }
     
+    public func loadExternal(url: String) {
+        if self.isNodeLoaded {
+            self.controllerNode.loadExternal(url: url)
+        } else {
+            self.pendingExternalUrl = url
+        }
+    }
+
     public func isContainerPanningUpdated(_ isPanning: Bool) {
         self.controllerNode.isContainerPanningUpdated(isPanning)
     }
@@ -4072,23 +4175,18 @@ public final class WebAppController: ViewController, AttachmentContainable {
 
     public func requestDismiss(completion: @escaping () -> Void) {
         if self.controllerNode.needDismissConfirmation {
-            let actionSheet = ActionSheetController(presentationData: self.presentationData)
-            actionSheet.setItemGroups([
-                ActionSheetItemGroup(items: [
-                    ActionSheetTextItem(title: self.presentationData.strings.WebApp_CloseConfirmation),
-                    ActionSheetButtonItem(title: self.presentationData.strings.WebApp_CloseAnyway, color: .destructive, action: { [weak actionSheet] in
-                        actionSheet?.dismissAnimated()
-                        
+            let alertController = textAlertController(
+                context: self.context,
+                title: nil,
+                text: self.presentationData.strings.WebApp_CloseConfirmation,
+                actions: [
+                    TextAlertAction(type: .genericAction, title: self.presentationData.strings.Common_Cancel, action: {}),
+                    TextAlertAction(type: .destructiveAction, title: self.presentationData.strings.WebApp_CloseAnyway, action: {
                         completion()
                     })
-                ]),
-                ActionSheetItemGroup(items: [
-                    ActionSheetButtonItem(title: self.presentationData.strings.Common_Cancel, color: .accent, font: .bold, action: { [weak actionSheet] in
-                        actionSheet?.dismissAnimated()
-                    })
-                ])
-            ])
-            self.present(actionSheet, in: .window(.root))
+                ]
+            )
+            self.present(alertController, in: .window(.root))
         } else {
             completion()
         }
@@ -4206,7 +4304,7 @@ private final class WebAppContextReferenceContentSource: ContextReferenceContent
     }
     
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: UIScreen.main.bounds)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: mainWindowScreenBounds)
     }
 }
 
@@ -4223,11 +4321,23 @@ public func standaloneWebAppController(
     didDismiss: @escaping () -> Void = {},
     getNavigationController: @escaping () -> NavigationController? = { return nil },
     getSourceRect: (() -> CGRect?)? = nil,
-    verifyAgeCompletion: ((Int) -> Void)? = nil
+    verifyAgeCompletion: ((Int) -> Void)? = nil,
+    onControllerCreated: @escaping (WebAppController) -> Void = { _ in }
 ) -> ViewController {
-    let controller = AttachmentController(context: context, updatedPresentationData: updatedPresentationData, chatLocation: .peer(id: params.peerId), buttons: [.standalone], initialButton: .standalone, fromMenu: params.source == .menu, hasTextInput: false, isFullSize: params.fullSize, makeEntityInputView: {
+    let controller = AttachmentController(
+        context: context,
+        updatedPresentationData: updatedPresentationData,
+        chatLocation: .peer(id: params.peerId),
+        buttons: [.standalone],
+        initialButton: .standalone,
+        fromMenu: params.source == .menu,
+        hasTextInput: false,
+        isFullSize: params.fullSize,
+        roundsTopCornersInRegularLayout: params.isOnramp,
+        makeEntityInputView: {
         return nil
     })
+    controller.animateAppearance = params.isOnramp
     controller.requestController = { _, present in
         let webAppController = WebAppController(context: context, updatedPresentationData: updatedPresentationData, params: params, replyToMessageId: nil, threadId: threadId)
         webAppController.openUrl = openUrl
@@ -4235,7 +4345,9 @@ public func standaloneWebAppController(
         webAppController.getNavigationController = getNavigationController
         webAppController.requestSwitchInline = requestSwitchInline
         webAppController.verifyAgeCompletion = verifyAgeCompletion
+        onControllerCreated(webAppController)
         present(webAppController, webAppController.mediaPickerContext)
+        return true
     }
     controller.willDismiss = willDismiss
     controller.didDismiss = didDismiss

@@ -1,4 +1,5 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -35,6 +36,7 @@ private final class StickerSelectionComponent: Component {
     let deviceMetrics: DeviceMetrics
     let topInset: CGFloat
     let bottomInset: CGFloat
+    let sideInsets: UIEdgeInsets
     let content: StickerPickerInputData
     let backgroundColor: UIColor
     let separatorColor: UIColor
@@ -47,6 +49,7 @@ private final class StickerSelectionComponent: Component {
         deviceMetrics: DeviceMetrics,
         topInset: CGFloat,
         bottomInset: CGFloat,
+        sideInsets: UIEdgeInsets,
         content: StickerPickerInputData,
         backgroundColor: UIColor,
         separatorColor: UIColor,
@@ -58,6 +61,7 @@ private final class StickerSelectionComponent: Component {
         self.deviceMetrics = deviceMetrics
         self.topInset = topInset
         self.bottomInset = bottomInset
+        self.sideInsets = sideInsets
         self.content = content
         self.backgroundColor = backgroundColor
         self.separatorColor = separatorColor
@@ -78,6 +82,9 @@ private final class StickerSelectionComponent: Component {
             return false
         }
         if lhs.bottomInset != rhs.bottomInset {
+            return false
+        }
+        if lhs.sideInsets != rhs.sideInsets {
             return false
         }
         if lhs.content != rhs.content {
@@ -268,6 +275,9 @@ private final class StickerSelectionComponent: Component {
             )
             
             let isFullscreen = controller?.isFullscreen == true
+            // iPhone Duo: the keyboard (tabs, grid, bottom panel) keeps to the band beside the side strip and clear of
+            // the status corner at its end; the panel background still spans the sheet. Zero elsewhere.
+            let sideInsets = component.sideInsets
             let keyboardSize = self.keyboardView.update(
                 transition: transition.withUserData(EmojiPagerContentComponent.SynchronousLoadBehavior(isDisabled: true)),
                 component: AnyComponent(EntityKeyboardComponent(
@@ -366,7 +376,7 @@ private final class StickerSelectionComponent: Component {
                 )),
                 environment: {},
                 forceUpdate: self.forceUpdate,
-                containerSize: availableSize
+                containerSize: CGSize(width: availableSize.width - sideInsets.left - sideInsets.right, height: availableSize.height)
             )
             self.forceUpdate = false
             if let keyboardComponentView = self.keyboardView.view {
@@ -383,10 +393,10 @@ private final class StickerSelectionComponent: Component {
                 transition.setFrame(view: self.keyboardClippingView, frame: CGRect(origin: CGPoint(x: 0.0, y: topPanelHeight + topInset), size: CGSize(width: availableSize.width, height: availableSize.height - topPanelHeight - topInset)))
                 self.keyboardClippingView.hitEdgeInsets = UIEdgeInsets(top: -topPanelHeight - topInset, left: 0.0, bottom: 0.0, right: 0.0)
                 
-                transition.setFrame(view: keyboardComponentView, frame: CGRect(origin: CGPoint(x: 0.0, y: -topPanelHeight - topInset), size: keyboardSize))
-                transition.setFrame(view: self.panelHostView, frame: CGRect(origin: CGPoint(x: 0.0, y: topPanelHeight + topInset - 34.0), size: CGSize(width: keyboardSize.width, height: 0.0)))
+                transition.setFrame(view: keyboardComponentView, frame: CGRect(origin: CGPoint(x: sideInsets.left, y: -topPanelHeight - topInset), size: keyboardSize))
+                transition.setFrame(view: self.panelHostView, frame: CGRect(origin: CGPoint(x: sideInsets.left, y: topPanelHeight + topInset - 34.0), size: CGSize(width: keyboardSize.width, height: 0.0)))
                 
-                transition.setFrame(view: self.panelBackgroundView, frame: CGRect(origin: CGPoint(), size: CGSize(width: keyboardSize.width, height: topPanelHeight + topInset)))
+                transition.setFrame(view: self.panelBackgroundView, frame: CGRect(origin: CGPoint(), size: CGSize(width: availableSize.width, height: topPanelHeight + topInset)))
                 self.panelBackgroundView.update(size: self.panelBackgroundView.bounds.size, transition: transition.containedViewLayoutTransition)
                 
                 let topPanelAlpha: CGFloat
@@ -407,7 +417,7 @@ private final class StickerSelectionComponent: Component {
                 transition.setAlpha(view: self.panelBackgroundView, alpha: topPanelAlpha)
                 transition.setAlpha(view: self.panelSeparatorView, alpha: topPanelAlpha)
                 
-                transition.setFrame(view: self.panelSeparatorView, frame: CGRect(origin: CGPoint(x: 0.0, y: topPanelHeight + topInset - UIScreenPixel), size: CGSize(width: keyboardSize.width, height: UIScreenPixel)))
+                transition.setFrame(view: self.panelSeparatorView, frame: CGRect(origin: CGPoint(x: 0.0, y: topPanelHeight + topInset - UIScreenPixel), size: CGSize(width: availableSize.width, height: UIScreenPixel)))
             }
             
             return availableSize
@@ -482,6 +492,7 @@ public class StickerPickerScreen: ViewController {
             var id: AnyHashable
             var version: Int
             var isPreset: Bool
+            var canLoadMore: Bool
         }
         
         private struct EmojiSearchState {
@@ -501,6 +512,7 @@ public class StickerPickerScreen: ViewController {
                 self.emojiSearchState.set(.single(self.emojiSearchStateValue))
             }
         }
+        private var emojiSearchContext: EmojiSearchContext?
         
         private let stickerSearchDisposable = MetaDisposable()
         private let stickerSearchState = Promise<EmojiSearchState>(EmojiSearchState(result: nil, isSearching: false))
@@ -691,7 +703,7 @@ public class StickerPickerScreen: ViewController {
                             }
                             
                             let defaultSearchState: EmojiPagerContentComponent.SearchState = emojiSearchResult.isPreset ? .active : .empty(hasResults: true)
-                            inputData.emoji = emoji.withUpdatedItemGroups(panelItemGroups: emoji.panelItemGroups, contentItemGroups: emojiSearchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: emojiSearchResult.id, version: emojiSearchResult.version), emptySearchResults: emptySearchResults, searchState: emojiSearchState.isSearching ? .searching : defaultSearchState)
+                            inputData.emoji = emoji.withUpdatedItemGroups(panelItemGroups: emoji.panelItemGroups, contentItemGroups: emojiSearchResult.groups, itemContentUniqueId: EmojiPagerContentComponent.ContentId(id: emojiSearchResult.id, version: emojiSearchResult.version), emptySearchResults: emptySearchResults, searchState: emojiSearchState.isSearching ? .searching : defaultSearchState, canLoadMore: emojiSearchResult.canLoadMore)
                         } else if emojiSearchState.isSearching {
                             inputData.emoji = emoji.withUpdatedItemGroups(panelItemGroups: emoji.panelItemGroups, contentItemGroups: emoji.contentItemGroups, itemContentUniqueId: emoji.itemContentUniqueId, emptySearchResults: emoji.emptySearchResults, searchState: .searching)
                         }
@@ -942,14 +954,9 @@ public class StickerPickerScreen: ViewController {
                         return
                     }
                     let context = controller.context
-                    let viewKey = PostboxViewKey.orderedItemList(id: Namespaces.OrderedItemList.CloudFeaturedEmojiPacks)
-                    let _ = (context.account.postbox.combinedView(keys: [viewKey])
-                    |> take(1)
-                    |> deliverOnMainQueue).start(next: { views in
-                        guard let view = views.views[viewKey] as? OrderedItemListView else {
-                            return
-                        }
-                        for featuredStickerPack in view.items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
+                    let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Collections.FeaturedEmojiPacks())
+                    |> deliverOnMainQueue).start(next: { featuredEmojiPacks in
+                        for featuredStickerPack in featuredEmojiPacks {
                             if featuredStickerPack.info.id == collectionId {
                                 let _ = (context.engine.stickers.loadedStickerPack(reference: .id(id: featuredStickerPack.info.id.id, accessHash: featuredStickerPack.info.accessHash), forceActualized: false)
                                 |> mapToSignal { result -> Signal<Void, NoError> in
@@ -958,7 +965,7 @@ public class StickerPickerScreen: ViewController {
                                         if installed {
                                             return .complete()
                                         } else {
-                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items)
+                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items) |> map { _ in return Void() }
                                         }
                                     case .fetching:
                                         break
@@ -1044,15 +1051,18 @@ public class StickerPickerScreen: ViewController {
                     
                     switch query {
                     case .none:
+                        self.emojiSearchContext = nil
                         self.emojiSearchDisposable.set(nil)
-                        self.emojiSearchState.set(.single(EmojiSearchState(result: nil, isSearching: false)))
+                        self.emojiSearchStateValue = EmojiSearchState(result: nil, isSearching: false)
                     case let .text(rawQuery, languageCode):
                         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
                         
                         if query.isEmpty {
+                            self.emojiSearchContext = nil
                             self.emojiSearchDisposable.set(nil)
-                            self.emojiSearchState.set(.single(EmojiSearchState(result: nil, isSearching: false)))
+                            self.emojiSearchStateValue = EmojiSearchState(result: nil, isSearching: false)
                         } else {
+                            self.emojiSearchContext = nil
                             var signal = context.engine.stickers.searchEmojiKeywords(inputLanguageCode: languageCode, query: query, completeMatch: false)
                             if !languageCode.lowercased().hasPrefix("en") {
                                 signal = signal
@@ -1072,24 +1082,25 @@ public class StickerPickerScreen: ViewController {
                                 signal,
                                 hasPremium
                             )
-                            |> mapToSignal { keywords, hasPremium -> Signal<[EmojiPagerContentComponent.ItemGroup], NoError> in
+                            |> mapToSignal { keywords, hasPremium -> Signal<(groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: EmojiSearchContext?), NoError> in
                                 var allEmoticons: [String: String] = [:]
                                 for keyword in keywords {
                                     for emoticon in keyword.emoticons {
                                         allEmoticons[emoticon] = keyword.keyword
                                     }
                                 }
-                                let remoteSignal: Signal<(items: [TelegramMediaFile], isFinalResult: Bool), NoError>
+                                let remoteSignal: Signal<EmojiSearchContext.State, NoError>
+                                let emojiSearchContext: EmojiSearchContext?
                                 if hasPremium {
-                                    remoteSignal = context.engine.stickers.searchEmoji(query: query, emoticon: Array(allEmoticons.keys), inputLanguageCode: languageCode)
+                                    let currentEmojiSearchContext = context.engine.stickers.emojiSearchContext(query: query, emoticon: Array(allEmoticons.keys), inputLanguageCode: languageCode)
+                                    emojiSearchContext = currentEmojiSearchContext
+                                    remoteSignal = currentEmojiSearchContext.state
                                 } else {
-                                    remoteSignal = .single(([], true))
+                                    emojiSearchContext = nil
+                                    remoteSignal = .single(EmojiSearchContext.State(items: [], canLoadMore: false, isLoadingMore: false))
                                 }
                                 return remoteSignal
-                                |> mapToSignal { foundEmoji -> Signal<[EmojiPagerContentComponent.ItemGroup], NoError> in
-                                    if foundEmoji.items.isEmpty && !foundEmoji.isFinalResult {
-                                        return .complete()
-                                    }
+                                |> map { foundEmoji -> (groups: [EmojiPagerContentComponent.ItemGroup], canLoadMore: Bool, isSearching: Bool, searchContext: EmojiSearchContext?) in
                                     var items: [EmojiPagerContentComponent.Item] = []
                                     
                                     let appendUnicodeEmoji = {
@@ -1139,7 +1150,7 @@ public class StickerPickerScreen: ViewController {
                                         appendUnicodeEmoji()
                                     }
                                 
-                                    return .single([EmojiPagerContentComponent.ItemGroup(
+                                    return ([EmojiPagerContentComponent.ItemGroup(
                                         supergroupId: "search",
                                         groupId: "search",
                                         title: nil,
@@ -1156,7 +1167,7 @@ public class StickerPickerScreen: ViewController {
                                         headerItem: nil,
                                         fillWithLoadingPlaceholders: false,
                                         items: items
-                                    )])
+                                    )], foundEmoji.canLoadMore, foundEmoji.items.isEmpty && foundEmoji.isLoadingMore, emojiSearchContext)
                                 }
                             }
                             
@@ -1169,11 +1180,13 @@ public class StickerPickerScreen: ViewController {
                                     return
                                 }
                                 
-                                self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result, id: AnyHashable(query), version: version, isPreset: false), isSearching: false)
+                                self.emojiSearchContext = result.searchContext
+                                self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.groups, id: AnyHashable(query), version: version, isPreset: false, canLoadMore: result.canLoadMore), isSearching: result.isSearching)
                                 version += 1
                             }))
                         }
                     case let .category(value):
+                        self.emojiSearchContext = nil
                         let resultSignal = context.engine.stickers.searchEmoji(category: value)
                         |> mapToSignal { files, isFinalResult -> Signal<(items: [EmojiPagerContentComponent.ItemGroup], isFinalResult: Bool), NoError> in
                             var items: [EmojiPagerContentComponent.Item] = []
@@ -1246,10 +1259,10 @@ public class StickerPickerScreen: ViewController {
                                         fillWithLoadingPlaceholders: true,
                                         items: []
                                     )
-                                ], id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                                ], id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                                 return
                             }
-                            self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                            self.emojiSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                             version += 1
                         }))
                     }
@@ -1261,6 +1274,9 @@ public class StickerPickerScreen: ViewController {
                     self?.update(isExpanded: true, transition: .animated(duration: 0.4, curve: .spring))
                 },
                 onScroll: {},
+                loadMore: { [weak self] in
+                    self?.emojiSearchContext?.loadMore()
+                },
                 chatPeerId: nil,
                 peekBehavior: nil,
                 customLayout: nil,
@@ -1299,14 +1315,12 @@ public class StickerPickerScreen: ViewController {
                     }
                     let presentationData = controller.context.sharedContext.currentPresentationData.with { $0 }
                     if groupId == AnyHashable("featuredTop") {
-                        let viewKey = PostboxViewKey.orderedItemList(id: Namespaces.OrderedItemList.CloudFeaturedStickerPacks)
-                        let _ = (controller.context.account.postbox.combinedView(keys: [viewKey])
-                        |> take(1)
-                        |> deliverOnMainQueue).start(next: { [weak self] views in
-                            guard let self, let controller = self.controller, let view = views.views[viewKey] as? OrderedItemListView else {
+                        let _ = (controller.context.engine.data.get(TelegramEngine.EngineData.Item.Collections.FeaturedStickerPacks())
+                        |> deliverOnMainQueue).start(next: { [weak self] featuredStickerPacks in
+                            guard let self, let controller = self.controller else {
                                 return
                             }
-                            for featuredStickerPack in view.items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
+                            for featuredStickerPack in featuredStickerPacks {
                                 if featuredStickerPack.topItems.contains(where: { $0.file.fileId == file.fileId }) {
                                     controller.pushController(FeaturedStickersScreen(
                                         context: controller.context,
@@ -1357,14 +1371,9 @@ public class StickerPickerScreen: ViewController {
                         return
                     }
                     let context = controller.context
-                    let viewKey = PostboxViewKey.orderedItemList(id: Namespaces.OrderedItemList.CloudFeaturedStickerPacks)
-                    let _ = (context.account.postbox.combinedView(keys: [viewKey])
-                    |> take(1)
-                    |> deliverOnMainQueue).start(next: { views in
-                        guard let view = views.views[viewKey] as? OrderedItemListView else {
-                            return
-                        }
-                        for featuredStickerPack in view.items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
+                    let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Collections.FeaturedStickerPacks())
+                    |> deliverOnMainQueue).start(next: { featuredStickerPacks in
+                        for featuredStickerPack in featuredStickerPacks {
                             if featuredStickerPack.info.id == collectionId {
                                 let _ = (context.engine.stickers.loadedStickerPack(reference: .id(id: featuredStickerPack.info.id.id, accessHash: featuredStickerPack.info.accessHash), forceActualized: false)
                                 |> mapToSignal { result -> Signal<Void, NoError> in
@@ -1373,7 +1382,7 @@ public class StickerPickerScreen: ViewController {
                                         if installed {
                                             return .complete()
                                         } else {
-                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items)
+                                            return context.engine.stickers.addStickerPackInteractively(info: info._parse(), items: items) |> map { _ in return Void() }
                                         }
                                     case .fetching:
                                         break
@@ -1413,15 +1422,10 @@ public class StickerPickerScreen: ViewController {
                         ])])
                         context.sharedContext.mainWindow?.presentInGlobalOverlay(actionSheet)
                     } else if groupId == AnyHashable("featuredTop") {
-                        let viewKey = PostboxViewKey.orderedItemList(id: Namespaces.OrderedItemList.CloudFeaturedStickerPacks)
-                        let _ = (context.account.postbox.combinedView(keys: [viewKey])
-                        |> take(1)
-                        |> deliverOnMainQueue).start(next: { views in
-                            guard let view = views.views[viewKey] as? OrderedItemListView else {
-                                return
-                            }
+                        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Collections.FeaturedStickerPacks())
+                        |> deliverOnMainQueue).start(next: { featuredStickerPacks in
                             var stickerPackIds: [Int64] = []
-                            for featuredStickerPack in view.items.lazy.map({ $0.contents.get(FeaturedStickerPackItem.self)! }) {
+                            for featuredStickerPack in featuredStickerPacks {
                                 stickerPackIds.append(featuredStickerPack.info.id.id)
                             }
                             let _ = ApplicationSpecificNotice.setDismissedTrendingStickerPacks(accountManager: context.sharedContext.accountManager, values: stickerPackIds).start()
@@ -1533,10 +1537,10 @@ public class StickerPickerScreen: ViewController {
                                         fillWithLoadingPlaceholders: true,
                                         items: []
                                     )
-                                ], id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                                ], id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                                 return
                             }
-                            strongSelf.stickerSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true), isSearching: false)
+                            strongSelf.stickerSearchStateValue = EmojiSearchState(result: EmojiSearchResult(groups: result.items, id: AnyHashable(value.id), version: version, isPreset: true, canLoadMore: false), isSearching: false)
                             version += 1
                         }))
                     }
@@ -1584,7 +1588,7 @@ public class StickerPickerScreen: ViewController {
             self.dim.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.dimTapGesture(_:))))
             
             if let controller = self.controller {
-                controller.navigationBar?.updateBackgroundAlpha(0.0, transition: .immediate)
+                controller.navigationBar?.setBackdropAlpha(0.0, transition: .immediate)
             }
         }
         
@@ -1791,6 +1795,9 @@ public class StickerPickerScreen: ViewController {
                             deviceMetrics: layout.deviceMetrics,
                             topInset: controller.isFullscreen ? navigationHeight : 0.0,
                             bottomInset: bottomInset,
+                            // iPhone Duo: the side strip's inset (folded portrait: the sheet rises beside the status
+                            // corner); equal insets keep the full width, as before.
+                            sideInsets: layout.safeInsets.left != layout.safeInsets.right ? UIEdgeInsets(top: 0.0, left: layout.safeInsets.left, bottom: 0.0, right: layout.safeInsets.right) : UIEdgeInsets(),
                             content: content,
                             backgroundColor: self.theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.85),
                             separatorColor: self.theme.rootController.navigationBar.separatorColor,
@@ -2165,9 +2172,12 @@ public class StickerPickerScreen: ViewController {
     }
         
     public override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        // iPhone Duo: the unfolded screen in landscape is regular width but a phone, which shows the phone sheet rather
+        // than the floating panel (every width-class check below then reads compact). Unchanged elsewhere.
+        let layout = layout.forOptionalFloatingPresentation
         self.currentLayout = layout
         super.containerLayoutUpdated(layout, transition: transition)
-        
+
         let navigationHeight: CGFloat = 56.0
         
         self.node.containerLayoutUpdated(layout: layout, navigationHeight: navigationHeight, transition: ComponentTransition(transition))
@@ -2260,7 +2270,8 @@ private final class InteractiveStickerButtonContent: Component {
                                 content: LottieComponent.ResourceContent(context: component.context, file: iconFile, attemptSynchronously: true, providesPlaceholder: true),
                                 color: nil,
                                 placeholderColor: UIColor(rgb: 0xffffff, alpha: 0.4),
-                                loop: !["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"].contains(component.iconName ?? "")
+                                loop: !["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"].contains(component.iconName ?? ""),
+                                lottieSettings: component.context.lottieRenderingSettings
                             )
                         ),
                         environment: {},
@@ -2381,12 +2392,14 @@ private final class InteractiveReactionButtonContent: Component {
             return PassthroughLayer.self
         }
                 
-        private var icon: ComponentView<Empty>
+        private var outline: ComponentView<Empty>
+        private var heart: ComponentView<Empty>
         
         private var component: InteractiveReactionButtonContent?
     
         override init(frame: CGRect) {
-            self.icon = ComponentView<Empty>()
+            self.outline = ComponentView<Empty>()
+            self.heart = ComponentView<Empty>()
             
             super.init(frame: frame)
             
@@ -2398,23 +2411,41 @@ private final class InteractiveReactionButtonContent: Component {
         }
         
         func update(component: InteractiveReactionButtonContent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
-            let bounds = CGRect(origin: .zero, size: CGSize(width: 54.0, height: 54.0))
-            let iconSize = self.icon.update(
+            let bounds = CGRect(origin: .zero, size: CGSize(width: 52.0, height: 52.0))
+            let outlineSize = self.outline.update(
                 transition: .immediate,
                 component: AnyComponent(BundleIconComponent(
-                    name: "Media Editor/Reaction",
-                    tintColor: nil,
-                    maxSize: CGSize(width: 52.0, height: 52.0)
+                    name: "Stories/ReactionOutline",
+                    tintColor: .white,
+                    maxSize: CGSize(width: 62.0, height: 62.0)
                 )),
                 environment: {},
                 containerSize: availableSize
             )
-            
-            if let view = self.icon.view {
+            let outlineFrame = outlineSize.centered(in: bounds)
+            if let view = self.outline.view {
                 if view.superview == nil {
                     self.addSubview(view)
                 }
-                transition.setFrame(view: view, frame: CGRect(origin: CGPoint(x: 2.0, y: 0.0), size: iconSize))
+                transition.setFrame(view: view, frame: outlineFrame)
+            }
+
+            let heartSize = self.heart.update(
+                transition: .immediate,
+                component: AnyComponent(Text(
+                    text: "❤️",
+                    font: Font.regular(26.0),
+                    color: .white
+                )),
+                environment: {},
+                containerSize: availableSize
+            )
+
+            if let view = self.heart.view {
+                if view.superview == nil {
+                    self.addSubview(view)
+                }
+                transition.setFrame(view: view, frame: heartSize.centered(in: outlineFrame).offsetBy(dx: 1.0 - UIScreenPixel, dy: 1.0))
             }
  
             return bounds.size

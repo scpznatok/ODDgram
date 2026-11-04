@@ -18,12 +18,15 @@ import UndoUI
 import BrowserUI
 
 func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, navigateDisposable: MetaDisposable, controller: ViewController, action: TextLinkItemActionType, itemLink: TextLinkItem) {
+    let presentationData = context.sharedContext.currentPresentationData.with({ $0 })
+    
     let presentImpl: (ViewController, Any?) -> Void = { controllerToPresent, _ in
         controller.present(controllerToPresent, in: .window(.root))
     }
     
     let openResolvedPeerImpl: (EnginePeer?, ChatControllerInteractionNavigateToPeer) -> Void = { [weak controller] peer, navigation in
-        guard let peer = peer else {
+        guard let peer else {
+            controller?.present(textAlertController(context: context, updatedPresentationData: nil, title: nil, text: presentationData.strings.Resolve_ErrorNotFound, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]), in: .window(.root))
             return
         }
         context.sharedContext.openResolvedUrl(.peer(peer._asPeer(), navigation), context: context, urlContext: .generic, navigationController: (controller?.navigationController as? NavigationController), forceExternal: false, forceUpdate: false, openPeer: { (peer, navigation) in
@@ -39,7 +42,7 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
                     )
                     navigateDisposable.set((peerSignal |> take(1) |> deliverOnMainQueue).start(next: { peer in
                         if let controller = controller, let peer = peer {
-                            if let infoController = context.sharedContext.makePeerInfoController(context: context, updatedPresentationData: nil, peer: peer._asPeer(), mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) {
+                            if let infoController = context.sharedContext.makePeerInfoController(context: context, updatedPresentationData: nil, peer: peer, mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) {
                                 (controller.navigationController as? NavigationController)?.pushViewController(infoController)
                             }
                         }
@@ -73,7 +76,7 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
             if let controller = controller {
                 switch result {
                     case let .externalUrl(url):
-                        context.sharedContext.openExternalUrl(context: context, urlContext: .generic, url: url, forceExternal: false, presentationData: context.sharedContext.currentPresentationData.with({ $0 }), navigationController: controller.navigationController as? NavigationController, dismissInput: {
+                        context.sharedContext.openExternalUrl(context: context, urlContext: .generic, url: url, forceExternal: false, presentationData: presentationData, navigationController: controller.navigationController as? NavigationController, dismissInput: {
                         })
                     case let .peer(peer, navigation):
                         openResolvedPeerImpl(peer.flatMap(EnginePeer.init), navigation)
@@ -84,7 +87,14 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
                             context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(EnginePeer(peer)), subject: .message(id: .id(messageId), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: timecode, setupReply: false)))
                         }
                     case let .replyThreadMessage(replyThreadMessage, messageId):
-                        if let navigationController = controller.navigationController as? NavigationController, let effectiveMessageId = replyThreadMessage.effectiveMessageId {
+                        if replyThreadMessage.isMonoforumPost {
+                            // A monoforum sublist is keyed by a packed `PeerId`, so it has no root message id: `effectiveMessageId`
+                            // would clamp the thread id into `Int32` and `openMessageReplies` would then rediscover a thread from a
+                            // message that does not exist. The resolver already produced the thread, so navigate with it directly.
+                            if let navigationController = controller.navigationController as? NavigationController {
+                                context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .replyThread(replyThreadMessage), subject: .message(id: .id(messageId), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false), keepStack: .always))
+                            }
+                        } else if let navigationController = controller.navigationController as? NavigationController, let effectiveMessageId = replyThreadMessage.effectiveMessageId {
                             let _ = ChatControllerImpl.openMessageReplies(context: context, navigationController: navigationController, present: { [weak controller] c, a in
                                 controller?.present(c, in: .window(.root), with: a)
                             }, messageId: effectiveMessageId, isChannelPost: replyThreadMessage.isChannelPost, atMessage: messageId, displayModalProgress: true).start()
@@ -100,7 +110,7 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
                         let sourceLocation = InstantPageSourceLocation(userLocation: peerId.flatMap(MediaResourceUserLocation.peer) ?? .other, peerType: .group)
                         let browserController = context.sharedContext.makeInstantPageController(context: context, webPage: webPage, anchor: anchor, sourceLocation: sourceLocation)
                         (controller.navigationController as? NavigationController)?.pushViewController(browserController, animated: true)
-                    case .boost, .chatFolder, .join, .invoice:
+                    case .boost, .chatFolder, .join, .invoice, .proxy, .sendGrams, .noPaidMessagesToken:
                         if let navigationController = controller.navigationController as? NavigationController {
                             openResolvedUrlImpl(result, context: context, urlContext: peerId.flatMap { .chat(peerId: $0, message: nil, updatedPresentationData: nil) } ?? .generic, navigationController: navigationController, forceExternal: false, forceUpdate: false, openPeer: { peer, navigateToPeer in
                                 openResolvedPeerImpl(peer, navigateToPeer)
@@ -128,18 +138,21 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
         }))
     }
     
-    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
     switch action {
         case .tap:
             switch itemLink {
                 case .url(let url, var concealed):
                     let (parsedString, parsedConcealed) = parseUrl(url: url, wasConcealed: false)
-                    if parsedConcealed {
+                    // A login part hides the host the link opens (see `externalUrlWithLoginPart`).
+                    let loginPartUrl = externalUrlWithLoginPart(url)
+                    if parsedConcealed || loginPartUrl != nil {
                         concealed = true
                     }
                     
                     if concealed {
-                        var rawDisplayUrl: String = parsedString
+                        // For a login part the prompt shows the host the link really opens. The external-URL opener
+                        // asks about such a link as well, so accepting it here tells the opener it has been confirmed.
+                        var rawDisplayUrl: String = loginPartUrl.map { urlRemovingLoginPart($0).absoluteString } ?? parsedString
                         let maxLength = 180
                         if rawDisplayUrl.count > maxLength {
                             rawDisplayUrl = String(rawDisplayUrl[..<rawDisplayUrl.index(rawDisplayUrl.startIndex, offsetBy: maxLength - 2)]) + "..."
@@ -147,6 +160,9 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
                         var displayUrl = rawDisplayUrl
                         displayUrl = displayUrl.replacingOccurrences(of: "\u{202e}", with: "")
                         controller.present(textAlertController(context: context, title: nil, text: presentationData.strings.Generic_OpenHiddenLinkAlert(displayUrl).string, actions: [TextAlertAction(type: .genericAction, title: presentationData.strings.Common_No, action: {}), TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_Yes, action: {
+                            if let loginPartUrl {
+                                noteLoginPartConfirmed(loginPartUrl)
+                            }
                             openLinkImpl(url)
                         })]), in: .window(.root))
                     } else {
@@ -156,10 +172,17 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
                     openPeerMentionImpl(mention)
                 case let .hashtag(_, hashtag):
                     if let peerId = peerId {
-                        let peerSignal = context.account.postbox.loadedPeerWithId(peerId)
+                        let peerSignal = context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+                        |> mapToSignal { peer -> Signal<EnginePeer, NoError> in
+                            if let peer {
+                                return .single(peer)
+                            } else {
+                                return .never()
+                            }
+                        }
                         let _ = (peerSignal
                         |> deliverOnMainQueue).start(next: { peer in
-                            let searchController = HashtagSearchController(context: context, peer: EnginePeer(peer), query: hashtag)
+                            let searchController = HashtagSearchController(context: context, peer: peer, query: hashtag)
                             (controller.navigationController as? NavigationController)?.pushViewController(searchController)
                         })
                     }
@@ -172,7 +195,7 @@ func handleTextLinkActionImpl(context: AccountContext, peerId: EnginePeer.Id?, n
                     let actionSheet = ActionSheetController(presentationData: presentationData)
                     let (displayUrl, _) = parseUrl(url: url, wasConcealed: false)
                     actionSheet.setItemGroups([ActionSheetItemGroup(items: [
-                        ActionSheetTextItem(title: displayUrl),
+                        ActionSheetTextItem(title: displayUrlRevealingLoginPart(url) ?? displayUrl),
                         ActionSheetButtonItem(title: openText, color: .accent, action: { [weak actionSheet] in
                             actionSheet?.dismissAnimated()
                             openLinkImpl(url)

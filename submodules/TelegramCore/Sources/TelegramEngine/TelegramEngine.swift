@@ -1,3 +1,4 @@
+import Foundation
 import SwiftSignalKit
 import Postbox
 
@@ -12,12 +13,12 @@ public final class TelegramEngine {
         return SecureId(account: self.account)
     }()
 
-    public lazy var peersNearby: PeersNearby = {
-        return PeersNearby(account: self.account)
-    }()
-
     public lazy var payments: Payments = {
         return Payments(account: self.account)
+    }()
+
+    public lazy var wallet: Wallet = {
+        return Wallet(account: self.account)
     }()
 
     public lazy var peers: Peers = {
@@ -79,7 +80,11 @@ public final class TelegramEngine {
     public lazy var orderedLists: OrderedLists = {
         return OrderedLists(account: self.account)
     }()
-    
+
+    public lazy var itemCollections: ItemCollections = {
+        return ItemCollections(account: self.account)
+    }()
+
     public lazy var itemCache: ItemCache = {
         return ItemCache(account: self.account)
     }()
@@ -90,6 +95,10 @@ public final class TelegramEngine {
 
     public lazy var preferences: Preferences = {
         return Preferences(account: self.account)
+    }()
+
+    public lazy var feed: Feed = {
+        return Feed(account: self.account)
     }()
 }
 
@@ -107,14 +116,32 @@ public final class TelegramEngineUnauthorized {
     public lazy var localization: Localization = {
         return Localization(account: self.account)
     }()
-    
+
     public lazy var payments: Payments = {
         return Payments(account: self.account)
+    }()
+
+    public lazy var resources: UnauthorizedResources = {
+        return UnauthorizedResources(account: self.account)
     }()
     
     public lazy var itemCache: ItemCache = {
         return ItemCache(account: self.account)
     }()
+}
+
+public extension TelegramEngineUnauthorized {
+    final class UnauthorizedResources {
+        private let account: UnauthorizedAccount
+
+        init(account: UnauthorizedAccount) {
+            self.account = account
+        }
+
+        public func storeResourceData(id: EngineMediaResource.Id, data: Data, synchronous: Bool = false) {
+            self.account.postbox.mediaBox.storeResourceData(MediaResourceId(id.stringRepresentation), data: data, synchronous: synchronous)
+        }
+    }
 }
 
 public enum SomeTelegramEngine {

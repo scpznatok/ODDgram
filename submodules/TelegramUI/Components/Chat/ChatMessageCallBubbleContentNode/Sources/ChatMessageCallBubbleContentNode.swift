@@ -1,9 +1,9 @@
 import Foundation
+import LottieSettings
 import UIKit
 import AsyncDisplayKit
 import Display
 import TelegramCore
-import Postbox
 import TelegramPresentationData
 import AppBundle
 import ChatMessageBubbleContentNode
@@ -36,7 +36,7 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
     
     private var activeConferenceUpdateTimer: SwiftSignalKit.Timer?
     
-    required public init() {
+    required public init(lottieSettings: LottieRenderingSettings) {
         self.titleNode = TextNode()
         self.labelNode = TextNode()
         
@@ -48,7 +48,7 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
         self.buttonNode = HighlightableButtonNode()
         self.buttonNode.isAccessibilityElement = false
         
-        super.init()
+        super.init(lottieSettings: lottieSettings)
                 
         self.titleNode.isUserInteractionEnabled = false
         self.titleNode.contentMode = .topLeft
@@ -92,9 +92,9 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
         let makeLabelLayout = TextNode.asyncLayout(self.labelNode)
         let makePeopleTextLayout = TextNode.asyncLayout(self.peopleTextNode)
         
-        return { item, layoutConstants, _, _, _, _ in
+        return { [weak self] item, layoutConstants, _, _, _, _ in
             let contentProperties = ChatMessageBubbleContentProperties(hidesSimpleAuthorHeader: false, headerSpacing: 0.0, hidesBackground: .never, forceFullCorners: false, forceAlignment: .none)
-            return (contentProperties, nil, CGFloat.greatestFiniteMagnitude, { constrainedSize, position in
+            return (contentProperties, nil, CGFloat.greatestFiniteMagnitude, { [weak self] constrainedSize, position in
                 let incoming = item.message.effectivelyIncoming(item.context.account.peerId)
                 
                 let horizontalInset = layoutConstants.text.bubbleInsets.left + layoutConstants.text.bubbleInsets.right
@@ -108,7 +108,7 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
                 let messageTheme = incoming ? item.presentationData.theme.theme.chat.message.incoming : item.presentationData.theme.theme.chat.message.outgoing
 
                 var peopleTextString: String?
-                var peopleAvatars: [Peer] = []
+                var peopleAvatars: [EnginePeer] = []
                 
                 var titleString: String?
                 var callDuration: Int32?
@@ -119,14 +119,21 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
                     if let action = media as? TelegramMediaAction, case let .phoneCall(_, discardReason, duration, isVideoValue) = action.action {
                         isVideo = isVideoValue
                         callDuration = duration
+                        let callConnected = (duration ?? 0) > 0
                         if let discardReason = discardReason {
                             switch discardReason {
                                 case .disconnect:
-                                    callSuccessful = false
-                                    if isVideo {
-                                        titleString = item.presentationData.strings.Notification_VideoCallCanceled
-                                    } else {
-                                        titleString = item.presentationData.strings.Notification_CallCanceled
+                                    // `.disconnect` means the transport died, which says nothing
+                                    // about whether the call connected: a non-zero duration means
+                                    // it was answered and ran, so the connection was merely lost at
+                                    // the end of a real conversation rather than cancelled.
+                                    if !callConnected {
+                                        callSuccessful = false
+                                        if isVideo {
+                                            titleString = item.presentationData.strings.Notification_VideoCallCanceled
+                                        } else {
+                                            titleString = item.presentationData.strings.Notification_CallCanceled
+                                        }
                                     }
                                 case .missed, .busy:
                                     callSuccessful = false
@@ -155,11 +162,11 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
                         if conferenceCall.otherParticipants.count > 0 {
                             peopleTextString = item.presentationData.strings.Chat_CallMessage_GroupCallParticipantCount(Int32(conferenceCall.otherParticipants.count + 1))
                             if let peer = item.message.author {
-                                peopleAvatars.append(peer)
+                                peopleAvatars.append(EnginePeer(peer))
                             }
                             for id in conferenceCall.otherParticipants {
                                 if let peer = item.message.peers[id] {
-                                    peopleAvatars.append(peer)
+                                    peopleAvatars.append(EnginePeer(peer))
                                 }
                             }
                         }
@@ -239,7 +246,7 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
                     }
                 }
                 
-                let dateText = stringForMessageTimestampStatus(accountPeerId: item.context.account.peerId, message: item.message, dateTimeFormat: item.presentationData.dateTimeFormat, nameDisplayOrder: item.presentationData.nameDisplayOrder, strings: item.presentationData.strings, associatedData: item.associatedData)
+                let dateText = stringForMessageTimestampStatus(context: item.context, message: EngineMessage(item.message), dateTimeFormat: item.presentationData.dateTimeFormat, nameDisplayOrder: item.presentationData.nameDisplayOrder, strings: item.presentationData.strings, associatedData: item.associatedData)
                 
                 var statusText: String
                 if let callDuration = callDuration, callDuration > 1 {
@@ -291,7 +298,7 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
                 
                 boundingSize.width += 54.0
                 
-                return (boundingSize.width, { boundingWidth in
+                return (boundingSize.width, { [weak self] boundingWidth in
                     return (boundingSize, { [weak self] animation, _, _ in
                         if let strongSelf = self {
                             strongSelf.item = item
@@ -319,7 +326,7 @@ public class ChatMessageCallBubbleContentNode: ChatMessageBubbleContentNode {
                                     strongSelf.addSubnode(peopleAvatarsNode)
                                 }
 
-                                let peopleAvatarsContent = peopleAvatarsContext.update(peers: peopleAvatars.prefix(3).map(EnginePeer.init), animated: false)
+                                let peopleAvatarsContent = peopleAvatarsContext.update(peers: Array(peopleAvatars.prefix(3)), animated: false)
                                 let peopleAvatarsSize = peopleAvatarsNode.update(context: item.context, content: peopleAvatarsContent, itemSize: CGSize(width: peopleAvatarSize, height: peopleAvatarSize), customSpacing: peopleAvatarSize - peopleAvatarSpacing, font: avatarFont, animated: false, synchronousLoad: false)
                                 peopleAvatarsNode.frame = CGRect(origin: CGPoint(x: labelFrame.maxX + avatarsLeftInset, y: labelFrame.minY - 1.0), size: peopleAvatarsSize)
                             } else {

@@ -1,12 +1,23 @@
 import Foundation
 import Display
-import Postbox
 import TelegramCore
 import AccountContext
 import WebKit
 import SwiftSignalKit
 import UniversalMediaPlayer
 import AppBundle
+
+private func accumulateTimecode(_ base: Int, _ value: Int, times multiplier: Int) -> Int {
+    let (product, productOverflow) = value.multipliedReportingOverflow(by: multiplier)
+    if productOverflow {
+        return Int.max
+    }
+    let (sum, sumOverflow) = base.addingReportingOverflow(product)
+    if sumOverflow {
+        return Int.max
+    }
+    return sum
+}
 
 func extractYoutubeVideoIdAndTimestamp(url: String) -> (String, Int)? {
     guard let url = URL(string: url), let host = url.host?.lowercased() else {
@@ -36,7 +47,7 @@ func extractYoutubeVideoIdAndTimestamp(url: String) -> (String, Int)? {
                             if let hoursRange = value.range(of: "h", options: .caseInsensitive, range: range, locale: nil) {
                                 let subvalue = String(value[range.lowerBound ..< hoursRange.lowerBound])
                                 if let hours = Int(subvalue) {
-                                    timestamp = timestamp + hours * 3600
+                                    timestamp = accumulateTimecode(timestamp, hours, times: 3600)
                                 }
                                 range = hoursRange.upperBound..<value.endIndex
                             }
@@ -44,7 +55,7 @@ func extractYoutubeVideoIdAndTimestamp(url: String) -> (String, Int)? {
                             if let minutesRange = value.range(of: "m", options: .caseInsensitive, range: range, locale: nil) {
                                 let subvalue = String(value[range.lowerBound ..< minutesRange.lowerBound])
                                 if let minutes = Int(subvalue) {
-                                    timestamp = timestamp + minutes * 60
+                                    timestamp = accumulateTimecode(timestamp, minutes, times: 60)
                                 }
                                 range = minutesRange.upperBound..<value.endIndex
                             }
@@ -52,7 +63,7 @@ func extractYoutubeVideoIdAndTimestamp(url: String) -> (String, Int)? {
                             if let secondsRange = value.range(of: "s", options: .caseInsensitive, range: range, locale: nil) {
                                 let subvalue = String(value[range.lowerBound ..< secondsRange.lowerBound])
                                 if let seconds = Int(subvalue) {
-                                    timestamp = timestamp + seconds
+                                    timestamp = accumulateTimecode(timestamp, seconds, times: 1)
                                 }
                             }
                         } else {
@@ -417,23 +428,23 @@ public class YoutubeEmbedStoryboardMediaResource: TelegramMediaResource {
         self.url = url
     }
     
-    public required init(decoder: PostboxDecoder) {
+    public required init(decoder: EnginePostboxDecoder) {
         self.videoId = decoder.decodeStringForKey("v", orElse: "")
         self.storyboardId = decoder.decodeInt32ForKey("i", orElse: 0)
         self.url = decoder.decodeStringForKey("u", orElse: "")
     }
-    
-    public func encode(_ encoder: PostboxEncoder) {
+
+    public func encode(_ encoder: EnginePostboxEncoder) {
         encoder.encodeString(self.videoId, forKey: "v")
         encoder.encodeInt32(self.storyboardId, forKey: "i")
         encoder.encodeString(self.url, forKey: "u")
     }
-    
-    public var id: MediaResourceId {
-        return MediaResourceId(YoutubeEmbedStoryboardMediaResourceId(videoId: self.videoId, storyboardId: self.storyboardId).uniqueId)
+
+    public var id: EngineRawMediaResourceId {
+        return EngineRawMediaResourceId(YoutubeEmbedStoryboardMediaResourceId(videoId: self.videoId, storyboardId: self.storyboardId).uniqueId)
     }
-    
-    public func isEqual(to: MediaResource) -> Bool {
+
+    public func isEqual(to: EngineRawMediaResource) -> Bool {
         if let to = to as? YoutubeEmbedStoryboardMediaResource {
             return self.videoId == to.videoId && self.storyboardId == to.storyboardId && self.url == to.url
         } else {
@@ -442,17 +453,17 @@ public class YoutubeEmbedStoryboardMediaResource: TelegramMediaResource {
     }
 }
 
-public final class YoutubeEmbedStoryboardMediaResourceRepresentation: CachedMediaResourceRepresentation {
-    public let keepDuration: CachedMediaRepresentationKeepDuration = .shortLived
-    
+public final class YoutubeEmbedStoryboardMediaResourceRepresentation: EngineMediaResourceRepresentation {
+    public let keepDuration: EngineCachedMediaRepresentationKeepDuration = .shortLived
+
     public var uniqueId: String {
         return "cached"
     }
-    
+
     public init() {
     }
-    
-    public func isEqual(to: CachedMediaResourceRepresentation) -> Bool {
+
+    public func isEqual(to: EngineRawCachedMediaResourceRepresentation) -> Bool {
         if to is YoutubeEmbedStoryboardMediaResourceRepresentation {
             return true
         } else {
@@ -461,14 +472,14 @@ public final class YoutubeEmbedStoryboardMediaResourceRepresentation: CachedMedi
     }
 }
 
-public func fetchYoutubeEmbedStoryboardResource(resource: YoutubeEmbedStoryboardMediaResource) -> Signal<CachedMediaResourceRepresentationResult, NoError> {
+public func fetchYoutubeEmbedStoryboardResource(resource: YoutubeEmbedStoryboardMediaResource) -> Signal<EngineCachedMediaResourceRepresentationResult, NoError> {
     return Signal { subscriber in
         subscriber.putNext(.reset)
                 
         let disposable = MetaDisposable()
         disposable.set(fetchHttpResource(url: resource.url).start(next: { next in
             if case let .dataPart(_, data, _, complete) = next, complete {
-                let tempFile = TempBox.shared.tempFile(fileName: "image.jpg")
+                let tempFile = EngineTempBox.shared.tempFile(fileName: "image.jpg")
                 if let _ = try? data.write(to: URL(fileURLWithPath: tempFile.path), options: .atomic) {
                     subscriber.putNext(.tempFile(tempFile))
                     subscriber.putCompletion()
@@ -484,9 +495,9 @@ public func fetchYoutubeEmbedStoryboardResource(resource: YoutubeEmbedStoryboard
 
 private func youtubeEmbedStoryboardData(account: Account, resource: YoutubeEmbedStoryboardMediaResource) -> Signal<Data?, NoError> {
     return Signal<Data?, NoError> { subscriber in
-        let dataDisposable = account.postbox.mediaBox.cachedResourceRepresentation(resource, representation: YoutubeEmbedStoryboardMediaResourceRepresentation(), complete: true).start(next: { next in
-            if next.size != 0 {
-                subscriber.putNext(next.size == 0 ? nil : try? Data(contentsOf: URL(fileURLWithPath: next.path), options: []))
+        let dataDisposable = TelegramEngine(account: account).resources.cachedRepresentation(resource: EngineMediaResource(resource), representation: YoutubeEmbedStoryboardMediaResourceRepresentation(), complete: true).start(next: { next in
+            if next.availableSize != 0 {
+                subscriber.putNext(next.availableSize == 0 ? nil : try? Data(contentsOf: URL(fileURLWithPath: next.path), options: []))
             }
         }, error: subscriber.putError, completed: subscriber.putCompletion)
         

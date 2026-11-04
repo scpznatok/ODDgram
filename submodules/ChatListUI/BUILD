@@ -1,4 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
+load("@build_bazel_rules_apple//apple/testing/default_runner:ios_test_runner.bzl", "ios_test_runner")
 
 sgdeps = [
     "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
@@ -20,6 +22,7 @@ swift_library(
     ],
     deps = sgdeps + [
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+        "//submodules/LottieSettings:LottieSettings",
         "//submodules/AsyncDisplayKit:AsyncDisplayKit",
         "//submodules/Display:Display",
         "//submodules/Postbox:Postbox",
@@ -39,6 +42,7 @@ swift_library(
         "//submodules/SearchBarNode:SearchBarNode",
         "//submodules/ChatListSearchRecentPeersNode:ChatListSearchRecentPeersNode",
         "//submodules/ChatListSearchItemHeader:ChatListSearchItemHeader",
+        "//submodules/TelegramUI/Components/SectionTitleContextItem",
         "//submodules/TemporaryCachedPeerDataManager:TemporaryCachedPeerDataManager",
         "//submodules/PeerPresenceStatusManager:PeerPresenceStatusManager",
         "//submodules/PeerOnlineMarkerNode:PeerOnlineMarkerNode",
@@ -51,6 +55,7 @@ swift_library(
         "//submodules/PhotoResources:PhotoResources",
         "//submodules/AppBundle:AppBundle",
         "//submodules/ContextUI:ContextUI",
+        "//submodules/Markdown:Markdown",
         "//submodules/PhoneNumberFormat:PhoneNumberFormat",
         "//submodules/TelegramIntents:TelegramIntents",
         "//submodules/ItemListPeerActionItem:ItemListPeerActionItem",
@@ -93,6 +98,8 @@ swift_library(
         "//submodules/AnimationUI:AnimationUI",
         "//submodules/PeerInfoUI",
         "//submodules/TelegramUI/Components/ChatListHeaderComponent",
+        "//submodules/TelegramUI/Components/NavigationBarComponent",
+        "//submodules/TelegramUI/Components/SideColumnLayout",
         "//submodules/TelegramUI/Components/ChatListTitleView",
         "//submodules/AvatarNode:AvatarNode",
         "//submodules/AvatarVideoNode:AvatarVideoNode",
@@ -133,12 +140,46 @@ swift_library(
         "//submodules/TelegramUI/Components/LiveLocationHeaderPanelComponent",
         "//submodules/TelegramUI/Components/ChatList/ChatListSearchFiltersContainerNode",
         "//submodules/TelegramUI/Components/ChatList/ChatListHeaderNoticeComponent",
+        "//submodules/TelegramUI/Components/GlassBackgroundComponent",
         "//submodules/TelegramUI/Components/AlertComponent",
+        "//submodules/TelegramUI/Components/AlertComponent/AlertHeaderComponent",
         "//submodules/TelegramUI/Components/AlertComponent/AlertTransferHeaderComponent",
         "//submodules/TelegramUI/Components/AvatarComponent",
         "//submodules/TelegramUI/Components/PeerManagement/OwnershipTransferController",
+        "//submodules/TelegramUI/Components/GlassControls",
     ],
     visibility = [
         "//visibility:public",
     ],
+)
+
+swift_library(
+    name = "ChatListUITestsLib",
+    testonly = True,
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [
+        ":ChatListUI",
+        "//submodules/TelegramCore:TelegramCore",
+        "//submodules/Postbox:Postbox",
+        "//submodules/TelegramPresentationData:TelegramPresentationData",
+        "//submodules/TelegramUIPreferences:TelegramUIPreferences",
+        "//submodules/TelegramStringFormatting:TelegramStringFormatting",
+        "//submodules/TextFormat:TextFormat",
+        "//submodules/AppBundle:AppBundle",
+    ],
+)
+
+ios_test_runner(
+    name = "ChatListUITestRunner",
+    device_type = "iPhone 17",
+    os_version = "26.5",
+)
+
+ios_unit_test(
+    name = "ChatListUITests",
+    minimum_os_version = "15.0",
+    runner = ":ChatListUITestRunner",
+    resources = ["//Telegram:InstantPagePreviewTestStrings"],
+    deps = [":ChatListUITestsLib"],
+    visibility = ["//visibility:public"],
 )
