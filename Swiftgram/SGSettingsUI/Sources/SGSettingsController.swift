@@ -153,18 +153,19 @@ private func SGControllerEntries(presentationData: PresentationData, callListSet
     
     entries.append(.searchInput(id: id.count, section: .search, title: NSAttributedString(string: "🔍"), text: state.searchQuery ?? "", placeholder: strings.Common_Search))
     
-    let usesPrivateStorage = UserDefaults.standard.bool(forKey: "oddgram.usePrivateContainer")
     let isUkrainian = lang.lowercased().hasPrefix("uk")
+    let appGroupName = "group.\(Bundle.main.bundleIdentifier ?? "")"
+    let sharedStorageAvailable = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil
     let storageHeader = isUkrainian ? "СХОВИЩЕ ODDGRAM" : "ODDGRAM STORAGE"
     let storageMessage: String
-    if usesPrivateStorage {
+    if sharedStorageAvailable {
         storageMessage = isUkrainian
-            ? "Локальне. Віджети, меню поширення та розширення сповіщень не мають доступу до даних застосунку."
-            : "Private. Widgets, sharing and notification extensions cannot access the app's data."
+            ? "Спільне сховище доступне. Робота розширень також залежить від їхнього підпису."
+            : "Shared storage is available. Extensions must also be signed correctly."
     } else {
         storageMessage = isUkrainian
-            ? "Спільне (App Group). Розширення також потребують правильного підпису."
-            : "Shared (App Group). Extensions also need to be signed correctly."
+            ? "Спільне сховище недоступне. Перевір підпис і App Group."
+            : "Shared storage is unavailable. Check signing and the App Group."
     }
     entries.append(.header(id: id.count, section: .storage, text: storageHeader, badge: nil))
     entries.append(.notice(id: id.count, section: .storage, text: storageMessage))
