@@ -1,0 +1,53 @@
+name: ODDgram sideload build
+on:
+  workflow_dispatch:
+  push:
+    branches: [upgrade/swiftgram-13-1-1]
+    paths:
+      - .github/workflows/sideload.yml
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          XCODE_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["xcode"])')
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+      - name: Build IPA with placeholder signing
+        run: |
+          set -euo pipefail
+          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          python3 -u build-system/Make/Make.py build \
+            --configurationPath=build-system/appstore-configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="${GITHUB_RUN_NUMBER}"
+          test -f bazel-bin/Telegram/Telegram.ipa || test -f bazel-bin/Telegram/Swiftgram.ipa
+          mkdir -p build/artifacts
+          if test -f bazel-bin/Telegram/Telegram.ipa; then
+            cp bazel-bin/Telegram/Telegram.ipa build/artifacts/ODDgram-unsigned.ipa
+          else
+            cp bazel-bin/Telegram/Swiftgram.ipa build/artifacts/ODDgram-unsigned.ipa
+          fi
+      - name: Inspect IPA
+        run: |
+          set -euo pipefail
+          unzip -q build/artifacts/ODDgram-unsigned.ipa -d "${RUNNER_TEMP}/oddgram-ipa"
+          find "${RUNNER_TEMP}/oddgram-ipa/Payload" -name '*.appex' -maxdepth 5 -print
+          APP_PLIST=$(find "${RUNNER_TEMP}/oddgram-ipa/Payload" -maxdepth 2 -name Info.plist -print -quit)
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PLIST"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ODDgram-unsigned-ipa
+          path: build/artifacts/ODDgram-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
