@@ -715,24 +715,14 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             networkEngineFactory: RustNetworkEngineFactory()
         )
         
-        // Sideloaded builds may not have the App Groups entitlement. Keep using
-        // the private container once selected so that changing signing settings
-        // cannot silently switch the app to an empty shared database.
-        let storagePreferenceKey = "oddgram.usePrivateContainer"
-        let defaults = UserDefaults.standard
-        let appGroupUrl: URL
-        if defaults.bool(forKey: storagePreferenceKey) {
-            appGroupUrl = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        } else if let sharedUrl = maybeAppGroupUrl {
-            appGroupUrl = sharedUrl
-        } else {
-            appGroupUrl = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            defaults.set(true, forKey: storagePreferenceKey)
-        }
-        do {
-            try FileManager.default.createDirectory(at: appGroupUrl, withIntermediateDirectories: true, attributes: nil)
-        } catch {
-            self.mainWindow?.presentNative(UIAlertController(title: "Storage unavailable", message: "ODDgram could not open its data directory.", preferredStyle: .alert))
+        guard let appGroupUrl = maybeAppGroupUrl else {
+            let alert = UIAlertController(
+                title: "App Group unavailable",
+                message: "ODDgram needs a shared App Group to start. Check the App Group entitlement and provisioning profile used to sign the app and its extensions.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self.mainWindow?.presentNative(alert)
             return true
         }
         
