@@ -26,6 +26,7 @@ import UndoUI
 
 private enum SGControllerSection: Int32, SGItemListSection {
     case search
+    case storage
     case trending
     case content
     case tabs
@@ -151,6 +152,22 @@ private func SGControllerEntries(presentationData: PresentationData, callListSet
     let id = SGItemListCounter()
     
     entries.append(.searchInput(id: id.count, section: .search, title: NSAttributedString(string: "🔍"), text: state.searchQuery ?? "", placeholder: strings.Common_Search))
+    
+    let usesPrivateStorage = UserDefaults.standard.bool(forKey: "oddgram.usePrivateContainer")
+    let isUkrainian = lang.lowercased().hasPrefix("uk")
+    let storageHeader = isUkrainian ? "СХОВИЩЕ ODDGRAM" : "ODDGRAM STORAGE"
+    let storageMessage: String
+    if usesPrivateStorage {
+        storageMessage = isUkrainian
+            ? "Локальне. Віджети, меню поширення та розширення сповіщень не мають доступу до даних застосунку."
+            : "Private. Widgets, sharing and notification extensions cannot access the app's data."
+    } else {
+        storageMessage = isUkrainian
+            ? "Спільне (App Group). Розширення також потребують правильного підпису."
+            : "Shared (App Group). Extensions also need to be signed correctly."
+    }
+    entries.append(.header(id: id.count, section: .storage, text: storageHeader, badge: nil))
+    entries.append(.notice(id: id.count, section: .storage, text: storageMessage))
     
     
     if SGSimpleSettings.shared.canUseNY {
