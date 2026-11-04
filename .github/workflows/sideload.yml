@@ -22,7 +22,7 @@ jobs:
           XCODE_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["xcode"])')
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
-      - name: Build IPA with placeholder signing
+      - name: Build IPA without embedded provisioning profiles
         run: |
           set -euo pipefail
           python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
